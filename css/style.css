@@ -450,12 +450,16 @@ input[type="color"] {
     bottom: calc(14px + env(safe-area-inset-bottom));
     transform: translateX(-50%);
     margin: 0;
+    /* left:50%만 주면 shrink-to-fit 이 화면 절반 폭으로 잡혀 버튼 글자가 세로로 쪼개진다. */
+    width: max-content;
+    max-width: calc(100% - 24px);
+    flex-wrap: nowrap;
     z-index: 30;
     background: rgba(15, 20, 25, 0.94);
     backdrop-filter: blur(10px);
     box-shadow: var(--shadow);
   }
-  .vbtn { padding: 7px 11px; font-size: 12px; }
+  .vbtn { padding: 7px 11px; font-size: 12px; white-space: nowrap; }
   .top-actions .btn.ghost { display: none; }
   .only-mobile { display: inline-flex; }
   /* 모바일에서도 ⚙ 설정은 항상 상단에 노출 */
