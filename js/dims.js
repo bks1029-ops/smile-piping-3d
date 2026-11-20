@@ -40,6 +40,7 @@ export function buildDimItems(state) {
         x: (a.x + b.x) / 2 + px * off,
         y: (a.y + b.y) / 2 + 0.06,
         z: (a.z + b.z) / 2 + pz * off,
+        len,
         text: dimText(len, p.bore),
       });
     }

@@ -5,13 +5,13 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
-} from './store.js?v=23';
-import { buildScene } from './builders.js?v=23';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=23';
-import { buildOBJ } from './obj.js?v=23';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=23';
-import { parseCommand, CMD_HELP } from './cmd.js?v=23';
-import { buildDimItems } from './dims.js?v=23';
+} from './store.js?v=24';
+import { buildScene } from './builders.js?v=24';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=24';
+import { buildOBJ } from './obj.js?v=24';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=24';
+import { parseCommand, CMD_HELP } from './cmd.js?v=24';
+import { buildDimItems } from './dims.js?v=24';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -329,6 +329,7 @@ class App {
 
   refreshDims() {
     this.dimItems = buildDimItems(this.state);
+    this.dimOrder = null; // 라벨 배치 순서(긴 구간 우선)를 다시 계산한다.
     if (!this.dimsOn) {
       this.clearDimNodes();
       return;
@@ -357,7 +358,19 @@ class App {
     const w = this.dimLayer.clientWidth || 1;
     const h = this.dimLayer.clientHeight || 1;
     const v = this.dimV;
-    for (let i = 0; i < this.dimItems.length; i += 1) {
+    // 겹치면 읽기 어려우니 긴 구간부터 자리를 잡고, 이미 잡힌 라벨과 겹치는 것은 숨긴다.
+    const cells = new Set();
+    const cw = 34;
+    const chh = 17;
+    const perChar = w <= 880 ? 5.6 : 6.2;
+    const order = this.dimOrder || (this.dimOrder = []);
+    if (order.length !== this.dimItems.length) {
+      order.length = 0;
+      for (let i = 0; i < this.dimItems.length; i += 1) order.push(i);
+      order.sort((a, b) => (this.dimItems[b].len || 0) - (this.dimItems[a].len || 0));
+    }
+    for (let n = 0; n < order.length; n += 1) {
+      const i = order[n];
       const it = this.dimItems[i];
       const el = this.dimNodes[i];
       v.set(it.x, it.y, it.z).project(this.camera);
@@ -366,9 +379,28 @@ class App {
         if (el.style.display !== 'none') el.style.display = 'none';
         continue;
       }
-      if (el.style.display === 'none') el.style.display = '';
       const sx = ((v.x + 1) / 2) * w;
       const sy = ((1 - v.y) / 2) * h;
+      const bw = Math.max(40, el.textContent.length * perChar + 12);
+      const bh = 16;
+      const c0 = Math.round((sx - bw / 2) / cw);
+      const c1 = Math.round((sx + bw / 2) / cw);
+      const r0 = Math.round((sy - bh / 2) / chh);
+      const r1 = Math.round((sy + bh / 2) / chh);
+      let clash = false;
+      for (let cx = c0; cx <= c1 && !clash; cx += 1) {
+        for (let ry = r0; ry <= r1; ry += 1) {
+          if (cells.has(cx + ':' + ry)) { clash = true; break; }
+        }
+      }
+      if (clash) {
+        if (el.style.display !== 'none') el.style.display = 'none';
+        continue;
+      }
+      for (let cx = c0; cx <= c1; cx += 1) {
+        for (let ry = r0; ry <= r1; ry += 1) cells.add(cx + ':' + ry);
+      }
+      if (el.style.display === 'none') el.style.display = '';
       el.style.transform = `translate(-50%, -50%) translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px)`;
     }
   }
