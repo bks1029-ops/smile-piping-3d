@@ -1,5 +1,25 @@
 // 스마일산업 3D 배관 — Gemini 이미지 분석 (선택 기능)
 
+// 구형 모델은 신규 API 키에서 거절된다(예: models/gemini-2.5-flash → "no longer available to new users").
+// 그래서 기본은 최신 flash 모델로 두고, 실패하면 최신 모델로 자동 재시도하고,
+// 그래도 안 되면 v1beta/models 목록에서 지금 쓸 수 있는 flash 모델을 찾아 쓴다.
+export const DEFAULT_MODEL = 'gemini-3.8-flash';
+
+export const MODEL_OPTIONS = [
+  { id: 'gemini-3.8-flash', label: 'gemini-3.8-flash (기본·권장)' },
+  { id: 'gemini-3.8-pro', label: 'gemini-3.8-pro (정밀 분석·느림)' },
+  { id: 'gemini-2.5-flash', label: 'gemini-2.5-flash (구형·기존 키 전용)' },
+];
+
+// 예전 기본값으로 저장돼 있던 값 — 새 기본값으로 자동 전환한다.
+export const LEGACY_MODELS = [
+  'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro',
+  'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro',
+  'gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro',
+];
+
+const API_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
+
 const PROMPT = `너는 배관설비(플랜트) 현장 사진과 2D 도면, 손그림을 3D 배관 레이아웃 데이터로 변환하는 설비 엔지니어다.
 첨부된 이미지를 분석해서 아래 JSON 스키마에 맞는 객체 하나만 출력하라. 설명 문장은 넣지 말 것.
 
@@ -31,15 +51,17 @@ const PROMPT = `너는 배관설비(플랜트) 현장 사진과 2D 도면, 손�
 [출력 형식]
 {"equipment":[{"type":"hx","name":"E-101 열교환기","x":0,"y":0,"z":0,"w":4.4,"h":0.9,"d":0.9,"rot":0}],"pipes":[{"name":"150A 스팀 메인","bore":"150A","material":"carbon","points":[{"x":-5,"y":3.6,"z":-2},{"x":5,"y":3.6,"z":-2}]}],"notes":""}`;
 
-export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
-  const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl || '');
-  if (!m) throw new Error('이미지를 읽을 수 없습니다. JPG/PNG 파일을 올려주세요.');
-  const mimeType = m[1];
-  const base64 = m[2];
+const cleanModel = (m) => String(m || '').trim().replace(/^models\//, '');
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
+// 모델 자체가 없거나 신규 사용자에게 닫힌 경우인지 (키 오류·한도 오류와 구분)
+function modelUnavailable(status, detail) {
+  if (status === 404) return true;
+  const s = String(detail || '');
+  return /no longer available|not found|not supported|unsupported|does not exist|decommission|deprecated|discontinued|is not available|no access/i.test(s);
+}
 
+async function callModel({ apiKey, model, text, mimeType, base64 }) {
+  const url = `${API_ROOT}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   let res;
   try {
     res = await fetch(url, {
@@ -60,11 +82,17 @@ export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
       const err = await res.json();
       detail = (err.error && (err.error.message || err.error.status)) || detail;
     } catch (e) { /* ignore */ }
-    if (res.status === 400 || res.status === 403) {
-      if (/api key/i.test(detail)) throw new Error(`API 키가 올바르지 않습니다. (${detail})`);
+    const e = new Error(`Gemini 요청 실패 (${detail})`);
+    e.status = res.status;
+    e.detail = detail;
+    e.modelUnavailable = modelUnavailable(res.status, detail) || (res.status === 400 && /model/i.test(detail) && /not|invalid/i.test(detail) && !/api key/i.test(detail));
+    if (!e.modelUnavailable) {
+      if (res.status === 400 || res.status === 403) {
+        if (/api key/i.test(detail)) e.message = `API 키가 올바르지 않습니다. (${detail})`;
+      }
+      if (res.status === 429) e.message = 'Gemini 무료 사용량을 초과했습니다. 잠시 후 다시 시도해 주세요.';
     }
-    if (res.status === 429) throw new Error('Gemini 무료 사용량을 초과했습니다. 잠시 후 다시 시도해 주세요.');
-    throw new Error(`Gemini 요청 실패 (${detail})`);
+    throw e;
   }
 
   const data = await res.json();
@@ -72,15 +100,77 @@ export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
   const parts = cand && cand.content && cand.content.parts;
   const raw = parts ? parts.map((p) => p.text || '').join('') : '';
   if (!raw) throw new Error('Gemini가 결과를 반환하지 않았습니다. 사진이 흐리거나 해상도가 낮을 수 있습니다.');
+  return raw;
+}
 
-  const jsonText = extractJson(raw);
-  let parsed;
+// 지금 이 키로 쓸 수 있는 flash 계열 모델 이름 (최신 버전 우선)
+export async function listFlashModels(apiKey) {
   try {
-    parsed = JSON.parse(jsonText);
+    const res = await fetch(`${API_ROOT}/models?pageSize=200&key=${encodeURIComponent(apiKey)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const names = (data.models || [])
+      .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+      .map((m) => cleanModel(m.name))
+      .filter((n) => /flash/i.test(n) && !/tts|image|audio|embedding|aqa|live|native/i.test(n));
+    return names.sort((a, b) => versionScore(b) - versionScore(a));
+  } catch (e) {
+    return [];
+  }
+}
+
+function versionScore(name) {
+  const nums = (String(name).match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  let s = 0;
+  for (let i = 0; i < nums.length && i < 2; i++) s += nums[i] * (i === 0 ? 100 : 1);
+  return s;
+}
+
+export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
+  const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl || '');
+  if (!m) throw new Error('이미지를 읽을 수 없습니다. JPG/PNG 파일을 올려주세요.');
+  const mimeType = m[1];
+  const base64 = m[2];
+  const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
+
+  const tried = new Set();
+  const queue = [];
+  const push = (id) => {
+    const c = cleanModel(id);
+    if (c && !tried.has(c)) { tried.add(c); queue.push(c); }
+  };
+  push(model || DEFAULT_MODEL);   // 사용자가 고른 모델
+  push(DEFAULT_MODEL);            // 신규 키 기준 최신 기본값
+  let listed = false;
+  let lastErr = null;
+
+  while (queue.length) {
+    const current = queue.shift();
+    try {
+      const raw = await callModel({ apiKey, model: current, text, mimeType, base64 });
+      return { data: parseResult(raw), model: current };
+    } catch (e) {
+      lastErr = e;
+      if (!e || !e.modelUnavailable) throw e;
+      // 아직 목록을 못 봤다면, 이 키에서 실제로 쓸 수 있는 모델을 조회해 대기열에 넣는다.
+      if (!listed) {
+        listed = true;
+        const avail = await listFlashModels(apiKey);
+        avail.forEach(push);
+      }
+    }
+  }
+
+  throw lastErr || new Error('Gemini 모델을 찾지 못했습니다. 설정에서 모델을 다시 골라 주세요.');
+}
+
+function parseResult(raw) {
+  const jsonText = extractJson(raw);
+  try {
+    return JSON.parse(jsonText);
   } catch (e) {
     throw new Error('AI 응답을 해석하지 못했습니다. 다시 시도해 주세요.');
   }
-  return parsed;
 }
 
 function extractJson(text) {

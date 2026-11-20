@@ -9,7 +9,7 @@ import {
 import { buildScene } from './builders.js';
 import { buildFusionScript, downloadText, timestampName } from './fusion.js';
 import { buildOBJ } from './obj.js';
-import { analyzeImage } from './ai.js';
+import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -21,6 +21,7 @@ window.addEventListener('unhandledrejection', (e) => {
 const STORAGE_KEY = 'smilePiping3D.v1';
 const KEY_API = 'smilePiping3D.geminiKey';
 const KEY_MODEL = 'smilePiping3D.geminiModel';
+const KEY_MODEL_MIGRATED = 'smilePiping3D.geminiModelMigrated';
 
 const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
@@ -936,7 +937,21 @@ class App {
 
   // ── AI ─────────────────────────────────────────────────
   apiKey() { return localStorage.getItem(KEY_API) || ''; }
-  model() { return localStorage.getItem(KEY_MODEL) || 'gemini-2.5-flash'; }
+
+  // 예전 기본값(gemini-2.5-flash 등)이 남아 있으면 신규 키에서 거절되므로 한 번만 새 기본값으로 옮긴다.
+  // 옮긴 뒤 사용자가 직접 구형 모델을 고르면 그 선택은 존중한다.
+  model() {
+    let saved = (localStorage.getItem(KEY_MODEL) || '').trim().replace(/^models\//, '');
+    const migrated = localStorage.getItem(KEY_MODEL_MIGRATED) === '1';
+    if (!migrated) {
+      if (saved && LEGACY_MODELS.includes(saved)) {
+        saved = DEFAULT_MODEL;
+        try { localStorage.setItem(KEY_MODEL, saved); } catch (e) { /* 저장 불가 시 메모리 값 사용 */ }
+      }
+      try { localStorage.setItem(KEY_MODEL_MIGRATED, '1'); } catch (e) { /* ignore */ }
+    }
+    return saved || DEFAULT_MODEL;
+  }
 
   async startAI() {
     const key = this.apiKey();
@@ -959,7 +974,13 @@ class App {
       actions: [],
     });
     try {
-      const res = await analyzeImage({ apiKey: this.apiKey(), model: this.model(), dataUrl });
+      const asked = this.model();
+      const { data: res, model: usedModel } = await analyzeImage({ apiKey: this.apiKey(), model: asked, dataUrl });
+      if (usedModel && usedModel !== asked) {
+        // 구형 모델이 막혀 다른 모델로 성공한 경우 — 다음에도 같은 문제를 겪지 않게 저장해 둔다.
+        try { localStorage.setItem(KEY_MODEL, usedModel); localStorage.setItem(KEY_MODEL_MIGRATED, '1'); } catch (e) { /* ignore */ }
+        this.toast(`${asked} 모델을 쓸 수 없어 ${usedModel}(으)로 자동 전환했습니다.`);
+      }
       const eq = Array.isArray(res.equipment) ? res.equipment : [];
       const pp = Array.isArray(res.pipes) ? res.pipes : [];
       if (!eq.length && !pp.length) throw new Error('이미지에서 장비·배관을 찾지 못했습니다. 다른 사진으로 시도해 보세요.');
@@ -1267,9 +1288,14 @@ class App {
         </label>
         <label class="field">모델
           <select id="modelInput">
-            ${['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'].map((m) => `<option${m === model ? ' selected' : ''}>${m}</option>`).join('')}
+            ${(() => {
+              const list = MODEL_OPTIONS.slice();
+              if (model && !list.some((o) => o.id === model)) list.unshift({ id: model, label: `${model} (저장된 모델)` });
+              return list.map((o) => `<option value="${esc(o.id)}"${o.id === model ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+            })()}
           </select>
         </label>
+        <p class="hint">모델을 못 쓰면 최신 flash 모델로 자동 전환해 시도합니다(구형 모델은 신규 키에서 거절됨).</p>
         <p class="hint">키는 이 브라우저(localStorage)에만 저장되며 서버로 보내지 않습니다.
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio에서 무료 발급</a></p>
         <p class="hint">키가 없어도 장비·배관 수동 편집, 도면 바닥 깔기, 샘플 씬, Fusion 360·OBJ 내보내기는 모두 동작합니다.</p>`,
@@ -1281,6 +1307,7 @@ class App {
             const m = $('#modelInput').value;
             if (v) localStorage.setItem(KEY_API, v); else localStorage.removeItem(KEY_API);
             localStorage.setItem(KEY_MODEL, m);
+            localStorage.setItem(KEY_MODEL_MIGRATED, '1');
             this.toast(v ? 'API 키를 저장했습니다.' : 'API 키를 지웠습니다.');
             this.closeModal();
           },
