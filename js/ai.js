@@ -96,14 +96,17 @@ function modelUnavailable(status, detail) {
   return /no longer available|not found|not supported|unsupported|does not exist|decommission|deprecated|discontinued|is not available|no access/i.test(s);
 }
 
-// 서버가 잠깐 혼잡하거나 과부하된 경우인지 (모델 자체는 살아 있으므로 다른 모델로 재시도한다)
-// 무료 한도 초과(429)와 API 키 오류는 재시도해도 결과가 같으므로 여기서 제외한다.
+// 다른 모델로 바꿔 재시도할 가치가 있는 실패인지.
+// - 무료 한도 초과(429)는 모델마다 따로 잡히므로, 다른 후보 모델이나 이 키로 쓸 수 있는
+//   다른 Flash/텍스트 모델에서는 성공할 수 있다 → 재시도한다.
+// - API 키 자체 오류(400/403 "API key not valid")는 어떤 모델을 써도 결과가 같으므로 재시도하지 않는다.
 function modelRetryable(status, detail) {
-  if (status === 429) return false;
   const s = String(detail || '');
   if (/api key/i.test(s)) return false;
+  if (status === 400 || status === 403) return false;
+  if (status === 429) return true;
   if (status === 500 || status === 502 || status === 503 || status === 504) return true;
-  return /high demand|overloaded|temporarily unavailable|try again/i.test(s);
+  return /high demand|overloaded|temporarily unavailable|try again|resource_exhausted|quota|rate limit/i.test(s);
 }
 
 async function callModel({ apiKey, model, text, mimeType, base64 }) {
@@ -137,13 +140,14 @@ async function callModel({ apiKey, model, text, mimeType, base64 }) {
     e.modelUnavailable = modelUnavailable(res.status, detail) || (res.status === 400 && /model/i.test(detail) && /not|invalid/i.test(detail) && !/api key/i.test(detail));
     e.modelRetryable = !e.modelUnavailable && modelRetryable(res.status, detail);
     if (e.modelRetryable) {
-      e.message = `Gemini 서버가 지금 혼잡합니다. (${detail})`;
+      e.message = res.status === 429
+        ? `이 모델의 Gemini 무료 사용량이 끝났습니다. 다른 모델로 시도합니다. (${detail})`
+        : `Gemini 서버가 지금 혼잡합니다. (${detail})`;
     }
     if (!e.modelUnavailable) {
       if (res.status === 400 || res.status === 403) {
         if (/api key/i.test(detail)) e.message = `API 키가 올바르지 않습니다. (${detail})`;
       }
-      if (res.status === 429) e.message = 'Gemini 무료 사용량을 초과했습니다. 잠시 후 다시 시도해 주세요.';
     }
     throw e;
   }
@@ -204,7 +208,10 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
   let listed = false;
   let lastErr = null;
   let attempts = 0;
-  // 서버가 계속 혼잡할 때 모델 수십 개를 끝까지 돌며 오래 기다리지 않도록 횟수를 제한한다.
+  let sawQuota = false;   // 429(모델별 무료 한도 초과)를 한 번이라도 받았는지
+  let sawOther = false;   // 429가 아닌 다른 실패도 있었는지
+  // 서버가 계속 혼잡하거나 모든 모델이 한도에 걸릴 때 모델 수십 개를 끝까지 돌며
+  // 오래 기다리지 않도록 횟수를 제한한다.
   const MAX_ATTEMPTS = 8;
 
   while (queue.length && attempts < MAX_ATTEMPTS) {
@@ -215,18 +222,32 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
       return { raw, model: current };
     } catch (e) {
       lastErr = e;
+      // 키 오류·결과 잘림·빈 응답 같은 재시도 무의미한 오류는 바로 알린다.
       if (!e || !(e.modelUnavailable || e.modelRetryable)) throw e;
+      if (e.status === 429) sawQuota = true;
+      else if (e.modelRetryable) sawOther = true;
       // 아직 목록을 못 봤다면, 이 키에서 실제로 쓸 수 있는 모델을 조회해 대기열에 넣는다.
+      // 무료 한도(429)도 모델마다 따로 잡히므로, 목록을 받아 다른 Flash/텍스트 모델로 계속 시도한다.
       if (!listed) {
         listed = true;
         const avail = await listFlashModels(apiKey);
         avail.forEach(push);
       }
       // 과부하는 짧게 지나가는 경우가 많아 다음 모델로 넘어가기 전에 잠깐 쉰다.
-      if (e.modelRetryable && queue.length) await new Promise((r) => setTimeout(r, 600));
+      // 무료 한도 초과는 서버 혼잡이 아니라 그 모델의 할당량 문제라 기다릴 필요 없이 바로 다음 모델로 간다.
+      if (e.modelRetryable && queue.length && e.status !== 429) {
+        await new Promise((r) => setTimeout(r, 600));
+      }
     }
   }
 
+  // 모든 후보 모델이 무료 한도에 걸렸다면 그 사실을 분명히 안내한다.
+  if (lastErr && lastErr.status === 429) {
+    throw new Error('Gemini 무료 사용량을 초과했습니다. 잠시 후 다시 시도하거나 유료 결제를 연결해 주세요.');
+  }
+  if (sawQuota && !sawOther) {
+    throw new Error('Gemini 무료 사용량을 초과했습니다. 잠시 후 다시 시도하거나 유료 결제를 연결해 주세요.');
+  }
   if (lastErr && lastErr.modelRetryable) {
     throw new Error('Gemini 서버가 혼잡해 잠시 분석하지 못했습니다. 1~2분 뒤 다시 시도해 주세요.');
   }
