@@ -71,6 +71,10 @@ class App {
     this.cmdSign = 1;
     this.cmdMarked = false;
     this.padOpen = false;
+    // 휴대폰 뒤로가기로 페이지가 나가지 않고 열린 창만 닫히게 하는 상태
+    this.overlayEntry = false;
+    this.suppressPop = 0;
+    this.inPopState = false;
   }
 
   // ── 초기화 ───────────────────────────────────────────────
@@ -97,6 +101,7 @@ class App {
       this.ro.observe($('#viewport'));
     }
     window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('popstate', () => this.onPopState());
     // 화면이 꺼지거나 다른 앱으로 갔다 오면 wake lock이 풀리므로, 분석 중이면 다시 잡는다.
     document.addEventListener('visibilitychange', () => {
       if (this.aiRunning && document.visibilityState === 'visible') this.acquireWakeLock();
@@ -352,9 +357,7 @@ class App {
     // 선택한 부속·배관의 출구로 주황색 커서를 옆기고 그 방향으로 다음 명령을 이어 쓴다.
     const spec = this.getSelectedSpec();
     if (spec) this.aimAt(spec);
-    if (window.innerWidth <= 860) {
-      $('#drawer').classList.remove('open');
-    }
+    if (window.innerWidth <= 860) this.setDrawerOpen(false);
   }
 
   clearSelection() {
@@ -496,8 +499,9 @@ class App {
   renderProps() {
     const panel = $('#props');
     const spec = this.getSelectedSpec();
-    if (!spec) { panel.hidden = true; return; }
+    if (!spec) { panel.hidden = true; this.releaseOverlayEntry(); return; }
     panel.hidden = false;
+    this.syncOverlayEntry();
     const body = $('#propBody');
 
     if (spec.kind === 'equipment' || this.state.equipment.includes(spec)) {
@@ -695,7 +699,7 @@ class App {
     } else {
       this.clearSelection();
       $('#draftHeight').value = String(this.draftHeight);
-      if (window.innerWidth <= 860) $('#drawer').classList.remove('open');
+      if (window.innerWidth <= 860) this.setDrawerOpen(false);
       this.toast('배관 그리기: 바닥을 터치해 점을 찍으세요.');
     }
   }
@@ -1006,7 +1010,10 @@ class App {
     if (btn) btn.classList.toggle('active', this.padOpen);
     if (this.padOpen) {
       this.updatePadInfo();
-      if (window.innerWidth <= 860) $('#drawer').classList.remove('open');
+      if (window.innerWidth <= 860) this.setDrawerOpen(false);
+      this.syncOverlayEntry();
+    } else {
+      this.releaseOverlayEntry();
     }
   }
 
@@ -1821,7 +1828,7 @@ class App {
     $('#btnExport').addEventListener('click', () => {
       $$('#tabs .tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === 'file'));
       $$('.tabpane').forEach((p) => p.classList.toggle('active', p.dataset.pane === 'file'));
-      $('#drawer').classList.add('open');
+      this.setDrawerOpen(true);
     });
 
     // AI
@@ -1862,9 +1869,57 @@ class App {
     });
 
     // 모바일 도구함
-    $('#btnDrawer').addEventListener('click', () => $('#drawer').classList.toggle('open'));
+    $('#btnDrawer').addEventListener('click', () => this.setDrawerOpen(!$('#drawer').classList.contains('open')));
 
     this.syncPlanInputs();
+  }
+
+  // ── 휴대폰 뒤로가기: 페이지는 그대로, 열린 창만 닫기 ─────
+  anyOverlayOpen() {
+    const modal = $('#modalRoot');
+    const props = $('#props');
+    const drawer = $('#drawer');
+    return !!((modal && !modal.hidden) || (props && !props.hidden) || this.padOpen
+      || (drawer && drawer.classList.contains('open')));
+  }
+
+  // 창이 열려 있는 동안 히스토리 항목 하나만 깔아 둔다 (중복 push 없음).
+  syncOverlayEntry() {
+    if (!this.anyOverlayOpen() || this.overlayEntry) return;
+    try {
+      history.pushState({ smileOverlay: 1 }, '');
+      this.overlayEntry = true;
+    } catch (e) { /* pushState를 못 쓰는 환경이면 그냥 동작 */ }
+  }
+
+  // 모든 창을 닫았으면 빌려온 히스토리 항목을 거둔다.
+  releaseOverlayEntry() {
+    if (!this.overlayEntry || this.anyOverlayOpen()) return;
+    this.overlayEntry = false;
+    this.suppressPop += 1;
+    try { history.back(); } catch (e) { this.suppressPop -= 1; }
+  }
+
+  onPopState() {
+    // 우리가 방금 건 history.back()이 만든 이벤트는 무시
+    if (this.suppressPop > 0) { this.suppressPop -= 1; return; }
+    this.overlayEntry = false; // 뒤로가기가 우리 항목을 소비했다
+    if (!$('#modalRoot').hidden) this.closeModal();
+    else if (!$('#props').hidden) this.clearSelection();
+    else if (this.padOpen) this.setPadOpen(false);
+    else if ($('#drawer').classList.contains('open')) this.setDrawerOpen(false);
+    // 다른 창이 아직 열려 있으면 항목을 다시 깔아, 다음 뒤로가기도 페이지를 지키게 한다.
+    this.syncOverlayEntry();
+    // AI 분석 중이면 창만 접히고 분석은 계속된다.
+    if (this.aiRunning) this.showAiProgress();
+  }
+
+  setDrawerOpen(on) {
+    const el = $('#drawer');
+    if (!el) return;
+    el.classList.toggle('open', !!on);
+    if (on) this.syncOverlayEntry();
+    else this.releaseOverlayEntry();
   }
 
   // ── 모달 ────────────────────────────────────────────────
@@ -1884,11 +1939,13 @@ class App {
       host.appendChild(b);
     });
     $('#modalRoot').hidden = false;
+    this.syncOverlayEntry();
   }
 
   closeModal() {
     $('#modalRoot').hidden = true;
     $('#modalBody').innerHTML = '';
+    this.releaseOverlayEntry();
   }
 
   openSettings(notice) {
