@@ -27,12 +27,7 @@ const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const fmt = (n) => String(Math.round(Number(n) * 100) / 100);
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-const VIEWS = {
-  iso: { pos: [12, 9.5, 13], target: [0, 1.2, -1.6] },
-  top: { pos: [0, 17, -1.4], target: [0, 0, -1.4] },
-  front: { pos: [0, 3.4, 15], target: [0, 1.4, -1.6] },
-  reset: { pos: [12, 9.5, 13], target: [0, 1.2, -1.6] },
-};
+const VIEW_NAMES = ['iso', 'top', 'front', 'reset'];
 
 class App {
   constructor() {
@@ -63,7 +58,7 @@ class App {
     this.loop();
 
     const v = new URLSearchParams(location.search).get('view');
-    if (v && VIEWS[v]) this.setView(v, true);
+    if (v && VIEW_NAMES.includes(v)) this.setView(v, true);
     else this.setView('iso', true);
 
     window.addEventListener('resize', () => this.resize());
@@ -97,7 +92,7 @@ class App {
   setupScene() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0d1014);
-    this.scene.fog = new THREE.Fog(0x0d1014, 46, 110);
+    this.scene.fog = new THREE.Fog(0x0d1014, 30, 62);
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.1, 400);
     this.camera.position.set(12, 9.5, 13);
@@ -130,11 +125,13 @@ class App {
     const key = new THREE.DirectionalLight(0xffffff, 2.2);
     key.position.set(13, 19, 10);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
+    const shadowSize = Math.min(4096, window.innerWidth > 900 ? 4096 : 2048);
+    key.shadow.mapSize.set(shadowSize, shadowSize);
     const sc = key.shadow.camera;
-    sc.left = -18; sc.right = 18; sc.top = 18; sc.bottom = -18; sc.near = 1; sc.far = 70;
-    key.shadow.bias = -0.0004;
-    key.shadow.normalBias = 0.02;
+    sc.left = -62; sc.right = 62; sc.top = 62; sc.bottom = -62; sc.near = 1; sc.far = 150;
+    sc.updateProjectionMatrix();
+    key.shadow.bias = -0.0006;
+    key.shadow.normalBias = 0.06;
     this.scene.add(key);
 
     const fill = new THREE.DirectionalLight(0x8fb6ff, 0.6);
@@ -147,8 +144,8 @@ class App {
 
     // 바닥
     this.ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(200, 200),
-      new THREE.MeshStandardMaterial({ color: 0x1a2027, roughness: 0.97, metalness: 0.02 }),
+      new THREE.PlaneGeometry(150, 150),
+      new THREE.MeshStandardMaterial({ color: 0x1b2229, roughness: 0.96, metalness: 0.02 }),
     );
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.y = -0.012;
@@ -156,16 +153,16 @@ class App {
     this.scene.add(this.ground);
 
     // 1m 그리드
-    const grid = new THREE.GridHelper(60, 60, 0x5d6f80, 0x2c3742);
+    const grid = new THREE.GridHelper(120, 120, 0x5d6f80, 0x2e3944);
     grid.position.y = 0.001;
     grid.material.transparent = true;
-    grid.material.opacity = 0.55;
+    grid.material.opacity = 0.5;
     this.scene.add(grid);
 
-    const grid5 = new THREE.GridHelper(60, 12, 0x7f93a6, 0x3b4a59);
+    const grid5 = new THREE.GridHelper(120, 24, 0x7f93a6, 0x3b4a59);
     grid5.position.y = 0.0015;
     grid5.material.transparent = true;
-    grid5.material.opacity = 0.35;
+    grid5.material.opacity = 0.3;
     this.scene.add(grid5);
 
     // 축
@@ -180,12 +177,6 @@ class App {
     const lx = this.makeLabel('X', '#ff8f8a'); lx.position.set(3.7, 0.25, 0); this.scene.add(lx);
     const ly = this.makeLabel('Y', '#8ff0a4'); ly.position.set(0, 2.95, 0); this.scene.add(ly);
     const lz = this.makeLabel('Z', '#8fb6ff'); lz.position.set(0, 0.25, 3.7); this.scene.add(lz);
-    // 1m 눈금 표시
-    for (let i = 1; i <= 5; i += 1) {
-      const t = this.makeText(String(i) + 'm', '#7d8b9a', 0.55);
-      t.position.set(i, 0.1, -0.38);
-      this.scene.add(t);
-    }
   }
 
   makeLabel(text, color) {
@@ -575,23 +566,69 @@ class App {
     this.toast(`배관 생성 · ${fmt(pipeLength(spec.points))}m`);
   }
 
-  // ── 카메라 ──────────────────────────────────────────────
+  // ── 카메라 ─────────────────────────────────────────────
+  frameFor(name) {
+    const box = new THREE.Box3();
+    if (this.root) {
+      try { box.setFromObject(this.root); } catch (e) { /* ignore */ }
+    }
+    if (box.isEmpty()) box.set(new THREE.Vector3(-7, 0, -6), new THREE.Vector3(7, 4, 4));
+    const center = box.getCenter(new THREE.Vector3());
+    const dir = name === 'top'
+      ? new THREE.Vector3(0, 1, 0.0016).normalize()
+      : name === 'front'
+        ? new THREE.Vector3(0, 0.18, 1).normalize()
+        : new THREE.Vector3(0.92, 0.62, 0.95).normalize();
+    const target = name === 'top'
+      ? new THREE.Vector3(center.x, 0, center.z)
+      : new THREE.Vector3(center.x, Math.max(0.6, center.y * 0.7), center.z);
+
+    const corners = [];
+    for (let i = 0; i < 8; i += 1) {
+      corners.push(new THREE.Vector3(
+        (i & 1) ? box.max.x : box.min.x,
+        (i & 2) ? box.max.y : box.min.y,
+        (i & 4) ? box.max.z : box.min.z,
+      ));
+    }
+
+    const vFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * Math.max(0.5, this.camera.aspect));
+    const fov = Math.min(vFov, hFov);
+    const radius = Math.max(2, box.getSize(new THREE.Vector3()).length() / 2);
+    let dist = radius / Math.sin(fov / 2);
+
+    // 화면을 꽉 채우도록 거리 반복 보정
+    const probe = new THREE.PerspectiveCamera(this.camera.fov, this.camera.aspect, 0.1, 3000);
+    for (let i = 0; i < 9; i += 1) {
+      probe.position.copy(target).addScaledVector(dir, dist);
+      probe.lookAt(target);
+      probe.updateMatrixWorld(true);
+      let m = 0.0001;
+      corners.forEach((c) => {
+        const p = c.clone().project(probe);
+        m = Math.max(m, Math.abs(p.x), Math.abs(p.y));
+      });
+      if (Math.abs(m - 0.85) < 0.02) break;
+      dist = Math.max(2, dist * (m / 0.85));
+    }
+    return { pos: target.clone().addScaledVector(dir, dist), target };
+  }
+
   setView(name, immediate) {
-    const v = VIEWS[name] || VIEWS.iso;
     const activeName = name === 'reset' ? 'iso' : name;
     $$('.vbtn').forEach((b) => b.classList.toggle('active', b.dataset.view === activeName));
-    const pos = new THREE.Vector3(...v.pos);
-    const target = new THREE.Vector3(...v.target);
+    const f = this.frameFor(activeName);
     if (immediate) {
-      this.camera.position.copy(pos);
-      this.controls.target.copy(target);
+      this.camera.position.copy(f.pos);
+      this.controls.target.copy(f.target);
       this.controls.update();
       return;
     }
     this.camAnim = {
-      p0: this.camera.position.clone(), p1: pos,
-      t0: this.controls.target.clone(), t1: target,
-      start: performance.now(), dur: 520,
+      p0: this.camera.position.clone(), p1: f.pos,
+      t0: this.controls.target.clone(), t1: f.target,
+      start: performance.now(), dur: 560,
     };
   }
 

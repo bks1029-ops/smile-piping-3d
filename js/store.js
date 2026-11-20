@@ -10,7 +10,7 @@ export const BORES = {
 };
 
 export const MATERIALS = {
-  carbon:    { label: '흑관·카본스틸', color: '#3b3f44', roughness: 0.62, metalness: 0.65, jacket: 0.0 },
+  carbon:    { label: '흑관·카본스틸', color: '#4b5057', roughness: 0.58, metalness: 0.6, jacket: 0.0 },
   sus:       { label: 'SUS 스테인리스', color: '#c8ced4', roughness: 0.32, metalness: 0.88, jacket: 0.0 },
   insulated: { label: '보온배관', color: '#c9b48d', roughness: 0.92, metalness: 0.05, jacket: 0.035 },
 };
