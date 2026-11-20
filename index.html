@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=11">
+<link rel="stylesheet" href="./css/style.css?v=12">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -80,7 +80,7 @@
 
       <!-- 장비 -->
       <section class="tabpane active" data-pane="equip">
-        <p class="hint">버튼을 누르면 현재 화면 가운데 바닥에 장비가 추가됩니다.</p>
+        <p class="hint">카테고리별 표준 부속을 누르면 현재 화면 가운데에 추가됩니다. 밸브·피팅·계기는 배관 위에 달리므로 속성 패널에서 높이(y)를 배관 중심에 맞추세요.</p>
         <div class="equip-grid" id="equipGrid"></div>
         <div class="list-head"><span>배치된 장비</span><span class="count" id="eqCount">0</span></div>
         <ul class="pick-list" id="eqList"></ul>
@@ -185,6 +185,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=11"></script>
+<script type="module" src="./js/main.js?v=12"></script>
 </body>
 </html>

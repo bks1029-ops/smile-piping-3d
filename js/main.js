@@ -3,13 +3,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
-  BORES, MATERIALS, EQUIP_TYPES, makeEquipment, makePipe,
+  BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength,
-} from './store.js?v=11';
-import { buildScene } from './builders.js?v=11';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=11';
-import { buildOBJ } from './obj.js?v=11';
-import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=11';
+} from './store.js?v=12';
+import { buildScene } from './builders.js?v=12';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=12';
+import { buildOBJ } from './obj.js?v=12';
+import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=12';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -1013,13 +1013,28 @@ class App {
   }
 
   applyAIResult(result, mode) {
+    // Gemini는 자유 텍스트 타입을 돌려주기도 해서, 긴 이름부터 구체적으로 매칭한다.
     const typeMap = (t) => {
       const s = String(t || '').toLowerCase();
-      if (/hx|heat|exchang|열교환/.test(s)) return 'hx';
+      if (/heat|exchang|열교환/.test(s)) return 'hx';
+      if (/vertical|inline|입형|인라인/.test(s)) return 'vpump';
       if (/pump|펌프/.test(s)) return 'pump';
-      if (/tank|drum|vessel|탱크|드럼/.test(s)) return 'tank';
+      if (/storage|저장탱크|원통|silo|vessel/.test(s)) return 'stank';
+      if (/rect|수조|저수조|사각/.test(s)) return 'rtank';
+      if (/tank|drum|탱크|드럼/.test(s)) return 'tank';
       if (/panel|mcc|control|전기|제어/.test(s)) return 'panel';
-      if (/valve|flange|gate|밸브|플랜지/.test(s)) return 'valve';
+      if (/butterfly|버터플라이|bfly/.test(s)) return 'bfly';
+      if (/strainer|스트레이너|y[-_ ]?(type|valve|body)|y형|경사/.test(s)) return 'yvalve';
+      if (/ball|볼밸브/.test(s)) return 'ball';
+      if (/check|체크/.test(s)) return 'check';
+      if (/bellows|expansion|flex|신축|벨로우즈/.test(s)) return 'bellows';
+      if (/elbow|엘보|90/.test(s)) return 'elbow';
+      if (/\btee\b|분기|티/.test(s)) return 'tee';
+      if (/reducer|레듀샤|이경|축소/.test(s)) return 'reducer';
+      if (/flange|플랜지/.test(s)) return 'flange';
+      if (/support|지지|서포|hanger|saddle/.test(s)) return 'support';
+      if (/gauge|압력계|온도계|계기|pg|tg/.test(s)) return 'gauge';
+      if (/valve|밸브/.test(s)) return 'valve';
       return 'tank';
     };
     const eq = (result.equipment || []).map((e) => makeEquipment(typeMap(e.type), {
@@ -1054,17 +1069,30 @@ class App {
       $$('.tabpane').forEach((p) => p.classList.toggle('active', p.dataset.pane === t.dataset.tab));
     }));
 
-    // 장비 버튼
+    // 장비 버튼 (카테고리별)
     const grid = $('#equipGrid');
-    const icons = { hx: '▭', pump: '◉', tank: '▮', panel: '▤', valve: '✳' };
-    Object.keys(EQUIP_TYPES).forEach((type) => {
-      const t = EQUIP_TYPES[type];
-      const b = document.createElement('button');
-      b.className = 'equip-btn';
-      b.innerHTML = `<span class="ico">${icons[type] || '■'}</span><span class="lbl">${t.label}</span>
-        <span class="sub">${t.defaults.w}×${t.defaults.h}×${t.defaults.d} m</span>`;
-      b.addEventListener('click', () => this.addEquipment(type));
-      grid.appendChild(b);
+    const icons = {
+      hx: '▭', pump: '◉', vpump: '⊕', tank: '▮', stank: '▯', rtank: '▣', panel: '▤',
+      valve: '✳', bfly: '⊗', yvalve: '⊘', ball: '⊙', check: '◑',
+      bellows: '≡', elbow: '⌐', tee: '┳', reducer: '◁', flange: '◎', support: '⊥', gauge: '◐',
+    };
+    EQUIP_CATEGORIES.forEach((cat) => {
+      const types = typesByCategory(cat.id);
+      if (!types.length) return;
+      const head = document.createElement('div');
+      head.className = 'equip-cat';
+      head.textContent = cat.label;
+      grid.appendChild(head);
+      types.forEach((type) => {
+        const t = EQUIP_TYPES[type];
+        const b = document.createElement('button');
+        b.className = 'equip-btn';
+        b.title = `${t.label} · ${t.defaults.w}×${t.defaults.h}×${t.defaults.d} m`;
+        b.innerHTML = `<span class="ico">${icons[type] || '■'}</span><span class="lbl">${t.label}</span>
+          <span class="sub">${t.defaults.w}×${t.defaults.h}×${t.defaults.d} m</span>`;
+        b.addEventListener('click', () => this.addEquipment(type));
+        grid.appendChild(b);
+      });
     });
 
     // 배관 옵션

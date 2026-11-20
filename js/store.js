@@ -15,28 +15,105 @@ export const MATERIALS = {
   insulated: { label: '보온배관', color: '#c9b48d', roughness: 0.92, metalness: 0.05, jacket: 0.035 },
 };
 
+// 부속 카테고리 — [장비] 탭에서 이 순서대로 묶어 보여준다.
+export const EQUIP_CATEGORIES = [
+  { id: 'equip', label: '장비' },
+  { id: 'valve', label: '밸브' },
+  { id: 'fitting', label: '피팅 · 서포트' },
+  { id: 'instr', label: '계기' },
+];
+
+// 표준 부속 라이브러리 (2026-11-20 현장 사진 기준)
 export const EQUIP_TYPES = {
+  // ── 장비 ──
   hx: {
-    label: '열교환기', short: 'HX',
+    cat: 'equip', label: '열교환기', short: 'HX',
     defaults: { w: 3.0, h: 0.75, d: 0.75 }, color: '#b9bfc6',
   },
   pump: {
-    label: '펌프', short: 'PUMP',
+    cat: 'equip', label: '원심펌프', short: 'PUMP',
     defaults: { w: 1.15, h: 0.85, d: 0.6 }, color: '#1f4f9b',
   },
+  vpump: {
+    cat: 'equip', label: '입형 인라인 펌프', short: 'VP',
+    defaults: { w: 0.42, h: 0.85, d: 0.42 }, color: '#1f4f9b',
+  },
   tank: {
-    label: '탱크/드럼', short: 'TK',
+    cat: 'equip', label: '탱크/드럼', short: 'TK',
     defaults: { w: 0.6, h: 0.9, d: 0.6 }, color: '#1c4a8a',
   },
+  stank: {
+    cat: 'equip', label: '대형 원통 저장탱크', short: 'ST',
+    defaults: { w: 2.0, h: 3.0, d: 2.0 }, color: '#c3cbd2',
+  },
+  rtank: {
+    cat: 'equip', label: '사각 탱크 (수조)', short: 'RT',
+    defaults: { w: 2.4, h: 1.8, d: 1.8 }, color: '#8f99a3',
+  },
   panel: {
-    label: '제어반', short: 'MCC',
+    cat: 'equip', label: '제어반', short: 'MCC',
     defaults: { w: 1.2, h: 2.0, d: 0.7 }, color: '#b6bdc4',
   },
+
+  // ── 밸브 ──
   valve: {
-    label: '게이트밸브·플랜지', short: 'GV',
-    defaults: { w: 0.34, h: 0.55, d: 0.3 }, color: '#cfd4d8',
+    cat: 'valve', label: '게이트밸브', short: 'GV',
+    defaults: { w: 0.34, h: 0.58, d: 0.3 }, color: '#cfd4d8',
+  },
+  bfly: {
+    cat: 'valve', label: '기어 버터플라이 밸브', short: 'BF',
+    defaults: { w: 0.34, h: 0.46, d: 0.32 }, color: '#1f5fd0',
+  },
+  yvalve: {
+    cat: 'valve', label: '경사형 체크·스트레이너', short: 'YV',
+    defaults: { w: 0.36, h: 0.5, d: 0.34 }, color: '#c0392b',
+  },
+  ball: {
+    cat: 'valve', label: '볼밸브', short: 'BV',
+    defaults: { w: 0.26, h: 0.34, d: 0.24 }, color: '#d8dde2',
+  },
+  check: {
+    cat: 'valve', label: '체크밸브 (웨이퍼)', short: 'CV',
+    defaults: { w: 0.24, h: 0.26, d: 0.22 }, color: '#b9bfc6',
+  },
+
+  // ── 피팅 · 서포트 ──
+  bellows: {
+    cat: 'fitting', label: '벨로우즈 신축관', short: 'EJ',
+    defaults: { w: 0.38, h: 0.34, d: 0.34 }, color: '#cfd4d8',
+  },
+  elbow: {
+    cat: 'fitting', label: '90° 엘보', short: 'EL',
+    defaults: { w: 0.3, h: 0.3, d: 0.22 }, color: '#c9d0d6',
+  },
+  tee: {
+    cat: 'fitting', label: '티 분기관', short: 'TE',
+    defaults: { w: 0.34, h: 0.26, d: 0.22 }, color: '#c9d0d6',
+  },
+  reducer: {
+    cat: 'fitting', label: '레듀샤 (이경관)', short: 'RD',
+    defaults: { w: 0.32, h: 0.22, d: 0.22 }, color: '#c9d0d6',
+  },
+  flange: {
+    cat: 'fitting', label: '플랜지', short: 'FL',
+    defaults: { w: 0.14, h: 0.26, d: 0.26 }, color: '#9aa3ab',
+  },
+  support: {
+    cat: 'fitting', label: '파이프 서포트', short: 'SP',
+    defaults: { w: 0.5, h: 0.85, d: 0.4 }, color: '#7d8790',
+  },
+
+  // ── 계기 ──
+  gauge: {
+    cat: 'instr', label: '압력계 · 온도계', short: 'PG',
+    defaults: { w: 0.2, h: 0.34, d: 0.16 }, color: '#e2e8ee',
   },
 };
+
+// 카테고리별 타입 목록
+export function typesByCategory(cat) {
+  return Object.keys(EQUIP_TYPES).filter((k) => EQUIP_TYPES[k].cat === cat);
+}
 
 let seq = 0;
 export function uid(prefix) {
@@ -149,6 +226,51 @@ export function sampleScene() {
       [-5.7, 0.35, 0.4], [-5.7, 0.95, 0.4], [-5.7, 0.95, 1.6],
     ]),
   ];
+
+  // ── 표준 부속 진열 라인 (2026-11-20 추가) ──────────────────────────────
+  // 헤더 배관 1줄에 밸브·피팅을 인라인으로 배치하고, 아래에 서포트와 입형 펌프를 둔다.
+  const HDR_Y = 0.6;
+  const HDR_Z = 5.2;
+  s.pipes.push(pipe('PL-201 부속 진열 헤더', '80A', 'sus', [
+    [-6.2, HDR_Y, HDR_Z], [5.4, HDR_Y, HDR_Z], [5.4, 2.1, HDR_Z],
+  ]));
+
+  const inline = (type, name, x) =>
+    makeEquipment(type, { name, x, y: HDR_Y, z: HDR_Z });
+
+  s.equipment.push(
+    inline('bfly', 'BF-101 기어 버터플라이', -4.4),
+    inline('yvalve', 'YV-101 경사형 스트레이너', -3.2),
+    inline('ball', 'BV-101 볼밸브', -2.0),
+    inline('check', 'CV-101 체크밸브', -0.9),
+    inline('bellows', 'EJ-101 벨로우즈 신축관', 0.4),
+    inline('tee', 'TE-101 티 분기', 1.8),
+    inline('reducer', 'RD-101 레듀샤 80A→50A', 3.0),
+    inline('flange', 'FL-101 플랜지', 4.2),
+    makeEquipment('elbow', { name: 'EL-101 90° 엘보', x: 5.4, y: 2.1, z: HDR_Z, rot: 180 }),
+    makeEquipment('gauge', { name: 'PG-101 압력계', x: -5.6, y: HDR_Y, z: HDR_Z }),
+    makeEquipment('support', { name: 'SP-101 파이프 서포트', x: -5.0, y: 0, z: HDR_Z, h: HDR_Y - 0.1 }),
+    makeEquipment('support', { name: 'SP-102 파이프 서포트', x: 2.6, y: 0, z: HDR_Z, h: HDR_Y - 0.1 }),
+    makeEquipment('vpump', { name: 'VP-101 입형 인라인 펌프', x: 0.0, y: 0, z: 6.9 }),
+    // 탱크 계통 — 펌프가 있으면 탱크도 (2026-11-20 추가)
+    makeEquipment('stank', { name: 'T-201 원통 저장탱크', x: -8.6, y: 0, z: HDR_Z }),
+    makeEquipment('rtank', { name: 'T-202 사각 수조', x: 8.4, y: 0, z: HDR_Z }),
+    makeEquipment('pump', { name: 'P-201 원심펌프', x: -3.0, y: 0, z: 7.3 }),
+  );
+
+  // 탱크 ↔ 펌프 ↔ 헤더 연결
+  s.pipes.push(
+    pipe('PL-202 탱크 출구', '80A', 'sus', [
+      [-7.6, 0.95, HDR_Z], [-6.6, 0.95, HDR_Z], [-6.6, HDR_Y, HDR_Z], [-6.2, HDR_Y, HDR_Z],
+    ]),
+    pipe('PL-203 펌프 흉입', '80A', 'carbon', [
+      [-3.0, 0.95, 7.3], [-3.0, 1.5, 7.3], [-3.0, 1.5, HDR_Z], [-3.0, HDR_Y, HDR_Z],
+    ]),
+    pipe('PL-204 수조 공급', '80A', 'sus', [
+      [5.4, 2.1, HDR_Z], [8.4, 2.1, HDR_Z], [8.4, 1.84, HDR_Z],
+    ]),
+  );
+
   return s;
 }
 

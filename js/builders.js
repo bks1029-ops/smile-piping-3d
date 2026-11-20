@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS } from './store.js?v=11';
+import { BORES, MATERIALS } from './store.js?v=12';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -37,6 +37,24 @@ const cyl = (r, h, seg = 24) => G(`cyl|${r.toFixed(4)}|${h.toFixed(4)}|${seg}`, 
 const cyl2 = (rt, rb, h, seg = 24) => G(`cyl2|${rt.toFixed(4)}|${rb.toFixed(4)}|${h.toFixed(4)}|${seg}`, () => new THREE.CylinderGeometry(rt, rb, h, seg));
 const box = (w, h, d) => G(`box|${w.toFixed(3)}|${h.toFixed(3)}|${d.toFixed(3)}`, () => new THREE.BoxGeometry(w, h, d));
 const torus = (r, t) => G(`tor|${r.toFixed(4)}|${t.toFixed(4)}`, () => new THREE.TorusGeometry(r, t, 8, 32));
+const sphere = (r, seg = 18) => G(`sph|${r.toFixed(4)}|${seg}`, () => new THREE.SphereGeometry(r, seg, Math.max(8, Math.round(seg * 0.65))));
+
+// 두 점을 잇는 원통(단위 높이 원통을 회전·스케일) — 경사 분기관·타이로드·지주 등
+function addTube(parent, a, b, r, material, seg = 18) {
+  const va = new THREE.Vector3(a[0], a[1], a[2]);
+  const vb = new THREE.Vector3(b[0], b[1], b[2]);
+  const dir = new THREE.Vector3().subVectors(vb, va);
+  const len = dir.length();
+  if (len < 1e-5) return null;
+  const mesh = new THREE.Mesh(cyl(r, 1, seg), material);
+  mesh.scale.y = len;
+  mesh.position.copy(va).add(vb).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
 
 const D = (deg) => THREE.MathUtils.degToRad(deg || 0);
 
@@ -201,10 +219,419 @@ function buildValve(spec) {
   return g;
 }
 
+// ── 대형 원통 저장탱크 (입형 원통 + 지지다리 + 콘 헤드 + 맨홀 + 노즐) ──────
+function buildSTank(spec) {
+  const g = new THREE.Group();
+  const shellMat = MAT(spec.color, 0.42, 0.75);
+  const headMat = MAT(shade(spec.color, 0.88), 0.45, 0.7);
+  const legMat = MAT(shade(spec.color, 0.6), 0.6, 0.5);
+  const steel = MAT('#8f979f', 0.4, 0.85);
+  const dark = MAT('#2c3238', 0.65, 0.5);
+
+  const R = 0.9;
+  const legH = 0.55;
+  const shellBot = legH + 0.24;
+  const shellTop = 2.42;
+
+  // 지지다리 4개 + 베이스 플레이트 · 거싯
+  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+    add(g, box(0.1, legH, 0.1), legMat, sx * 0.62, legH / 2, sz * 0.62);
+    add(g, box(0.22, 0.028, 0.22), legMat, sx * 0.62, 0.014, sz * 0.62);
+    add(g, box(0.16, 0.14, 0.02), legMat, sx * 0.62, legH - 0.1, sz * 0.44);
+  });
+
+  // 하부 원추 헤드 · 쉘 · 상부 콘 헤드
+  add(g, cyl2(R, R * 0.5, 0.24, 32), headMat, 0, legH + 0.12, 0);
+  add(g, cyl(R, shellTop - shellBot, 32), shellMat, 0, (shellBot + shellTop) / 2, 0);
+  add(g, cyl2(R * 0.36, R, 0.3, 32), headMat, 0, shellTop + 0.15, 0);
+
+  // 보강 링
+  [0.95, 1.75].forEach((y) => add(g, torus(R * 1.005, 0.012), steel, 0, y, 0, Math.PI / 2, 0, 0));
+
+  // 맨홀 · 상부 노즐
+  add(g, cyl(0.2, 0.12, 20), headMat, 0, shellTop + 0.36, 0);
+  add(g, cyl(0.28, 0.035, 24), steel, 0, shellTop + 0.43, 0);
+  add(g, cyl(0.07, 0.16, 16), steel, 0.4, shellTop + 0.39, 0);
+
+  // 측면 노즐 (출구·입구) + 플랜지
+  [0.95, 2.15].forEach((y) => {
+    add(g, cyl(0.07, 0.24, 18), steel, R + 0.08, y, 0, 0, 0, Math.PI / 2);
+    add(g, cyl(0.1, 0.03, 20), steel, R + 0.21, y, 0, 0, 0, Math.PI / 2);
+  });
+
+  // 사다리 (뒤쪽) + 명판
+  [-0.16, 0.16].forEach((dx) => add(g, cyl(0.014, 1.9, 8), dark, dx, legH + 1.0, -R - 0.08));
+  for (let i = 0; i < 9; i += 1) add(g, cyl(0.011, 0.32, 8), dark, 0, legH + 0.2 + i * 0.2, -R - 0.08, 0, 0, Math.PI / 2);
+  add(g, box(0.42, 0.22, 0.02), MAT('#e4ebf1', 0.4, 0.3), 0, 1.5, R + 0.012);
+
+  g.scale.set(spec.w / 2.0, spec.h / 3.0, spec.d / 2.0);
+  return g;
+}
+
+// ── 사각 탱크 · 수조 (보강 리브 프레임 + 맨홀 + 측면 노즐) ───────────────
+function buildRTank(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.5, 0.5);
+  const frameMat = MAT(shade(spec.color, 0.72), 0.55, 0.6);
+  const baseMat = MAT('#5d666e', 0.65, 0.45);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.65, 0.5);
+
+  const W = 2.2;
+  const H = 1.62;
+  const Dd = 1.62;
+
+  // 본체 · 바닥 베이스 · 상부 뚜껑
+  add(g, box(W, H, Dd), bodyMat, 0, H / 2 + 0.1, 0);
+  add(g, box(W + 0.16, 0.1, Dd + 0.16), baseMat, 0, 0.05, 0);
+  add(g, box(W + 0.08, 0.07, Dd + 0.08), frameMat, 0, H + 0.13, 0);
+
+  // 보강 리브 (앞뒤 수직 + 띠)
+  [-0.333, 0, 0.333].forEach((f) => {
+    [-1, 1].forEach((sz) => {
+      add(g, box(0.07, H, 0.035), frameMat, W * f, H / 2 + 0.1, sz * (Dd / 2 + 0.018));
+    });
+  });
+  [0.42, 0.78].forEach((f) => {
+    [-1, 1].forEach((sz) => add(g, box(W + 0.02, 0.07, 0.035), frameMat, 0, H * f + 0.1, sz * (Dd / 2 + 0.018)));
+    [-1, 1].forEach((sx) => add(g, box(0.035, 0.07, Dd + 0.02), frameMat, sx * (W / 2 + 0.018), H * f + 0.1, 0));
+  });
+  // 수평 코너 프레임
+  [-1, 1].forEach((sx) => {
+    [-1, 1].forEach((sz) => add(g, box(0.06, H, 0.06), frameMat, sx * W / 2, H / 2 + 0.1, sz * Dd / 2));
+  });
+
+  // 맨홀 + 경첩
+  add(g, cyl(0.26, 0.07, 22), frameMat, 0.5, H + 0.19, 0.35);
+  add(g, box(0.12, 0.05, 0.1), dark, 0.76, H + 0.2, 0.35);
+
+  // 측면 노즐 2개 + 플랜지
+  add(g, cyl(0.075, 0.24, 18), steel, -W / 2 - 0.1, 0.95, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.105, 0.03, 20), steel, -W / 2 - 0.23, 0.95, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.06, 0.2, 16), steel, W / 2 + 0.08, 1.35, 0, 0, 0, Math.PI / 2);
+  // 바닥 배수 밸브
+  add(g, cyl(0.05, 0.16, 14), steel, 0, 0.28, Dd / 2 + 0.06, Math.PI / 2, 0, 0);
+  add(g, torus(0.06, 0.012), dark, 0, 0.28, Dd / 2 + 0.14, 0, 0, 0);
+
+  g.scale.set(spec.w / 2.4, spec.h / 1.8, spec.d / 1.8);
+  return g;
+}
+
 function shade(hex, factor) {
   const c = new THREE.Color(hex);
   c.multiplyScalar(factor);
   return '#' + c.getHexString();
+}
+
+// ── 입형 인라인 펌프 (하부 흉입 플랜지 · 세로 모터 · 단자함 · 기초 베이스) ─────
+function buildVPump(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.6);
+  const motorMat = MAT(shade(spec.color, 0.72), 0.45, 0.7);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#252b31', 0.7, 0.45);
+
+  // 기초 베이스 플레이트 · 앙커 볼트
+  add(g, box(0.5, 0.04, 0.5), dark, 0, 0.02, 0);
+  add(g, box(0.34, 0.06, 0.34), bodyMat, 0, 0.07, 0);
+  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+    add(g, cyl(0.016, 0.05, 10), steel, sx * 0.2, 0.045, sz * 0.2);
+  });
+
+  // 흉입(하부) 플랜지
+  add(g, cyl(0.155, 0.03, 26), steel, 0, 0.115, 0);
+  add(g, cyl(0.1, 0.05, 20), steel, 0, 0.155, 0);
+
+  // 볼류트 케이싱 + 볼트 이어
+  add(g, cyl(0.15, 0.2, 28), bodyMat, 0, 0.28, 0);
+  add(g, torus(0.152, 0.016), bodyMat, 0, 0.28, 0, Math.PI / 2, 0, 0);
+  for (let i = 0; i < 6; i += 1) {
+    const a = (Math.PI * 2 * i) / 6;
+    add(g, cyl(0.017, 0.035, 8), steel, Math.cos(a) * 0.138, 0.385, Math.sin(a) * 0.138);
+  }
+
+  // 토출(상부) 플랜지
+  add(g, cyl(0.155, 0.03, 26), steel, 0, 0.415, 0);
+
+  // 모터 브래킷 · 모터(냉각핀) · 상단 캡 · 리프팅 아이
+  add(g, cyl(0.11, 0.07, 20), motorMat, 0, 0.465, 0);
+  add(g, cyl(0.115, 0.25, 26), motorMat, 0, 0.625, 0);
+  for (let i = 0; i < 7; i += 1) add(g, cyl(0.121, 0.011, 26), motorMat, 0, 0.53 + i * 0.031, 0);
+  add(g, cyl(0.1, 0.035, 20), dark, 0, 0.767, 0);
+  add(g, torus(0.03, 0.009), steel, 0.055, 0.8, 0, 0, 0, Math.PI / 2);
+
+  // 단자함 · 명판
+  add(g, box(0.12, 0.1, 0.08), motorMat, -0.01, 0.65, 0.125);
+  add(g, box(0.1, 0.05, 0.02), MAT('#e4ebf1', 0.4, 0.3), 0, 0.29, 0.152);
+
+  g.scale.set(spec.w / 0.42, spec.h / 0.85, spec.d / 0.42);
+  return g;
+}
+
+// ── 기어식 버터플라이 밸브 (웨이퍼 바디 + 볼트 플랜지 + 기어박스 + 핸드휠) ──
+function buildButterfly(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.35, 0.72);
+  const gearMat = MAT(shade(spec.color, 0.78), 0.5, 0.65);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.65, 0.5);
+
+  // 웨이퍼 바디 (흐름 X)
+  add(g, cyl(0.115, 0.1, 28), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  // 양단 볼트 플랜지 + 볼트
+  [-1, 1].forEach((sx) => {
+    add(g, cyl(0.165, 0.028, 30), bodyMat, sx * 0.062, 0, 0, 0, 0, Math.PI / 2);
+    for (let i = 0; i < 8; i += 1) {
+      const a = (Math.PI * 2 * i) / 8;
+      add(g, cyl(0.011, 0.05, 8), steel, sx * 0.062, Math.cos(a) * 0.148, Math.sin(a) * 0.148, 0, 0, Math.PI / 2);
+    }
+  });
+  // 상·하 루그
+  add(g, box(0.09, 0.09, 0.06), bodyMat, 0, 0.13, 0);
+  add(g, box(0.09, 0.06, 0.06), bodyMat, 0, -0.13, 0);
+  // 스템 넥 · 기어박스 · 핸드휠
+  add(g, cyl(0.036, 0.1, 16), steel, 0, 0.185, 0);
+  add(g, box(0.15, 0.11, 0.12), gearMat, 0, 0.29, 0);
+  add(g, box(0.1, 0.04, 0.09), dark, 0, 0.355, 0.02);
+  add(g, cyl(0.014, 0.06, 10), steel, 0, 0.4, 0);
+  add(g, torus(0.095, 0.014), dark, 0, 0.435, 0, Math.PI / 2, 0, 0);
+  for (let i = 0; i < 3; i += 1) add(g, box(0.19, 0.011, 0.02), dark, 0, 0.435, 0, 0, (Math.PI / 3) * i, 0);
+  add(g, cyl(0.022, 0.03, 12), dark, 0, 0.44, 0);
+
+  g.scale.set(spec.w / 0.34, spec.h / 0.46, spec.d / 0.32);
+  return g;
+}
+
+// ── 경사형(Y자) 체크·스트레이너 밸브 (Y형 바디 + 상하 플랜지 + 핸드휠) ────────
+function buildYValve(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.42, 0.6);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.65, 0.5);
+
+  // 본체 (흐름 X)
+  add(g, cyl(0.085, 0.22, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  // 양단 플랜지
+  [-1, 1].forEach((sx) => {
+    add(g, cyl(0.135, 0.03, 26), bodyMat, sx * 0.12, 0, 0, 0, 0, Math.PI / 2);
+    add(g, torus(0.14, 0.011), steel, sx * 0.137, 0, 0, 0, Math.PI / 2, 0);
+  });
+  // Y자 경사 분기 (아래·뒤 45°) + 끝 캡
+  addTube(g, [0, 0, 0], [-0.02, -0.19, -0.15], 0.062, bodyMat, 20);
+  addTube(g, [-0.019, -0.175, -0.138], [-0.024, -0.228, -0.18], 0.082, steel, 20);
+  // 보닛 · 스템 · 핸드휠
+  add(g, cyl(0.058, 0.07, 18), bodyMat, 0, 0.1, 0);
+  add(g, cyl(0.013, 0.15, 10), steel, 0, 0.21, 0);
+  add(g, torus(0.11, 0.014), dark, 0, 0.27, 0, Math.PI / 2, 0, 0);
+  for (let i = 0; i < 3; i += 1) add(g, box(0.22, 0.011, 0.02), dark, 0, 0.27, 0, 0, (Math.PI / 3) * i, 0);
+  add(g, cyl(0.024, 0.04, 12), dark, 0, 0.275, 0);
+
+  g.scale.set(spec.w / 0.36, spec.h / 0.5, spec.d / 0.34);
+  return g;
+}
+
+// ── 볼밸브 (바디 + 레버 핸들) ─────────────────────────────
+function buildBall(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.35, 0.8);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.6, 0.5);
+
+  add(g, sphere(0.075, 20), bodyMat, 0, 0, 0);
+  add(g, cyl(0.052, 0.2, 20), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  [-1, 1].forEach((sx) => add(g, cyl(0.085, 0.024, 22), steel, sx * 0.105, 0, 0, 0, 0, Math.PI / 2));
+  add(g, cyl(0.03, 0.04, 14), bodyMat, 0, 0.075, 0);
+  add(g, cyl(0.024, 0.06, 12), steel, 0, 0.11, 0);
+  add(g, box(0.19, 0.02, 0.024), dark, 0.035, 0.145, 0);
+  add(g, cyl(0.026, 0.03, 12), dark, 0, 0.148, 0);
+
+  g.scale.set(spec.w / 0.26, spec.h / 0.34, spec.d / 0.24);
+  return g;
+}
+
+// ── 체크밸브 (웨이퍼 · 스윙 바디) ──────────────────────────
+function buildCheck(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.78);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.6, 0.5);
+
+  add(g, cyl(0.1, 0.06, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  [-1, 1].forEach((sx) => add(g, cyl(0.115, 0.018, 26), steel, sx * 0.045, 0, 0, 0, 0, Math.PI / 2));
+  add(g, box(0.1, 0.045, 0.06), bodyMat, 0, 0.105, 0);
+  add(g, cyl(0.011, 0.05, 8), steel, 0, 0.14, 0);
+  add(g, cyl(0.02, 0.014, 10), dark, 0, 0.165, 0);
+
+  g.scale.set(spec.w / 0.24, spec.h / 0.26, spec.d / 0.22);
+  return g;
+}
+
+// ── 벨로우즈 신축관 (주름 원통 + 양단 플랜지 + 타이로드) ──────────────────
+function buildBellows(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.32, 0.88);
+  const steel = MAT('#8f979f', 0.4, 0.85);
+  const dark = MAT('#3a4249', 0.6, 0.5);
+  const len = 0.24;
+
+  // 주름 원통 (토러스 5개) + 내부 슬리부
+  for (let i = 0; i < 5; i += 1) {
+    const x = -len / 2 + 0.035 + i * ((len - 0.07) / 4);
+    add(g, torus(0.108, 0.022), bodyMat, x, 0, 0, 0, Math.PI / 2, 0);
+  }
+  add(g, cyl(0.098, len, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.055, len + 0.06, 20), dark, 0, 0, 0, 0, 0, Math.PI / 2);
+
+  // 양단 플랜지
+  [-1, 1].forEach((sx) => {
+    add(g, cyl(0.15, 0.032, 28), steel, sx * (len / 2 + 0.016), 0, 0, 0, 0, Math.PI / 2);
+  });
+
+  // 타이로드 4개 + 너트
+  [[0.135, 0], [-0.135, 0], [0, 0.135], [0, -0.135]].forEach(([dy, dz]) => {
+    addTube(g, [-len / 2 - 0.02, dy, dz], [len / 2 + 0.02, dy, dz], 0.011, steel, 10);
+    [-1, 1].forEach((sx) => add(g, cyl(0.02, 0.028, 8), dark, sx * (len / 2 + 0.01), dy, dz, 0, 0, Math.PI / 2));
+  });
+
+  g.scale.set(spec.w / 0.38, spec.h / 0.34, spec.d / 0.34);
+  return g;
+}
+
+// ── 90° 엘보 피팅 (곡관 + 양단 용접 비드) ─────────────────────
+function buildElbow(spec) {
+  const g = new THREE.Group();
+  const inner = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.8);
+  const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
+  const R = 0.11;
+  const r = 0.055;
+
+  const arc = new THREE.Mesh(
+    G(`elbowarc|${R}|${r}`, () => new THREE.TorusGeometry(R, r, 12, 26, Math.PI / 2)),
+    bodyMat);
+  arc.castShadow = true;
+  arc.receiveShadow = true;
+  inner.add(arc);
+
+  // 양단 직관 스텁 + 용접 비드
+  addTube(inner, [R, 0, 0], [R + 0.05, 0, 0], r, bodyMat, 20);
+  addTube(inner, [0, R, 0], [0, R + 0.05, 0], r, bodyMat, 20);
+  add(inner, torus(r * 1.08, 0.007), beadMat, R + 0.047, 0, 0, 0, Math.PI / 2, 0);
+  add(inner, torus(r * 1.08, 0.007), beadMat, 0, R + 0.047, 0, Math.PI / 2, 0, 0);
+
+  inner.position.set(-(R + 0.05) / 2, -(R + 0.05) / 2, 0);
+  g.add(inner);
+  g.scale.set(spec.w / 0.3, spec.h / 0.3, spec.d / 0.22);
+  return g;
+}
+
+// ── 티 분기관 (직관 + 직각 분기) ─────────────────────────
+function buildTee(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.8);
+  const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
+
+  add(g, cyl(0.058, 0.3, 22), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.052, 0.15, 20), bodyMat, 0, 0.07, 0);
+  add(g, sphere(0.066, 18), bodyMat, 0, 0, 0);
+  add(g, cyl(0.085, 0.022, 22), bodyMat, 0, 0.15, 0);
+  add(g, torus(0.06, 0.007), beadMat, 0.15, 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(0.06, 0.007), beadMat, -0.15, 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(0.054, 0.007), beadMat, 0, 0.148, 0, Math.PI / 2, 0, 0);
+
+  g.scale.set(spec.w / 0.34, spec.h / 0.26, spec.d / 0.22);
+  return g;
+}
+
+// ── 레듀샤 (이경관 · 원뿔 축소) ───────────────────────────
+function buildReducer(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.8);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const L = 0.22;
+
+  add(g, cyl2(0.1, 0.062, L, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.112, 0.026, 26), steel, -(L / 2 + 0.013), 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.072, 0.026, 24), steel, L / 2 + 0.013, 0, 0, 0, 0, Math.PI / 2);
+
+  g.scale.set(spec.w / 0.32, spec.h / 0.22, spec.d / 0.22);
+  return g;
+}
+
+// ── 플랜지 (볼트링 원판) ─────────────────────────────
+function buildFlange(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.45, 0.8);
+  const boltMat = MAT('#3f474e', 0.5, 0.85);
+
+  add(g, cyl(0.12, 0.045, 32), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  for (let i = 0; i < 8; i += 1) {
+    const a = (Math.PI * 2 * i) / 8;
+    add(g, cyl(0.014, 0.06, 8), boltMat, 0, Math.cos(a) * 0.093, Math.sin(a) * 0.093, 0, 0, Math.PI / 2);
+  }
+  add(g, cyl(0.05, 0.05, 22), MAT('#2a3138', 0.7, 0.4), 0, 0, 0, 0, 0, Math.PI / 2);
+
+  g.scale.set(spec.w / 0.14, spec.h / 0.26, spec.d / 0.26);
+  return g;
+}
+
+// ── 파이프 서포트 (베이스 플레이트 + 지주 + 새들 + U볼트) ─────────────────
+function buildSupport(spec) {
+  const g = new THREE.Group();
+  const postMat = MAT(spec.color, 0.55, 0.6);
+  const plateMat = MAT(shade(spec.color, 0.8), 0.6, 0.55);
+  const boltMat = MAT('#3f474e', 0.5, 0.85);
+  const H = 0.7;
+
+  // 바닥 베이스 플레이트 + 앙커 볼트
+  add(g, box(0.34, 0.028, 0.26), plateMat, 0, 0.014, 0);
+  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+    add(g, cyl(0.013, 0.032, 8), boltMat, sx * 0.135, 0.03, sz * 0.09);
+  });
+
+  // 수직 지주 + 보강 브레이스
+  add(g, box(0.075, H, 0.075), postMat, 0, 0.028 + H / 2, 0);
+  [0.34, 0.62].forEach((f) => {
+    const y = 0.028 + H * f;
+    add(g, box(0.19, 0.02, 0.022), postMat, 0, y, 0);
+    [-1, 1].forEach((sx) => addTube(g, [sx * 0.095, y, 0], [sx * 0.02, y - 0.1, 0], 0.011, postMat, 8));
+  });
+
+  // 상부 새들 받침 + U볼트
+  add(g, box(0.17, 0.03, 0.18), plateMat, 0, 0.028 + H + 0.015, 0);
+  add(g, cyl(0.075, 0.13, 20), plateMat, 0, 0.028 + H + 0.05, 0, 0, 0, Math.PI / 2);
+  [-1, 1].forEach((sx) => {
+    [-1, 1].forEach((sz) => {
+      addTube(g, [sx * 0.06, 0.028 + H + 0.02, sz * 0.075], [sx * 0.06, 0.028 + H + 0.12, sz * 0.075], 0.009, boltMat, 8);
+    });
+  });
+
+  g.scale.set(spec.w / 0.5, spec.h / 0.85, spec.d / 0.4);
+  return g;
+}
+
+// ── 엽력계·온도계 (원형 다이얼 + 스템) ─────────────
+function buildGauge(spec) {
+  const g = new THREE.Group();
+  const caseMat = MAT(spec.color, 0.35, 0.55);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const faceMat = MAT('#f2f6fa', 0.5, 0.05);
+  const dark = MAT('#1e242a', 0.6, 0.3);
+
+  // 스템 · 육각 소켓
+  add(g, cyl(0.012, 0.1, 12), steel, 0, 0.05, 0);
+  add(g, cyl(0.024, 0.03, 6), steel, 0, 0.115, 0);
+  // 다이얼 케이스 (면이 +Z 방향)
+  add(g, cyl(0.085, 0.04, 28), caseMat, 0, 0.22, 0, Math.PI / 2, 0, 0);
+  add(g, torus(0.085, 0.011), steel, 0, 0.22, 0.002, 0, 0, 0);
+  add(g, cyl(0.076, 0.006, 28), faceMat, 0, 0.22, 0.023, Math.PI / 2, 0, 0);
+  add(g, cyl(0.055, 0.004, 24), MAT('#dfe7ee', 0.6, 0.05), 0, 0.22, 0.026, Math.PI / 2, 0, 0);
+  // 바늘 · 중심 핀
+  add(g, box(0.06, 0.007, 0.003), dark, 0.012, 0.225, 0.03, 0, 0, -0.5);
+  add(g, cyl(0.008, 0.01, 10), dark, 0, 0.22, 0.03, Math.PI / 2, 0, 0);
+
+  g.scale.set(spec.w / 0.2, spec.h / 0.34, spec.d / 0.16);
+  return g;
 }
 
 // ── 배관 (파이프 + 엘보 조인트 + 플랜지) ─────────────────────────────────────
@@ -262,19 +689,36 @@ function addFlange(g, pos, dir, r, material) {
 }
 
 export function buildEquipment(spec) {
-  let g;
-  if (spec.type === 'hx') g = buildHX(spec);
-  else if (spec.type === 'pump') g = buildPump(spec);
-  else if (spec.type === 'panel') g = buildPanel(spec);
-  else if (spec.type === 'valve') g = buildValve(spec);
-  else g = buildTank(spec);
-
+  const build = EQUIP_BUILDERS[spec.type] || buildTank;
+  const g = build(spec);
   g.position.set(spec.x, spec.y, spec.z);
   g.rotation.y = D(spec.rot);
   g.userData.pick = { kind: 'equipment', id: spec.id };
   g.userData.spec = spec;
   return g;
 }
+
+const EQUIP_BUILDERS = {
+  hx: buildHX,
+  pump: buildPump,
+  vpump: buildVPump,
+  tank: buildTank,
+  stank: buildSTank,
+  rtank: buildRTank,
+  panel: buildPanel,
+  valve: buildValve,
+  bfly: buildButterfly,
+  yvalve: buildYValve,
+  ball: buildBall,
+  check: buildCheck,
+  bellows: buildBellows,
+  elbow: buildElbow,
+  tee: buildTee,
+  reducer: buildReducer,
+  flange: buildFlange,
+  support: buildSupport,
+  gauge: buildGauge,
+};
 
 export function buildScene(state) {
   const root = new THREE.Group();

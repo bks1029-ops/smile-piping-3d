@@ -259,6 +259,343 @@ def build_valve(comp, e, tag):
     return made
 
 
+def _scaled(e, w0, h0, d0):
+    """기본 치수 대비 배율 (웹앱에서 사용자가 바꿀 수 있음)"""
+    return (max(0.05, e.get('w', w0)) / w0,
+            max(0.05, e.get('h', h0)) / h0,
+            max(0.05, e.get('d', d0)) / d0)
+
+
+def build_vpump(comp, e, tag):
+    """입형 인라인 펌프 — 하부 흡입 플랜지 · 볼류트 · 세로 모터 · 단자함"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.42, 0.85, 0.42)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    p = P(0, 0, 0)
+    if add_box(comp, p[0], p[1], p[2], 0.5 * sx, 0.06 * sy, 0.5 * sz, rot, tag + '_Base'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.14, 0), 0.155 * sx, tag + '_SuctionFlange'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.18, 0), P(0, 0.38, 0), 0.15 * sx, tag + '_Volute'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.4, 0), P(0, 0.44, 0), 0.155 * sx, tag + '_DischargeFlange'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.5, 0), P(0, 0.76, 0), 0.115 * sx, tag + '_Motor'):
+        made += 1
+    tb = P(-0.01, 0.6, 0.125)
+    if add_box(comp, tb[0], tb[1], tb[2], 0.12 * sx, 0.1 * sy, 0.08 * sz, rot, tag + '_TerminalBox'):
+        made += 1
+    return made
+
+
+def build_butterfly(comp, e, tag):
+    """기어식 버터플라이 밸브 — 웨이퍼 바디 · 볼트 플랜지 · 기어박스 · 핸드휠"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.34, 0.46, 0.32)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.05, 0, 0), P(0.05, 0, 0), 0.115 * sx, tag + '_Body'):
+        made += 1
+    for d in (-1, 1):
+        if add_cylinder(comp, P(d * 0.05, 0, 0), P(d * 0.078, 0, 0), 0.165 * sx, tag + '_Flange'):
+            made += 1
+    if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.22, 0), 0.036 * sx, tag + '_Neck'):
+        made += 1
+    gb = P(0, 0.235, 0)
+    if add_box(comp, gb[0], gb[1], gb[2], 0.15 * sx, 0.11 * sy, 0.12 * sz, rot, tag + '_GearBox'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.42, 0), P(0, 0.45, 0), 0.095 * sx, tag + '_Handwheel'):
+        made += 1
+    return made
+
+
+def build_yvalve(comp, e, tag):
+    """경사형(Y자) 체크·스트레이너 — Y 분기 바디 + 상하 플랜지 + 핸드휠"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.36, 0.5, 0.34)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.11, 0, 0), P(0.11, 0, 0), 0.085 * sx, tag + '_Body'):
+        made += 1
+    for d in (-1, 1):
+        if add_cylinder(comp, P(d * 0.105, 0, 0), P(d * 0.135, 0, 0), 0.135 * sx, tag + '_Flange'):
+            made += 1
+    # Y자 경사 분기 (아래·뒤 45도)
+    if add_cylinder(comp, P(0, 0, 0), P(-0.02, -0.19, -0.15), 0.062 * sx, tag + '_YBranch'):
+        made += 1
+    if add_cylinder(comp, P(-0.018, -0.175, -0.138), P(-0.024, -0.225, -0.178), 0.082 * sx, tag + '_YCap'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.05, 0), P(0, 0.25, 0), 0.014 * sx, tag + '_Stem'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.26, 0), P(0, 0.29, 0), 0.11 * sx, tag + '_Handwheel'):
+        made += 1
+    return made
+
+
+def build_ball(comp, e, tag):
+    """볼밸브 — 바디 + 레버 핸들"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.26, 0.34, 0.24)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.1, 0, 0), P(0.1, 0, 0), 0.055 * sx, tag + '_Body'):
+        made += 1
+    if add_cylinder(comp, P(-0.075, 0, 0), P(0.075, 0, 0), 0.078 * sx, tag + '_Housing'):
+        made += 1
+    for d in (-1, 1):
+        if add_cylinder(comp, P(d * 0.09, 0, 0), P(d * 0.115, 0, 0), 0.085 * sx, tag + '_Flange'):
+            made += 1
+    if add_cylinder(comp, P(0, 0.06, 0), P(0, 0.13, 0), 0.022 * sx, tag + '_Stem'):
+        made += 1
+    lv = P(0.03, 0.13, 0)
+    if add_box(comp, lv[0], lv[1], lv[2], 0.19 * sx, 0.02 * sy, 0.025 * sz, rot, tag + '_Lever'):
+        made += 1
+    return made
+
+
+def build_check(comp, e, tag):
+    """체크밸브 — 웨이퍼 · 스윙 바디"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.24, 0.26, 0.22)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.03, 0, 0), P(0.03, 0, 0), 0.1 * sx, tag + '_Body'):
+        made += 1
+    for d in (-1, 1):
+        if add_cylinder(comp, P(d * 0.03, 0, 0), P(d * 0.05, 0, 0), 0.115 * sx, tag + '_Flange'):
+            made += 1
+    bs = P(0, 0.09, 0)
+    if add_box(comp, bs[0], bs[1], bs[2], 0.1 * sx, 0.05 * sy, 0.06 * sz, rot, tag + '_Boss'):
+        made += 1
+    return made
+
+
+def build_bellows(comp, e, tag):
+    """벨로우즈 신축관 — 주름 원통 + 양단 플랜지 + 타이로드"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.38, 0.34, 0.34)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    L = 0.24
+    if add_cylinder(comp, P(-L / 2, 0, 0), P(L / 2, 0, 0), 0.098 * sx, tag + '_Sleeve'):
+        made += 1
+    for i in range(5):
+        x = -L / 2 + 0.035 + i * ((L - 0.07) / 4)
+        if add_cylinder(comp, P(x - 0.008, 0, 0), P(x + 0.008, 0, 0), 0.118 * sx, tag + '_Convolution'):
+            made += 1
+    for d in (-1, 1):
+        if add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.032), 0, 0), 0.15 * sx, tag + '_Flange'):
+            made += 1
+    for dy, dz in ((0.135, 0), (-0.135, 0), (0, 0.135), (0, -0.135)):
+        if add_cylinder(comp, P(-L / 2 - 0.02, dy, dz), P(L / 2 + 0.02, dy, dz), 0.011 * sx, tag + '_TieRod'):
+            made += 1
+    return made
+
+
+def build_elbow(comp, e, tag):
+    """90도 엘보 — 직관 2개 + 곡관부(3분할 원통)"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.3, 0.3, 0.22)
+    r = 0.055 * sx
+    R = 0.11
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(R, 0, 0), P(R + 0.05, 0, 0), r, tag + '_Stub1'):
+        made += 1
+    if add_cylinder(comp, P(0, R, 0), P(0, R + 0.05, 0), r, tag + '_Stub2'):
+        made += 1
+    pts = [(R, 0, 0), (R * 0.9, R * 0.36, 0), (R * 0.36, R * 0.9, 0), (0, R, 0)]
+    for i in range(len(pts) - 1):
+        a = P(pts[i][0], pts[i][1], pts[i][2])
+        b = P(pts[i + 1][0], pts[i + 1][1], pts[i + 1][2])
+        if add_cylinder(comp, a, b, r * 0.98, '%s_Bend%d' % (tag, i + 1)):
+            made += 1
+    return made
+
+
+def build_tee(comp, e, tag):
+    """티 분기관 — 직관 + 직각 분기관"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.34, 0.26, 0.22)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.15, 0, 0), P(0.15, 0, 0), 0.058 * sx, tag + '_Run'):
+        made += 1
+    if add_cylinder(comp, P(0, 0, 0), P(0, 0.15, 0), 0.052 * sx, tag + '_Branch'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.14, 0), P(0, 0.165, 0), 0.085 * sx, tag + '_BranchFlange'):
+        made += 1
+    return made
+
+
+def build_reducer(comp, e, tag):
+    """레듀샤 — 이경 원통 2단 + 양단 플랜지"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.32, 0.22, 0.22)
+    L = 0.22
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-L / 2, 0, 0), P(-L / 6, 0, 0), 0.1 * sx, tag + '_Big'):
+        made += 1
+    if add_cylinder(comp, P(-L / 6, 0, 0), P(L / 2, 0, 0), 0.07 * sx, tag + '_Small'):
+        made += 1
+    for d, r in ((-1, 0.112), (1, 0.072)):
+        if add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.026), 0, 0), r * sx, tag + '_Flange'):
+            made += 1
+    return made
+
+
+def build_flange(comp, e, tag):
+    """플랜지 — 볼트링 원판 + 볼트 8개"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.14, 0.26, 0.26)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.022, 0, 0), P(0.022, 0, 0), 0.12 * sx, tag + '_Disc'):
+        made += 1
+    for i in range(8):
+        a = math.pi * 2 * i / 8
+        dy, dz = math.cos(a) * 0.093, math.sin(a) * 0.093
+        if add_cylinder(comp, P(-0.03, dy, dz), P(0.03, dy, dz), 0.014 * sx, '%s_Bolt%d' % (tag, i + 1)):
+            made += 1
+    return made
+
+
+def build_support(comp, e, tag):
+    """파이프 서포트 — 베이스 플레이트 + 지주 + 새들 + U볼트"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.5, 0.85, 0.4)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    H = 0.7
+    b = P(0, 0, 0)
+    if add_box(comp, b[0], b[1], b[2], 0.34 * sx, 0.03 * sy, 0.26 * sz, rot, tag + '_BasePlate'):
+        made += 1
+    post = P(0, 0.028, 0)
+    if add_box(comp, post[0], post[1], post[2], 0.075 * sx, H * sy, 0.075 * sz, rot, tag + '_Post'):
+        made += 1
+    sad = P(0, 0.028 + H, 0)
+    if add_box(comp, sad[0], sad[1], sad[2], 0.17 * sx, 0.03 * sy, 0.18 * sz, rot, tag + '_Saddle'):
+        made += 1
+    for dx in (-0.06, 0.06):
+        for dz in (-0.075, 0.075):
+            a = P(dx, 0.028 + H, dz)
+            c = P(dx, 0.028 + H + 0.12, dz)
+            if add_cylinder(comp, a, c, 0.009 * sx, tag + '_UBolt'):
+                made += 1
+    return made
+
+
+def build_gauge(comp, e, tag):
+    """압력계·온도계 — 원형 다이얼 + 스템"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.2, 0.34, 0.16)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(0, 0, 0), P(0, 0.1, 0), 0.012 * sx, tag + '_Stem'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.13, 0), 0.024 * sx, tag + '_Socket'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.2, 0), P(0, 0.2, 0.04), 0.085 * sx, tag + '_Case'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.2, 0.04), P(0, 0.2, 0.05), 0.076 * sx, tag + '_Dial'):
+        made += 1
+    return made
+
+
+def build_storage_tank(comp, e, tag):
+    """대형 원통 저장탱크 — 지지다리 + 원통 쉘 + 콘 헤드 + 맨홀 + 노즐"""
+    made = 0
+    sx, sy, sz = _scaled(e, 2.0, 3.0, 2.0)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    R = 0.9
+    legH = 0.55
+    shellTop = 2.42
+    for dx in (-0.62, 0.62):
+        for dz in (-0.62, 0.62):
+            p = P(dx, 0, dz)
+            if add_box(comp, p[0], p[1], p[2], 0.1 * sx, legH * sy, 0.1 * sz, rot, tag + '_Leg'):
+                made += 1
+    if add_cylinder(comp, P(0, legH, 0), P(0, legH + 0.24, 0), R * 0.75 * sx, tag + '_BottomHead'):
+        made += 1
+    if add_cylinder(comp, P(0, legH + 0.24, 0), P(0, shellTop, 0), R * sx, tag + '_Shell'):
+        made += 1
+    if add_cylinder(comp, P(0, shellTop, 0), P(0, shellTop + 0.3, 0), R * 0.6 * sx, tag + '_TopHead'):
+        made += 1
+    if add_cylinder(comp, P(0, shellTop + 0.3, 0), P(0, shellTop + 0.42, 0), 0.2 * sx, tag + '_Manhole'):
+        made += 1
+    for y in (0.95, 2.15):
+        if add_cylinder(comp, P(R, y, 0), P(R + 0.24, y, 0), 0.07 * sx, tag + '_Nozzle'):
+            made += 1
+    return made
+
+
+def build_rect_tank(comp, e, tag):
+    """사각 탱크·수조 — 박스 본체 + 보강 리브 + 맨홀 + 측면 노즐"""
+    made = 0
+    sx, sy, sz = _scaled(e, 2.4, 1.8, 1.8)
+    rot = e.get('rot', 0)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    W, H, D = 2.2, 1.62, 1.62
+    b = P(0, 0, 0)
+    if add_box(comp, b[0], b[1], b[2], (W + 0.16) * sx, 0.1 * sy, (D + 0.16) * sz, rot, tag + '_Base'):
+        made += 1
+    body = P(0, 0.1, 0)
+    if add_box(comp, body[0], body[1], body[2], W * sx, H * sy, D * sz, rot, tag + '_Body'):
+        made += 1
+    for f in (-0.333, 0, 0.333):
+        for sd in (-1, 1):
+            r = P(W * f, 0.1, sd * (D / 2 + 0.018))
+            if add_box(comp, r[0], r[1], r[2], 0.07 * sx, H * sy, 0.035 * sz, rot, tag + '_Rib'):
+                made += 1
+    mh = P(0.5, H + 0.1, 0.35)
+    if add_cylinder(comp, mh, P(0.5, H + 0.16, 0.35), 0.26 * sx, tag + '_Manhole'):
+        made += 1
+    if add_cylinder(comp, P(-W / 2, 0.95, 0), P(-W / 2 - 0.24, 0.95, 0), 0.075 * sx, tag + '_NozzleIn'):
+        made += 1
+    if add_cylinder(comp, P(W / 2, 1.35, 0), P(W / 2 + 0.2, 1.35, 0), 0.06 * sx, tag + '_NozzleOut'):
+        made += 1
+    return made
+
+
 def build_pipe(comp, p, tag):
     made = 0
     pts = p.get('points') or []
@@ -292,9 +629,23 @@ def build(comp, scene, report):
     builders = {
         'hx': build_heat_exchanger,
         'pump': build_pump,
+        'vpump': build_vpump,
         'tank': build_tank,
+        'stank': build_storage_tank,
+        'rtank': build_rect_tank,
         'panel': build_panel,
         'valve': build_valve,
+        'bfly': build_butterfly,
+        'yvalve': build_yvalve,
+        'ball': build_ball,
+        'check': build_check,
+        'bellows': build_bellows,
+        'elbow': build_elbow,
+        'tee': build_tee,
+        'reducer': build_reducer,
+        'flange': build_flange,
+        'support': build_support,
+        'gauge': build_gauge,
     }
     for idx, e in enumerate(scene.get('equipment', [])):
         tag = '%02d_%s' % (idx + 1, (e.get('name') or e.get('type') or 'EQ'))
