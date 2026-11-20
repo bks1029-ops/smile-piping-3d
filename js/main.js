@@ -4,13 +4,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
-  sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims,
-} from './store.js?v=22';
-import { buildScene } from './builders.js?v=22';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=22';
-import { buildOBJ } from './obj.js?v=22';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=22';
-import { parseCommand, CMD_HELP } from './cmd.js?v=22';
+  sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
+} from './store.js?v=23';
+import { buildScene } from './builders.js?v=23';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=23';
+import { buildOBJ } from './obj.js?v=23';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=23';
+import { parseCommand, CMD_HELP } from './cmd.js?v=23';
+import { buildDimItems } from './dims.js?v=23';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -92,6 +93,7 @@ class App {
     this.setupFloorPlan();
     this.setupDraft();
     this.setupCmdCursor();
+    this.setupDims();
     this.setupVoice();
     this.bindUI();
     this.bindPad();
@@ -296,6 +298,81 @@ class App {
     this.renderProps();
   }
 
+  // ── 배관 치수 라벨 ───────────────────────────────────────
+  // 각 배관 구간 중점 옆에 "1000mm (50A)"를 3D 좌표 → 화면 투영으로 얹는다.
+  setupDims() {
+    this.dimLayer = $('#dimLayer');
+    this.dimNodes = [];
+    this.dimItems = [];
+    this.dimV = new THREE.Vector3();
+    let saved = null;
+    try { saved = localStorage.getItem('smilePiping3D.dims'); } catch (e) { /* ignore */ }
+    this.dimsOn = saved !== 'off'; // 기본값 켜짐
+    this.applyDimToggle();
+  }
+
+  setDims(on) {
+    this.dimsOn = !!on;
+    try { localStorage.setItem('smilePiping3D.dims', this.dimsOn ? 'on' : 'off'); } catch (e) { /* ignore */ }
+    this.applyDimToggle();
+    this.refreshDims();
+  }
+
+  applyDimToggle() {
+    const btn = $('#btnDims');
+    if (btn) {
+      btn.classList.toggle('active', this.dimsOn);
+      btn.setAttribute('aria-pressed', this.dimsOn ? 'true' : 'false');
+    }
+    if (this.dimLayer) this.dimLayer.hidden = !this.dimsOn;
+  }
+
+  refreshDims() {
+    this.dimItems = buildDimItems(this.state);
+    if (!this.dimsOn) {
+      this.clearDimNodes();
+      return;
+    }
+    while (this.dimNodes.length > this.dimItems.length) {
+      const n = this.dimNodes.pop();
+      n.remove();
+    }
+    while (this.dimNodes.length < this.dimItems.length) {
+      const el = document.createElement('span');
+      el.className = 'dim-label';
+      this.dimLayer.appendChild(el);
+      this.dimNodes.push(el);
+    }
+    this.dimItems.forEach((it, i) => { this.dimNodes[i].textContent = it.text; });
+    this.updateDims();
+  }
+
+  clearDimNodes() {
+    this.dimNodes.forEach((n) => n.remove());
+    this.dimNodes = [];
+  }
+
+  updateDims() {
+    if (!this.dimsOn || !this.dimNodes.length || !this.dimLayer) return;
+    const w = this.dimLayer.clientWidth || 1;
+    const h = this.dimLayer.clientHeight || 1;
+    const v = this.dimV;
+    for (let i = 0; i < this.dimItems.length; i += 1) {
+      const it = this.dimItems[i];
+      const el = this.dimNodes[i];
+      v.set(it.x, it.y, it.z).project(this.camera);
+      const behind = v.z > 1;
+      if (behind || v.x < -1.2 || v.x > 1.2 || v.y < -1.2 || v.y > 1.2) {
+        if (el.style.display !== 'none') el.style.display = 'none';
+        continue;
+      }
+      if (el.style.display === 'none') el.style.display = '';
+      const sx = ((v.x + 1) / 2) * w;
+      const sy = ((1 - v.y) / 2) * h;
+      el.style.transform = `translate(-50%, -50%) translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px)`;
+    }
+  }
+
   refreshScene() {
     if (this.root) this.scene.remove(this.root);
     this.root = buildScene(this.state);
@@ -304,6 +381,7 @@ class App {
     this.refreshHighlight();
     this.renderLists();
     this.updateStats();
+    this.refreshDims();
     this.scheduleSave();
   }
 
@@ -394,14 +472,24 @@ class App {
 
   // 부속의 출구(길이 방향 끝면) — 인라인 부속은 배관이 이어지는 자리, 설비는 윗면 중심.
   equipExit(spec) {
-    const h = this.headingFromRot(spec.rot);
     const len = INLINE_TYPES.has(spec.type) ? (spec.w || 0) : 0;
     if (!len) return { x: spec.x, y: r3((spec.y || 0) + (spec.h || 0)), z: spec.z };
-    const d = len / 2;
+    const d = Array.isArray(spec.dir) ? spec.dir : null;
+    const dl = d ? Math.hypot(d[0], d[1], d[2]) : 0;
+    if (dl > 1e-6) {
+      const half = len / 2;
+      return {
+        x: r3(spec.x + (d[0] / dl) * half),
+        y: Math.max(0, r3((spec.y || 0) + (d[1] / dl) * half)),
+        z: r3(spec.z + (d[2] / dl) * half),
+      };
+    }
+    const h = this.headingFromRot(spec.rot);
+    const d2 = len / 2;
     return {
-      x: r3(spec.x + (h.axis === 'x' ? h.sign * d : 0)),
+      x: r3(spec.x + (h.axis === 'x' ? h.sign * d2 : 0)),
       y: Math.max(0, r3(spec.y || 0)),
-      z: r3(spec.z + (h.axis === 'z' ? h.sign * d : 0)),
+      z: r3(spec.z + (h.axis === 'z' ? h.sign * d2 : 0)),
     };
   }
 
@@ -427,11 +515,23 @@ class App {
       return;
     }
     const h = this.headingFromRot(spec.rot);
-    this.cmdAxis = h.axis;
-    this.cmdSign = h.sign;
-    this.cmdRot = this.cmdRotFor(h.axis, h.sign);
-    this.lastDirV = h.axis === 'x' ? { x: h.sign, y: 0, z: 0 }
-      : h.axis === 'z' ? { x: 0, y: 0, z: h.sign } : { x: 0, y: h.sign, z: 0 };
+    const dv = Array.isArray(spec.dir) ? spec.dir : null;
+    if (dv && Math.hypot(dv[0], dv[1], dv[2]) > 1e-6) {
+      // 배관 축 방향을 그대로 이어받는다 — 수직·경사 배관 끝에서도 같은 방향으로 계속 간다.
+      const l = Math.hypot(dv[0], dv[1], dv[2]);
+      const u = { x: dv[0] / l, y: dv[1] / l, z: dv[2] / l };
+      this.cmdAxis = Math.abs(u.x) >= Math.abs(u.y) && Math.abs(u.x) >= Math.abs(u.z) ? 'x'
+        : (Math.abs(u.z) >= Math.abs(u.y) ? 'z' : 'y');
+      this.cmdSign = (this.cmdAxis === 'x' ? u.x : this.cmdAxis === 'z' ? u.z : u.y) < 0 ? -1 : 1;
+      this.cmdRot = this.cmdRotFor(this.cmdAxis, this.cmdSign);
+      this.lastDirV = u;
+    } else {
+      this.cmdAxis = h.axis;
+      this.cmdSign = h.sign;
+      this.cmdRot = this.cmdRotFor(h.axis, h.sign);
+      this.lastDirV = h.axis === 'x' ? { x: h.sign, y: 0, z: 0 }
+        : h.axis === 'z' ? { x: 0, y: 0, z: h.sign } : { x: 0, y: h.sign, z: 0 };
+    }
     if (spec.type === 'reducer' && spec.bore2) this.cmdBore = spec.bore2;
     else if (spec.bore1) this.cmdBore = spec.bore1;
     this.setCmdCursor(this.equipExit(spec), true);
@@ -602,6 +702,8 @@ class App {
           <label class="field">회전(°)<input type="number" step="15" data-f="rot" value="${fmt(spec.rot)}"></label>
           <label class="field">색상<input type="color" data-f="color" value="${esc(spec.color)}"></label>
         </div>
+        ${Array.isArray(spec.dir) ? `
+        <p class="hint">배관 축 정렬 — 진행 방향 (${spec.dir.join(', ')})에 맞춰 원판·바디가 배관에 수직으로 서 있습니다. 회전값을 바꾸면 도면 축 기준(수평)으로 다시 놓입니다.</p>` : ''}
         <div class="prop-actions">
           <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
         </div>
@@ -1224,9 +1326,14 @@ class App {
 
     const putEquip = (type, extra) => {
       const t = EQUIP_TYPES[type];
+      // 지금 커서에 들어오는 배관의 진행 방향 — 인라인 부속은 이 벡터로 3D 회전을 맞춘다.
+      const dv = prevDir || this.lastDirV;
+      const dir = INLINE_TYPES.has(type) && dv
+        ? [r3(dv.x), r3(dv.y), r3(dv.z)] : null;
       const spec = makeEquipment(type, {
         name: `${t.short}-${100 + nextEqSeq(type)} ${t.label}`,
         x: cursor.x, y: cursor.y, z: cursor.z, rot,
+        ...(dir ? { dir } : {}),
         ...(extra || {}),
       });
       equip.push(spec);
@@ -1705,7 +1812,7 @@ class App {
 
   setView(name, immediate) {
     const activeName = name === 'reset' ? 'iso' : name;
-    $$('.vbtn').forEach((b) => b.classList.toggle('active', b.dataset.view === activeName));
+    $$('.vbtn[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === activeName));
     const f = this.frameFor(activeName);
     if (immediate) {
       this.camera.position.copy(f.pos);
@@ -1816,6 +1923,7 @@ class App {
     this.renderer.setAnimationLoop(() => {
       this.updateCamAnim();
       this.controls.update();
+      this.updateDims();
       this.renderer.render(this.scene, this.camera);
     });
   }
@@ -2196,7 +2304,10 @@ class App {
   // ── UI 바인딩 ───────────────────────────────────────────
   bindUI() {
     // 뷰
-    $$('.vbtn').forEach((b) => b.addEventListener('click', () => this.setView(b.dataset.view)));
+    $$('.vbtn[data-view]').forEach((b) => b.addEventListener('click', () => this.setView(b.dataset.view)));
+    // 치수 표시 토글 (기본 켜짐 · localStorage에 기억)
+    const btnDims = $('#btnDims');
+    if (btnDims) btnDims.addEventListener('click', () => this.setDims(!this.dimsOn));
 
     // 탭
     $$('#tabs .tab').forEach((t) => t.addEventListener('click', () => {
@@ -2287,6 +2398,8 @@ class App {
           delete spec.inDir;
           delete spec.outDir;
         }
+        // 배관 축에 맞춰 놓인 부속도 회전값을 직접 바꾸면 진행 방향을 풀고 축 기준(수평)으로 돌린다.
+        if (t.dataset.f === 'rot') delete spec.dir;
         spec[t.dataset.f] = v;
         this.refreshScene();
       } else if (t.dataset.ptf) {

@@ -54,6 +54,30 @@ export function elbowBasis(inDir, outDir) {
   return [a[0], w[0], n[0], a[1], w[1], n[1], a[2], w[2], n[2]];
 }
 
+// 진행 방향 벡터 → 3D 회전행렬 (행 우선 3×3, 각 열 = 로컬 X·Y·Z가 향하는 월드 방향).
+//  · 로컬 +X = 진행 방향 — 플랜지 원판·밸브 바디가 배관 중심축에 정확히 맞는다.
+//    (수직 배관 끝 = 바닥과 평행한 수평 원판, 좌/우 배관 끝 = X를 바라보는 수직 원판,
+//     45° 경사관 끝 = 경사축에 수직인 원판)
+//  · 로컬 +Y = 가능한 한 월드 위쪽 — 핸드휠·레버가 위를 향한다. 수직 배관은 Z를 기준으로 돌린다.
+export function dirBasis(dir) {
+  const nrm = (v) => {
+    const l = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0] / l, v[1] / l, v[2] / l];
+  };
+  let a = Array.isArray(dir) && dir.length === 3 && dir.every((v) => Number.isFinite(Number(v)))
+    ? nrm([Number(dir[0]), Number(dir[1]), Number(dir[2])]) : [1, 0, 0];
+  if (Math.hypot(a[0], a[1], a[2]) < 1e-6) a = [1, 0, 0];
+  // 수직에 가까운 배관은 월드 Y를 기준으로 삼을 수 없으므로 Z를 쓴다.
+  const up = Math.abs(a[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
+  const d = a[0] * up[0] + a[1] * up[1] + a[2] * up[2];
+  let b = [up[0] - d * a[0], up[1] - d * a[1], up[2] - d * a[2]];
+  if (Math.hypot(b[0], b[1], b[2]) < 1e-6) b = [0, 0, 1];
+  b = nrm(b);
+  const c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  // 열 = (a, b, c) — three.js Matrix4.set()이 행 우선이므로 이 순서로 넘긴다.
+  return [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
+}
+
 // 이경 부속(레듀샤·티)의 실제 폭(m). builders.js·fusion.js의 치수식과 같다.
 //  · 레듀샤: 큰 관경에서 작은 관경으로 줄어드는 원뿔 길이 + 양단 플랜지
 //  · 티: 주배관 길이 + 양단 용접 비드
@@ -219,6 +243,12 @@ export function makeEquipment(type, opts) {
     rot: num(o.rot, 0),
     color: o.color || t.color,
   };
+  // 배관 끝에 붙은 부속은 진행 방향 벡터를 기억한다 — 3D 회전을 이 벡터로 잡아
+  // 플랜지 원판·밸브 바디가 어느 방향(수직·좌우·45° 경사)에서도 배관 축에 딱 맞는다.
+  if (Array.isArray(o.dir) && o.dir.length === 3 && o.dir.every((v) => Number.isFinite(Number(v)))) {
+    const d = o.dir.map((v) => round3(Number(v)));
+    if (Math.hypot(d[0], d[1], d[2]) > 1e-6) spec.dir = d;
+  }
   // 엘보는 관경과 두 다리 방향(inDir·outDir)을 기억한다 — 3D 회전은 이 벡터로 잡는다.
   if (type === 'elbow' || type === 'elbow45') {
     spec.bore = BORES[o.bore] ? o.bore : (BORES[o.bore1] ? o.bore1 : (t.bore || '100A'));
@@ -403,6 +433,11 @@ export function normalizeState(raw) {
         rot: num(e.rot, 0),
         color: /^#[0-9a-f]{6}$/i.test(e.color || '') ? e.color : t.color,
       };
+      // 진행 방향 벡터(배관 축)가 저장돼 있으면 그대로 살려 3D 회전을 다시 맞춘다.
+      if (Array.isArray(e.dir) && e.dir.length === 3 && e.dir.every((v) => Number.isFinite(Number(v)))) {
+        const d = e.dir.map((v) => round3(Number(v)));
+        if (Math.hypot(d[0], d[1], d[2]) > 1e-6) item.dir = d;
+      }
       if (type === 'reducer' || type === 'tee') {
         item.bore1 = BORES[e.bore1] ? e.bore1 : (t.bore1 || '100A');
         item.bore2 = BORES[e.bore2] ? e.bore2 : (type === 'tee' ? item.bore1 : (t.bore2 || '50A'));

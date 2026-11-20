@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis } from './store.js?v=22';
+import { elbowBasis, dirBasis } from './store.js?v=23';
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기
@@ -30,6 +30,12 @@ export function buildFusionScript(state) {
           const s = Math.sin(th);
           item.rmat = [c, 0, s, 0, 1, 0, -s, 0, c];
         }
+      }
+      // 배관 끝 부속(플랜지·밸브·피팅)은 진행 방향 벡터를 함께 넘긴다 —
+      // 웹앱과 같은 축 정렬(수직·좌우·45° 경사)로 Fusion에 놓인다.
+      if (!item.rmat && Array.isArray(e.dir) && e.dir.length === 3) {
+        item.dir = e.dir;
+        item.rmat = dirBasis(e.dir).map((v) => Math.round(v * 1e6) / 1e6);
       }
       return item;
     }),
@@ -122,8 +128,9 @@ def add_cylinder(comp, a, b, radius, name):
     return body
 
 
-def add_box(comp, cx, cy, cz, w, h, d, rot, name):
-    """바닥 중심 (cx, cy, cz), 크기 w(가로) x h(높이) x d(깊이), rot 도(deg)."""
+def add_box(comp, cx, cy, cz, w, h, d, rot, name, rmat=None):
+    """바닥 중심 (cx, cy, cz), 크기 w(가로) x h(높이) x d(깊이), rot 도(deg).
+    rmat: 배관 축 정렬 행렬(행 우선 3x3). 주어지면 rot 대신 이 축으로 돌린다."""
     if w * S < 1e-2 or h * S < 1e-2 or d * S < 1e-2:
         return None
     sk = comp.sketches.add(comp.xYConstructionPlane)
@@ -140,10 +147,16 @@ def add_box(comp, cx, cy, cz, w, h, d, rot, name):
     ext_in.setDistanceExtent(False, adsk.core.ValueInput.createByReal(h * S))
     body = comp.features.extrudeFeatures.add(ext_in).bodies.item(0)
     body.name = name
-    th = math.radians(rot or 0)
-    xaxis = (math.cos(th), -math.sin(th), 0.0)
-    zaxis = (0.0, 0.0, 1.0)
-    yaxis = _cross(zaxis, xaxis)
+    if rmat:
+        # 로컬 X·Y·Z 축을 웹앱 (x, y=높이, z) → Fusion (x, 높이, z) 로 옮긴다.
+        xaxis = (rmat[0], rmat[6], rmat[3])
+        yaxis = (rmat[1], rmat[7], rmat[4])
+        zaxis = (rmat[2], rmat[8], rmat[5])
+    else:
+        th = math.radians(rot or 0)
+        xaxis = (math.cos(th), -math.sin(th), 0.0)
+        zaxis = (0.0, 0.0, 1.0)
+        yaxis = _cross(zaxis, xaxis)
     m = adsk.core.Matrix3D.create()
     m.setWithCoordinateSystem(
         adsk.core.Point3D.create(cx * S, cz * S, cy * S),
@@ -333,7 +346,7 @@ def build_butterfly(comp, e, tag):
     if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.22, 0), 0.036 * sx, tag + '_Neck'):
         made += 1
     gb = P(0, 0.235, 0)
-    if add_box(comp, gb[0], gb[1], gb[2], 0.15 * sx, 0.11 * sy, 0.12 * sz, rot, tag + '_GearBox'):
+    if add_box(comp, gb[0], gb[1], gb[2], 0.15 * sx, 0.11 * sy, 0.12 * sz, rot, tag + '_GearBox', e.get('rmat')):
         made += 1
     if add_cylinder(comp, P(0, 0.42, 0), P(0, 0.45, 0), 0.095 * sx, tag + '_Handwheel'):
         made += 1
@@ -385,7 +398,7 @@ def build_ball(comp, e, tag):
     if add_cylinder(comp, P(0, 0.06, 0), P(0, 0.13, 0), 0.022 * sx, tag + '_Stem'):
         made += 1
     lv = P(0.03, 0.13, 0)
-    if add_box(comp, lv[0], lv[1], lv[2], 0.19 * sx, 0.02 * sy, 0.025 * sz, rot, tag + '_Lever'):
+    if add_box(comp, lv[0], lv[1], lv[2], 0.19 * sx, 0.02 * sy, 0.025 * sz, rot, tag + '_Lever', e.get('rmat')):
         made += 1
     return made
 
@@ -405,7 +418,7 @@ def build_check(comp, e, tag):
         if add_cylinder(comp, P(d * 0.03, 0, 0), P(d * 0.05, 0, 0), 0.115 * sx, tag + '_Flange'):
             made += 1
     bs = P(0, 0.09, 0)
-    if add_box(comp, bs[0], bs[1], bs[2], 0.1 * sx, 0.05 * sy, 0.06 * sz, rot, tag + '_Boss'):
+    if add_box(comp, bs[0], bs[1], bs[2], 0.1 * sx, 0.05 * sy, 0.06 * sz, rot, tag + '_Boss', e.get('rmat')):
         made += 1
     return made
 

@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis } from './store.js?v=22';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis } from './store.js?v=23';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -843,9 +843,22 @@ export function buildEquipment(spec) {
   const g = build(spec);
   g.position.set(spec.x, spec.y, spec.z);
   const elbowLike = spec.type === 'elbow' || spec.type === 'elbow45';
+  // 진행 방향 벡터(dir)가 있으면 로컬 +X를 배관 축에 정확히 맞춘다 — 플랜지 원판이
+  // 수직·좌우·45° 경사 어디서든 배관 중심축과 수직으로 반둥하게 맞물린다.
+  const hasDir = Array.isArray(spec.dir) && spec.dir.length === 3
+    && Math.hypot(spec.dir[0], spec.dir[1], spec.dir[2]) > 1e-6;
   if (elbowLike && Array.isArray(spec.inDir) && Array.isArray(spec.outDir)) {
     // 진입·진출 벡터로 두 입구를 배관에 정확히 맞춘다 (XY·YZ·XZ 어느 평면이든)
     const b = elbowBasis(spec.inDir, spec.outDir);
+    const m = new THREE.Matrix4().set(
+      b[0], b[1], b[2], 0,
+      b[3], b[4], b[5], 0,
+      b[6], b[7], b[8], 0,
+      0, 0, 0, 1,
+    );
+    g.quaternion.setFromRotationMatrix(m);
+  } else if (hasDir) {
+    const b = dirBasis(spec.dir);
     const m = new THREE.Matrix4().set(
       b[0], b[1], b[2], 0,
       b[3], b[4], b[5], 0,
