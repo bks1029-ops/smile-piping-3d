@@ -84,9 +84,8 @@ function buildHX(spec) {
 
   // 명판
   add(g, box(Math.min(0.55, L * 0.18), 0.16, 0.02), MAT('#e4ebf1', 0.4, 0.3), 0, cy + R * 0.15, R + 0.011);
-  add(g, box(0.03, 0.5, 0.03), MAT('#8b939b', 0.6, 0.5), -L * 0.36, cy + R + 0.2, 0); // 리프팅 러그
-
-  void shell;
+  // 리프팅 러그
+  add(g, box(0.05, 0.16, 0.16), saddleMat, -L * 0.34, cy + R + 0.02, 0);
   return g;
 }
 

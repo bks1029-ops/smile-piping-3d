@@ -246,15 +246,6 @@ class App {
     this.scheduleSave();
   }
 
-  scheduleRebuild() {
-    if (this.rebuildTimer) return;
-    this.rebuildTimer = requestAnimationFrame(() => {
-      this.rebuildTimer = 0;
-      this.refreshScene();
-      this.updatePipeSummary();
-    });
-  }
-
   applyPlan() {
     const p = this.state.floorPlan;
     if (!p.src) {
@@ -315,7 +306,6 @@ class App {
 
   select(kind, id) {
     this.selection = { kind, id };
-    this.pendingSelection = true;
     this.refreshHighlight();
     this.renderProps();
     this.renderLists();
@@ -588,7 +578,8 @@ class App {
   // ── 카메라 ──────────────────────────────────────────────
   setView(name, immediate) {
     const v = VIEWS[name] || VIEWS.iso;
-    $$('.vbtn').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
+    const activeName = name === 'reset' ? 'iso' : name;
+    $$('.vbtn').forEach((b) => b.classList.toggle('active', b.dataset.view === activeName));
     const pos = new THREE.Vector3(...v.pos);
     const target = new THREE.Vector3(...v.target);
     if (immediate) {
@@ -896,7 +887,6 @@ class App {
   bindUI() {
     // 뷰
     $$('.vbtn').forEach((b) => b.addEventListener('click', () => this.setView(b.dataset.view)));
-    $$('.vbtn').forEach((b) => b.addEventListener('pointerup', () => b.classList.add('touched')));
 
     // 탭
     $$('#tabs .tab').forEach((t) => t.addEventListener('click', () => {
@@ -1085,7 +1075,8 @@ class App {
       if (!f) { this.pendingAi = false; return; }
       this.readImageFile(f, (src) => {
         this.applyPlanImage(src);
-        if (this.pendingAi || true) this.runAI(src);
+        this.pendingAi = false;
+        this.runAI(src);
       });
     });
 
