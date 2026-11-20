@@ -452,7 +452,8 @@ input[type="color"] {
 .ai-progress {
   position: fixed;
   z-index: 90;
-  top: calc(8px + env(safe-area-inset-top));
+  /* 상단 바(모바일 52px·데스크톱 56px) 아래에 둔다 — 버튼을 가리지 않게 */
+  top: calc(60px + env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
