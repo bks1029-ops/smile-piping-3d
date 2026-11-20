@@ -171,17 +171,17 @@ class App {
     const c = document.createElement('canvas');
     c.width = S; c.height = S;
     const g = c.getContext('2d');
-    g.fillStyle = '#1b2229';
+    g.fillStyle = '#151b21';
     g.fillRect(0, 0, S, S);
     const step = S / 5;
-    g.strokeStyle = '#2c3742';
+    g.strokeStyle = '#232d37';
     g.lineWidth = 2;
     for (let i = 1; i < 5; i += 1) {
       const p = Math.round(i * step) + 0.5;
       g.beginPath(); g.moveTo(p, 0); g.lineTo(p, S); g.stroke();
       g.beginPath(); g.moveTo(0, p); g.lineTo(S, p); g.stroke();
     }
-    g.strokeStyle = '#43515e';
+    g.strokeStyle = '#36434f';
     g.lineWidth = 4;
     g.beginPath(); g.moveTo(2, 0); g.lineTo(2, S); g.stroke();
     g.beginPath(); g.moveTo(0, 2); g.lineTo(S, 2); g.stroke();
