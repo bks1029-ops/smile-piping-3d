@@ -417,6 +417,57 @@ class App {
     this.setCmdCursor(this.equipExit(spec), true);
   }
 
+  // 연결 명령("벨브에 붙여줘", "오른쪽 배관이랑 이어줘")이 붙을 대상 찾기
+  resolveConnect(op, cursor) {
+    const wantPipe = op.target === 'pipe';
+    const VALVE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check']);
+    const dirOk = (dx, dy, dz) => {
+      if (!op.axis) return true;
+      const v = op.axis === 'x' ? dx : op.axis === 'y' ? dy : dz;
+      return v * (op.sign || 1) > 0.02;
+    };
+    const dist = (p) => Math.hypot(p.x - cursor.x, p.y - cursor.y, p.z - cursor.z);
+    let best = null;
+    const consider = (p, label) => {
+      const dx = p.x - cursor.x, dy = p.y - cursor.y, dz = p.z - cursor.z;
+      const d = Math.hypot(dx, dy, dz);
+      if (d < 0.02) return;
+      if (!dirOk(dx, dy, dz)) return;
+      if (!best || d < best.d) best = { d, p: { x: p.x, y: p.y, z: p.z }, label };
+    };
+
+    if (wantPipe) {
+      this.state.pipes.forEach((p) => {
+        const pts = p.points || [];
+        if (!pts.length) return;
+        consider(pts[0], p.name);
+        consider(pts[pts.length - 1], p.name);
+      });
+    } else {
+      this.state.equipment.forEach((e) => {
+        if (op.type && !(op.type === 'valve' ? VALVE_TYPES.has(e.type) : e.type === op.type)) return;
+        consider(this.equipExit(e), e.name);
+      });
+    }
+    return best;
+  }
+
+  // 두 점을 잇는 직교 경로 (수평 → 수직). 이미 맞으면 직선 한 구간.
+  orthoPath(a, b) {
+    const eps = 0.02;
+    const pts = [{ x: a.x, y: a.y, z: a.z }];
+    if (Math.abs(b.x - a.x) > eps) pts.push({ x: b.x, y: a.y, z: a.z });
+    if (Math.abs(b.z - a.z) > eps) pts.push({ x: b.x, y: a.y, z: b.z });
+    if (Math.abs(b.y - a.y) > eps || pts.length === 1) pts.push({ x: b.x, y: b.y, z: b.z });
+    // 같은 점이 붙어 있으면 정리
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i += 1) {
+      const p = pts[i], q = out[out.length - 1];
+      if (Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) > 1e-4) out.push(p);
+    }
+    return out;
+  }
+
   fromHere() {
     const spec = this.getSelectedSpec();
     if (!spec) return;
@@ -902,6 +953,32 @@ class App {
         sign = op.sign;
         rot = this.cmdRotFor(axis, sign);
         notes.push('방향 전환');
+        continue;
+      }
+      if (op.op === 'connect') {
+        flush();
+        const hit = this.resolveConnect(op, cursor);
+        if (!hit) {
+          this.toast(op.target === 'pipe' ? '연결할 다른 배관을 찾지 못했습니다.' : '연결할 부속·장비를 찾지 못했습니다.', { type: 'err' });
+          continue;
+        }
+        const path = this.orthoPath(cursor, hit.p);
+        pipeSeq += 1;
+        pipes.push(makePipe({
+          name: `PL-${String(pipeSeq).padStart(3, '0')} 연결`,
+          bore, material, points: path,
+        }));
+        // 마지막 구간 방향으로 다음 명령을 이어갈 수 있게 방향을 맞춘다.
+        const prev = path[path.length - 2] || cursor;
+        const last = path[path.length - 1];
+        const dx = last.x - prev.x, dy = last.y - prev.y, dz = last.z - prev.z;
+        axis = Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) >= Math.abs(dz) ? 'x'
+          : (Math.abs(dz) >= Math.abs(dy) ? 'z' : 'y');
+        const dv = axis === 'x' ? dx : axis === 'z' ? dz : dy;
+        sign = dv < 0 ? -1 : 1;
+        rot = this.cmdRotFor(axis, sign);
+        cursor = { x: hit.p.x, y: Math.max(0, hit.p.y), z: hit.p.z };
+        notes.push(`${hit.label}에 연결 ${fmt(hit.d)}m`);
         continue;
       }
       if (op.op === 'equip') {

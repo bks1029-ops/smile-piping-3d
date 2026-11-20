@@ -61,9 +61,21 @@ const COMMANDS = [
   ['실행', 'noop'], ['run', 'noop'],
   // 말로 이어 쓰는 연결어·위치 표현은 실행에 영향이 없다
   ['끝에', 'noop'], ['끝', 'noop'], ['다음', 'noop'], ['그다음', 'noop'], ['그리고', 'noop'],
-  ['이어서', 'noop'], ['이어', 'noop'], ['연결', 'noop'], ['에', 'noop'],
+  ['이어서', 'noop'], ['에', 'noop'],
   ['에서', 'noop'], ['부터', 'noop'], ['까지', 'noop'],
+  // "가장 가까운 배관 연결" 같은 말투
+  ['가장', 'noop'], ['제일', 'noop'], ['가까운', 'noop'], ['가까운곳', 'noop'],
 ];
+
+// 붙이기·잇기 동사 — "벨브에 붙여줘", "오른쪽 배관이랑 이어줘"
+const CONNECT_WORDS = new Set([
+  '붙여줘', '붙혀줘', '붙여', '붙혀', '붙여라', '붙혀라', '붙여주세요', '붙혀주세요', '붙여봐', '붙혀봐',
+  '이어줘', '이어라', '이어봐', '이어주세요', '이어줄래', '잇어줘',
+  '연결해줘', '연결해', '연결해라', '연결해주세요', '연결해줄래', '연결',
+]);
+
+// 배관을 가리키는 말 (연결 대상)
+const PIPE_WORDS = new Set(['배관', '파이프', '관']);
 
 // "엘보써서", "밸브달고" 같은 현장 말투에서 동사 어미를 떼어낸다.
 const VERB_SUFFIX = [
@@ -76,7 +88,7 @@ const stripSuffix = (t) => {
   for (const suf of VERB_SUFFIX) {
     if (s.length > suf.length && s.endsWith(suf)) { s = s.slice(0, -suf.length); break; }
   }
-  s = s.replace(/(으로|로|쪽으로|쪽|에서|부터|까지|를|을)$/u, '');
+  s = s.replace(/(으로|로|쪽으로|쪽|에서|부터|까지|이랑|랑|와|과|를|을|에)$/u, '');
   return s.replace(/\s+/g, '');
 };
 
@@ -142,6 +154,10 @@ export function parseCommand(text) {
   const items = tokens.map((raw) => {
     const t = norm(raw);
     if (BORE_RE.test(t)) return { raw, t, kind: 'bore', bore: t.toUpperCase() };
+    if (CONNECT_WORDS.has(t) || CONNECT_WORDS.has(String(raw).toLowerCase())) {
+      return { raw, t, kind: 'connect' };
+    }
+    if (PIPE_WORDS.has(t)) return { raw, t, kind: 'piperef' };
     const angle = parseAngle(t);
     if (angle) return { raw, t, kind: 'angle', angle };
     const len = parseLength(t);
@@ -195,6 +211,30 @@ export function parseCommand(text) {
     }
   }
 
+  // 2-b) 연결 명령("벨브에 붙여줘", "오른쪽 배관이랑 이어줘") — 대상을 찾아 배관 하나로 잇는다.
+  const verbIdx = items.findIndex((it) => it.kind === 'connect');
+  let connectOp = null;
+  if (verbIdx >= 0) {
+    let targetIdx = -1;
+    for (let j = verbIdx - 1; j >= 0; j -= 1) {
+      if (items[j].kind === 'equip' || items[j].kind === 'piperef') { targetIdx = j; break; }
+    }
+    let dir = null;
+    for (let j = verbIdx - 1; j >= 0; j -= 1) {
+      if (items[j].kind === 'dir') { dir = items[j]; break; }
+    }
+    const t = targetIdx >= 0 ? items[targetIdx] : null;
+    connectOp = {
+      op: 'connect',
+      target: t && t.kind === 'equip' ? 'equip' : 'pipe',
+      type: t && t.kind === 'equip' ? t.type : null,
+      axis: dir ? dir.axis : null,
+      sign: dir ? dir.sign : 1,
+    };
+    // 대상으로 쓴 부속 이름은 "그 자리에 달기"가 아니라 "그곳에 잇기"로만 쓴다.
+    if (targetIdx >= 0) consumed.add(targetIdx);
+  }
+
   // 3) 실행 순서로 변환
   const ops = [];
   let pendingDirs = []; // 각도 앞뒤로 온 방향들 (수평 방향 + 위/아래)
@@ -225,6 +265,8 @@ export function parseCommand(text) {
       ops.push({ op: 'equip', type: it.type, size1: s && s.size1, size2: s && s.size2 });
       continue;
     }
+    if (i === verbIdx && connectOp) { ops.push(connectOp); continue; }
+    if (it.kind === 'connect' || it.kind === 'piperef') continue;
     if (it.kind === 'len') {
       lastKind = 'len';
       lastEquip = '';
@@ -271,6 +313,8 @@ export const CMD_HELP = `
     <li><code>니쁠</code> · <code>45도엘보</code> · <code>캡</code> · <code>유니온</code> · <code>유량계</code> — 지금 위치에 그 부속을 답니다</li>
     <li><code>버터플라이</code> · <code>볼밸브</code> · <code>압력계</code> — 기존 부속도 같은 방식</li>
     <li><code>새배관</code> — 새 배관을 시작합니다 (지금 위치에서)</li>
+    <li><code>벨브에 붙여줘</code> · <code>플랜지에 이어줘</code> — 지금 커서에서 가장 가까운 그 부속까지 배관으로 잇습니다</li>
+    <li><code>오른쪽 배관이랑 이어줘</code> · <code>배관 연결해줘</code> — 다른 배관 끝점까지 잇습니다 (방향을 빼면 가장 가까운 곳)</li>
     <li><code>되돌리기</code> · <code>초기화</code> — 직전 명령 취소 · 씬 비우기</li>
   </ul>
   <p class="hint">방향: 오른쪽(+X) 왼쪽(−X) 위(+Y) 아래(−Y) 앞(+Z) 뒤(−Z). 관경·재질을 안 쓰면 직전 값을 이어 씁니다(기본 50A 흑관).
