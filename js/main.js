@@ -174,14 +174,14 @@ class App {
     g.fillStyle = '#1b2229';
     g.fillRect(0, 0, S, S);
     const step = S / 5;
-    g.strokeStyle = '#333f4b';
+    g.strokeStyle = '#2c3742';
     g.lineWidth = 2;
     for (let i = 1; i < 5; i += 1) {
       const p = Math.round(i * step) + 0.5;
       g.beginPath(); g.moveTo(p, 0); g.lineTo(p, S); g.stroke();
       g.beginPath(); g.moveTo(0, p); g.lineTo(S, p); g.stroke();
     }
-    g.strokeStyle = '#4f6070';
+    g.strokeStyle = '#43515e';
     g.lineWidth = 4;
     g.beginPath(); g.moveTo(2, 0); g.lineTo(2, S); g.stroke();
     g.beginPath(); g.moveTo(0, 2); g.lineTo(S, 2); g.stroke();
@@ -610,6 +610,7 @@ class App {
     const vFov = THREE.MathUtils.degToRad(this.camera.fov);
     const hFov = 2 * Math.atan(Math.tan(vFov / 2) * Math.max(0.5, this.camera.aspect));
     const fov = Math.min(vFov, hFov);
+    const fillRatio = name === 'top' ? 0.74 : 0.84;
     const radius = Math.max(2, box.getSize(new THREE.Vector3()).length() / 2);
     let dist = radius / Math.sin(fov / 2);
 
@@ -624,8 +625,8 @@ class App {
         const p = c.clone().project(probe);
         m = Math.max(m, Math.abs(p.x), Math.abs(p.y));
       });
-      if (Math.abs(m - 0.85) < 0.02) break;
-      dist = Math.max(2, dist * (m / 0.85));
+      if (Math.abs(m - fillRatio) < 0.02) break;
+      dist = Math.max(2, dist * (m / fillRatio));
     }
     return { pos: target.clone().addScaledVector(dir, dist), target };
   }
