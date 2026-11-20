@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS } from './store.js?v=15';
+import { BORES, MATERIALS, boreOd } from './store.js?v=16';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -215,7 +215,8 @@ function buildValve(spec) {
   }
   add(g, cyl(0.032, 0.05, 14), darkMat, 0, 0.405, 0);
 
-  g.scale.set(spec.w / 0.34, spec.h / 0.58, spec.d / 0.3);
+  // x 배율의 기준값 0.264 = 이 메시의 실제 좌우 폭(m) — 커서 전진 폭과 1:1로 맞춘다.
+  g.scale.set(spec.w / 0.264, spec.h / 0.58, spec.d / 0.3);
   return g;
 }
 
@@ -398,7 +399,7 @@ function buildButterfly(spec) {
   for (let i = 0; i < 3; i += 1) add(g, box(0.19, 0.011, 0.02), dark, 0, 0.435, 0, 0, (Math.PI / 3) * i, 0);
   add(g, cyl(0.022, 0.03, 12), dark, 0, 0.44, 0);
 
-  g.scale.set(spec.w / 0.34, spec.h / 0.46, spec.d / 0.32);
+  g.scale.set(spec.w / 0.174, spec.h / 0.46, spec.d / 0.32);
   return g;
 }
 
@@ -426,7 +427,7 @@ function buildYValve(spec) {
   for (let i = 0; i < 3; i += 1) add(g, box(0.22, 0.011, 0.02), dark, 0, 0.27, 0, 0, (Math.PI / 3) * i, 0);
   add(g, cyl(0.024, 0.04, 12), dark, 0, 0.275, 0);
 
-  g.scale.set(spec.w / 0.36, spec.h / 0.5, spec.d / 0.34);
+  g.scale.set(spec.w / 0.296, spec.h / 0.5, spec.d / 0.34);
   return g;
 }
 
@@ -445,7 +446,7 @@ function buildBall(spec) {
   add(g, box(0.19, 0.02, 0.024), dark, 0.035, 0.145, 0);
   add(g, cyl(0.026, 0.03, 12), dark, 0, 0.148, 0);
 
-  g.scale.set(spec.w / 0.26, spec.h / 0.34, spec.d / 0.24);
+  g.scale.set(spec.w / 0.234, spec.h / 0.34, spec.d / 0.24);
   return g;
 }
 
@@ -462,7 +463,7 @@ function buildCheck(spec) {
   add(g, cyl(0.011, 0.05, 8), steel, 0, 0.14, 0);
   add(g, cyl(0.02, 0.014, 10), dark, 0, 0.165, 0);
 
-  g.scale.set(spec.w / 0.24, spec.h / 0.26, spec.d / 0.22);
+  g.scale.set(spec.w / 0.108, spec.h / 0.26, spec.d / 0.22);
   return g;
 }
 
@@ -493,7 +494,7 @@ function buildBellows(spec) {
     [-1, 1].forEach((sx) => add(g, cyl(0.02, 0.028, 8), dark, sx * (len / 2 + 0.01), dy, dz, 0, 0, Math.PI / 2));
   });
 
-  g.scale.set(spec.w / 0.38, spec.h / 0.34, spec.d / 0.34);
+  g.scale.set(spec.w / 0.304, spec.h / 0.34, spec.d / 0.34);
   return g;
 }
 
@@ -525,36 +526,184 @@ function buildElbow(spec) {
   return g;
 }
 
-// ── 티 분기관 (직관 + 직각 분기) ─────────────────────────
+// ── 티 분기관 (주배관 1차 관경 + 분기 2차 관경) ──────────
+// spec.bore1(주배관) · spec.bore2(분기)의 실제 외경으로 주배관·분기 노즐 지름을 그린다.
 function buildTee(spec) {
   const g = new THREE.Group();
   const bodyMat = MAT(spec.color, 0.4, 0.8);
   const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
+  const b1 = spec.bore1 || '100A';
+  const b2 = spec.bore2 || b1;
+  const r1 = boreOd(b1) / 2;
+  const r2 = boreOd(b2) / 2;
+  const L = Math.max(0.22, 2.6 * r1 * 2); // 주배관 길이
+  const branchH = Math.max(0.1, L * 0.5);
+  const s = Math.max(0.05, spec.w) / (L + 0.03);
 
-  add(g, cyl(0.058, 0.3, 22), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.052, 0.15, 20), bodyMat, 0, 0.07, 0);
-  add(g, sphere(0.066, 18), bodyMat, 0, 0, 0);
-  add(g, cyl(0.085, 0.022, 22), bodyMat, 0, 0.15, 0);
-  add(g, torus(0.06, 0.007), beadMat, 0.15, 0, 0, 0, Math.PI / 2, 0);
-  add(g, torus(0.06, 0.007), beadMat, -0.15, 0, 0, 0, Math.PI / 2, 0);
-  add(g, torus(0.054, 0.007), beadMat, 0, 0.148, 0, Math.PI / 2, 0, 0);
+  add(g, cyl(r1, L, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2); // 주배관 (1차)
+  add(g, sphere(r1 * 1.1, 20), bodyMat, 0, 0, 0); // 분기 목
+  add(g, cyl(r2, branchH, 22), bodyMat, 0, branchH / 2, 0); // 분기관 (2차)
+  add(g, cyl(r2 * 1.4, 0.022, 22), bodyMat, 0, branchH, 0); // 분기 플랜지
+  add(g, torus(r1 * 1.03, 0.006), beadMat, L / 2, 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(r1 * 1.03, 0.006), beadMat, -L / 2, 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(r2 * 1.04, 0.006), beadMat, 0, branchH - 0.014, 0, Math.PI / 2, 0, 0);
 
-  g.scale.set(spec.w / 0.34, spec.h / 0.26, spec.d / 0.22);
+  g.scale.set(s, s, s);
   return g;
 }
 
-// ── 레듀샤 (이경관 · 원뿔 축소) ───────────────────────────
+// ── 레듀샤 (이경관 · 1차 관경 → 2차 관경 원뿔) ───────────
+// 100A→50A처럼 양단 지름이 실제로 다르게 그려진다. 1차는 −X, 2차는 +X.
 function buildReducer(spec) {
   const g = new THREE.Group();
   const bodyMat = MAT(spec.color, 0.4, 0.8);
   const steel = MAT('#9aa3ab', 0.35, 0.85);
-  const L = 0.22;
+  const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
+  const b1 = spec.bore1 || '100A';
+  const b2 = spec.bore2 || '50A';
+  const r1 = boreOd(b1) / 2;
+  const r2 = boreOd(b2) / 2;
+  const L = Math.max(0.1, 0.12 + 0.6 * Math.abs(r1 - r2) * 2);
+  const FT = 0.024;
+  const s = Math.max(0.05, spec.w) / (L + FT * 2);
 
-  add(g, cyl2(0.1, 0.062, L, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.112, 0.026, 26), steel, -(L / 2 + 0.013), 0, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.072, 0.026, 24), steel, L / 2 + 0.013, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl2(r1, r2, L, 28), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(r1 * 1.22, FT, 28), steel, -(L / 2 + FT / 2), 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(r2 * 1.35, FT, 26), steel, L / 2 + FT / 2, 0, 0, 0, 0, Math.PI / 2);
+  add(g, torus(r1 * 1.05, 0.005), beadMat, -(L / 2 - 0.012), 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(r2 * 1.06, 0.005), beadMat, L / 2 - 0.012, 0, 0, 0, Math.PI / 2, 0);
 
-  g.scale.set(spec.w / 0.32, spec.h / 0.22, spec.d / 0.22);
+  g.scale.set(s, s, s);
+  return g;
+}
+
+// ── 니쁠 (단니쁠 · 육각 너트부 + 양단 수나사) ────────────
+function buildNipple(spec) {
+  const g = new THREE.Group();
+  const hexMat = MAT(shade(spec.color, 0.95), 0.4, 0.85);
+  const steel = MAT('#9aa3ab', 0.35, 0.9);
+  const threadMat = MAT('#7d868e', 0.5, 0.75);
+
+  // 중앙 육각 너트부
+  add(g, cyl(0.05, 0.05, 6), hexMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.052, 0.008, 6), hexMat, -0.026, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.052, 0.008, 6), hexMat, 0.026, 0, 0, 0, 0, Math.PI / 2);
+
+  // 양단 수나사 + 나사산 + 끝면
+  [-1, 1].forEach((sx) => {
+    add(g, cyl(0.03, 0.045, 18), steel, sx * 0.0475, 0, 0, 0, 0, Math.PI / 2);
+    for (let i = 0; i < 4; i += 1) {
+      add(g, cyl(0.032, 0.005, 18), threadMat, sx * (0.032 + i * 0.012), 0, 0, 0, 0, Math.PI / 2);
+    }
+    add(g, cyl(0.03, 0.006, 18), threadMat, sx * 0.07, 0, 0, 0, 0, Math.PI / 2);
+  });
+
+  g.scale.set(spec.w / 0.146, spec.h / 0.1, spec.d / 0.1);
+  return g;
+}
+
+// ── 45° 엘보 (곡관 45° + 양단 직관 스텁) ─────────────────
+function buildElbow45(spec) {
+  const g = new THREE.Group();
+  const inner = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.8);
+  const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
+  const R = 0.13;
+  const r = 0.05;
+  const A = Math.PI / 4;
+
+  const arc = new THREE.Mesh(
+    G(`elbow45arc|${R}|${r}`, () => new THREE.TorusGeometry(R, r, 12, 24, A)), bodyMat);
+  arc.castShadow = true;
+  arc.receiveShadow = true;
+  inner.add(arc);
+
+  const end = [R * Math.cos(A), R * Math.sin(A), 0];
+  const tan = [-Math.sin(A), Math.cos(A), 0];
+  addTube(inner, [R, 0, 0], [R + 0.05, 0, 0], r, bodyMat, 20);
+  addTube(inner, end, [end[0] + tan[0] * 0.05, end[1] + tan[1] * 0.05, 0], r, bodyMat, 20);
+
+  const bead = (pos, dir) => {
+    const m = new THREE.Mesh(torus(r * 1.08, 0.006), beadMat);
+    m.position.set(pos[0], pos[1], 0);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(dir[0], dir[1], 0).normalize());
+    m.castShadow = true;
+    inner.add(m);
+  };
+  bead([R + 0.046, 0], [1, 0]);
+  bead([end[0] + tan[0] * 0.046, end[1] + tan[1] * 0.046], tan);
+
+  inner.position.set(-(R + 0.05) / 2, -(R * Math.sin(A) + 0.04) / 2, 0);
+  g.add(inner);
+  g.scale.set(spec.w / 0.123, spec.h / 0.21, spec.d / 0.1);
+  return g;
+}
+
+// ── 엔드캡 (배관 끝단 마감 · 용접 캡) ─────────────────────
+function buildCap(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.4, 0.8);
+  const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
+  const r = 0.055;
+
+  add(g, cyl(r, 0.075, 26), bodyMat, -0.02, 0, 0, 0, 0, Math.PI / 2);
+  const dome = add(g, sphere(r, 20), bodyMat, 0.018, 0, 0);
+  dome.scale.set(0.72, 1, 1);
+  add(g, torus(r * 1.06, 0.007), beadMat, -0.055, 0, 0, 0, Math.PI / 2, 0);
+  add(g, cyl(r * 0.7, 0.03, 6), beadMat, -0.075, 0, 0, 0, 0, Math.PI / 2); // 렌치 자리
+
+  g.scale.set(spec.w / 0.148, spec.h / 0.11, spec.d / 0.11);
+  return g;
+}
+
+// ── 유니온 (육각 조임 너트 3단 + 소켓 끝단) ─────────────
+function buildUnion(spec) {
+  const g = new THREE.Group();
+  const nutMat = MAT(spec.color, 0.42, 0.82);
+  const steel = MAT('#9aa3ab', 0.35, 0.88);
+  const dark = MAT('#6f7880', 0.5, 0.7);
+
+  // 중앙 조임 너트 + 양쪽 육각 너트 (3단)
+  add(g, cyl(0.05, 0.06, 6), nutMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.043, 0.042, 6), nutMat, -0.047, 0, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.043, 0.042, 6), nutMat, 0.047, 0, 0, 0, 0, Math.PI / 2);
+  // 소켓(테이퍼) 끝단 + 틈새 링
+  [-1, 1].forEach((sx) => {
+    add(g, cyl2(0.036, 0.03, 0.05, 20), steel, sx * 0.078, 0, 0, 0, 0, Math.PI / 2);
+    add(g, cyl(0.038, 0.006, 20), dark, sx * 0.052, 0, 0, 0, 0, Math.PI / 2);
+  });
+
+  g.scale.set(spec.w / 0.206, spec.h / 0.1, spec.d / 0.1);
+  return g;
+}
+
+// ── 유량계 (플랜지 바디 + 상부 트랜스미터 헤드) ──────────
+function buildFlow(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.38, 0.75);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.6, 0.5);
+  const face = MAT('#e9f2f7', 0.35, 0.15);
+
+  // 계기 바디 (흐름 X) + 양단 플랜지·볼트
+  add(g, cyl(0.06, 0.18, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  [-1, 1].forEach((sx) => {
+    add(g, cyl(0.1, 0.032, 28), steel, sx * 0.104, 0, 0, 0, 0, Math.PI / 2);
+    for (let i = 0; i < 6; i += 1) {
+      const a = (Math.PI * 2 * i) / 6;
+      add(g, cyl(0.011, 0.06, 8), dark, sx * 0.104, Math.cos(a) * 0.082, Math.sin(a) * 0.082, 0, 0, Math.PI / 2);
+    }
+  });
+  // 상부 스템 · 트랜스미터 헤드 · 표시창
+  add(g, cyl(0.035, 0.1, 18), steel, 0, 0.11, 0);
+  add(g, cyl(0.055, 0.03, 20), steel, 0, 0.17, 0);
+  add(g, cyl(0.082, 0.16, 24), bodyMat, 0, 0.27, 0);
+  add(g, cyl(0.086, 0.02, 24), dark, 0, 0.36, 0);
+  add(g, box(0.13, 0.08, 0.012), face, 0, 0.28, 0.083);
+  add(g, box(0.05, 0.012, 0.014), dark, 0, 0.245, 0.086);
+  add(g, cyl(0.014, 0.05, 10), dark, -0.04, 0.4, 0);
+
+  g.scale.set(spec.w / 0.24, spec.h / 0.42, spec.d / 0.24);
   return g;
 }
 
@@ -571,7 +720,7 @@ function buildFlange(spec) {
   }
   add(g, cyl(0.05, 0.05, 22), MAT('#2a3138', 0.7, 0.4), 0, 0, 0, 0, 0, Math.PI / 2);
 
-  g.scale.set(spec.w / 0.14, spec.h / 0.26, spec.d / 0.26);
+  g.scale.set(spec.w / 0.06, spec.h / 0.26, spec.d / 0.26);
   return g;
 }
 
@@ -715,6 +864,11 @@ const EQUIP_BUILDERS = {
   elbow: buildElbow,
   tee: buildTee,
   reducer: buildReducer,
+  nipple: buildNipple,
+  elbow45: buildElbow45,
+  cap: buildCap,
+  union: buildUnion,
+  flow: buildFlow,
   flange: buildFlange,
   support: buildSupport,
   gauge: buildGauge,

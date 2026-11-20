@@ -15,6 +15,32 @@ export const MATERIALS = {
   insulated: { label: '보온배관', color: '#c9b48d', roughness: 0.92, metalness: 0.05, jacket: 0.035 },
 };
 
+// 관경 외경(m) — 부속(레듀샤·티)을 실제 관경 크기로 그릴 때 쓴다.
+export function boreOd(bore) {
+  return (BORES[bore] || BORES['100A']).od;
+}
+
+// 이경 부속(레듀샤·티)의 실제 폭(m). builders.js·fusion.js의 치수식과 같다.
+//  · 레듀샤: 큰 관경에서 작은 관경으로 줄어드는 원뿔 길이 + 양단 플랜지
+//  · 티: 주배관 길이 + 양단 용접 비드
+// 이 폭만큼 커서를 전진시켜 앞뒤 배관과 겹치지 않게 한다.
+export function fittingNaturalWidth(type, bore1, bore2) {
+  const o1 = boreOd(bore1);
+  const o2 = boreOd(bore2 || bore1);
+  if (type === 'reducer') {
+    const L = Math.max(0.1, 0.12 + 0.6 * Math.abs(o1 - o2));
+    return round3(L + 0.048);
+  }
+  if (type === 'tee') {
+    return round3(Math.max(0.22, 2.6 * o1) + 0.03);
+  }
+  return 0;
+}
+
+function round3(v) {
+  return Math.round(v * 1000) / 1000;
+}
+
 // 부속 카테고리 — [장비] 탭에서 이 순서대로 묶어 보여준다.
 export const EQUIP_CATEGORIES = [
   { id: 'equip', label: '장비' },
@@ -56,31 +82,32 @@ export const EQUIP_TYPES = {
   },
 
   // ── 밸브 ──
+  // w는 곧 "배관 방향 실제 길이"다 — builders.js 메시의 좌우 접합면 폭과 1:1로 맞춘 값이다.
   valve: {
     cat: 'valve', label: '게이트밸브', short: 'GV',
-    defaults: { w: 0.34, h: 0.58, d: 0.3 }, color: '#cfd4d8',
+    defaults: { w: 0.264, h: 0.58, d: 0.3 }, color: '#cfd4d8',
   },
   bfly: {
     cat: 'valve', label: '기어 버터플라이 밸브', short: 'BF',
-    defaults: { w: 0.34, h: 0.46, d: 0.32 }, color: '#1f5fd0',
+    defaults: { w: 0.174, h: 0.46, d: 0.32 }, color: '#1f5fd0',
   },
   yvalve: {
     cat: 'valve', label: '경사형 체크·스트레이너', short: 'YV',
-    defaults: { w: 0.36, h: 0.5, d: 0.34 }, color: '#c0392b',
+    defaults: { w: 0.296, h: 0.5, d: 0.34 }, color: '#c0392b',
   },
   ball: {
     cat: 'valve', label: '볼밸브', short: 'BV',
-    defaults: { w: 0.26, h: 0.34, d: 0.24 }, color: '#d8dde2',
+    defaults: { w: 0.234, h: 0.34, d: 0.24 }, color: '#d8dde2',
   },
   check: {
     cat: 'valve', label: '체크밸브 (웨이퍼)', short: 'CV',
-    defaults: { w: 0.24, h: 0.26, d: 0.22 }, color: '#b9bfc6',
+    defaults: { w: 0.108, h: 0.26, d: 0.22 }, color: '#b9bfc6',
   },
 
   // ── 피팅 · 서포트 ──
   bellows: {
     cat: 'fitting', label: '벨로우즈 신축관', short: 'EJ',
-    defaults: { w: 0.38, h: 0.34, d: 0.34 }, color: '#cfd4d8',
+    defaults: { w: 0.304, h: 0.34, d: 0.34 }, color: '#cfd4d8',
   },
   elbow: {
     cat: 'fitting', label: '90° 엘보', short: 'EL',
@@ -89,14 +116,32 @@ export const EQUIP_TYPES = {
   tee: {
     cat: 'fitting', label: '티 분기관', short: 'TE',
     defaults: { w: 0.34, h: 0.26, d: 0.22 }, color: '#c9d0d6',
+    bore1: '100A', bore2: '100A',
   },
   reducer: {
     cat: 'fitting', label: '레듀샤 (이경관)', short: 'RD',
     defaults: { w: 0.32, h: 0.22, d: 0.22 }, color: '#c9d0d6',
+    bore1: '100A', bore2: '50A',
+  },
+  nipple: {
+    cat: 'fitting', label: '니쁠 (단니쁠)', short: 'NI',
+    defaults: { w: 0.146, h: 0.1, d: 0.1 }, color: '#b9c0c7',
+  },
+  elbow45: {
+    cat: 'fitting', label: '45° 엘보', short: 'E45',
+    defaults: { w: 0.14, h: 0.16, d: 0.11 }, color: '#c9d0d6',
+  },
+  cap: {
+    cat: 'fitting', label: '캡 (엔드캡·마개)', short: 'CP',
+    defaults: { w: 0.148, h: 0.11, d: 0.11 }, color: '#c9d0d6',
+  },
+  union: {
+    cat: 'fitting', label: '유니온 (소켓)', short: 'UN',
+    defaults: { w: 0.206, h: 0.1, d: 0.1 }, color: '#b9c0c7',
   },
   flange: {
     cat: 'fitting', label: '플랜지', short: 'FL',
-    defaults: { w: 0.14, h: 0.26, d: 0.26 }, color: '#9aa3ab',
+    defaults: { w: 0.06, h: 0.26, d: 0.26 }, color: '#9aa3ab',
   },
   support: {
     cat: 'fitting', label: '파이프 서포트', short: 'SP',
@@ -107,6 +152,10 @@ export const EQUIP_TYPES = {
   gauge: {
     cat: 'instr', label: '압력계 · 온도계', short: 'PG',
     defaults: { w: 0.2, h: 0.34, d: 0.16 }, color: '#e2e8ee',
+  },
+  flow: {
+    cat: 'instr', label: '유량계 (플로우미터)', short: 'FM',
+    defaults: { w: 0.24, h: 0.44, d: 0.24 }, color: '#8fa7bf',
   },
 };
 
@@ -124,7 +173,7 @@ export function uid(prefix) {
 export function makeEquipment(type, opts) {
   const t = EQUIP_TYPES[type] || EQUIP_TYPES.tank;
   const o = opts || {};
-  return {
+  const spec = {
     id: uid('e'),
     kind: 'equipment',
     type,
@@ -136,6 +185,14 @@ export function makeEquipment(type, opts) {
     rot: num(o.rot, 0),
     color: o.color || t.color,
   };
+  // 이경 부속(레듀샤·티)은 1차/2차 관경을 기억하고, 실제 관경 크기로 폭을 잡는다.
+  if (type === 'reducer' || type === 'tee') {
+    spec.bore1 = BORES[o.bore1] ? o.bore1 : (t.bore1 || '100A');
+    const d2 = type === 'tee' ? spec.bore1 : (t.bore2 || '50A');
+    spec.bore2 = BORES[o.bore2] ? o.bore2 : d2;
+    if (o.w == null) spec.w = fittingNaturalWidth(type, spec.bore1, spec.bore2);
+  }
+  return spec;
 }
 
 export function makePipe(opts) {
@@ -283,7 +340,7 @@ export function normalizeState(raw) {
     raw.equipment.forEach((e) => {
       const type = EQUIP_TYPES[e && e.type] ? e.type : 'tank';
       const t = EQUIP_TYPES[type];
-      s.equipment.push({
+      const item = {
         id: e.id || uid('e'),
         kind: 'equipment',
         type,
@@ -294,7 +351,12 @@ export function normalizeState(raw) {
         d: Math.max(0.1, num(e.d, t.defaults.d)),
         rot: num(e.rot, 0),
         color: /^#[0-9a-f]{6}$/i.test(e.color || '') ? e.color : t.color,
-      });
+      };
+      if (type === 'reducer' || type === 'tee') {
+        item.bore1 = BORES[e.bore1] ? e.bore1 : (t.bore1 || '100A');
+        item.bore2 = BORES[e.bore2] ? e.bore2 : (type === 'tee' ? item.bore1 : (t.bore2 || '50A'));
+      }
+      s.equipment.push(item);
     });
   }
   if (Array.isArray(raw.pipes)) {

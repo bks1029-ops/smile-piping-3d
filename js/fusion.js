@@ -13,6 +13,7 @@ export function buildFusionScript(state) {
     equipment: state.equipment.map((e) => ({
       type: e.type, name: e.name, x: e.x, y: e.y, z: e.z,
       w: e.w, h: e.h, d: e.d, rot: e.rot,
+      bore1: e.bore1 || null, bore2: e.bore2 || null,
     })),
     pipes: state.pipes.map((p) => ({
       name: p.name, bore: p.bore, material: p.material,
@@ -433,39 +434,179 @@ def build_elbow(comp, e, tag):
     return made
 
 
+def _bore(b, default):
+    """관경 이름 → 외경(m). 모르는 값이면 default."""
+    return BORES.get(b, default)
+
+
 def build_tee(comp, e, tag):
-    """티 분기관 — 직관 + 직각 분기관"""
+    """티 분기관 — 주배관 1차 관경 + 분기 2차 관경 (분기 노즐 지름 반영)"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.34, 0.26, 0.22)
+    b1 = e.get('bore1') or '100A'
+    b2 = e.get('bore2') or b1
+    r1 = _bore(b1, 0.1143) / 2.0
+    r2 = _bore(b2, _bore(b1, 0.1143)) / 2.0
+    L = max(0.22, 2.6 * r1 * 2.0)
+    branch = max(0.1, L * 0.5)
+    # 웹앱은 메시 폭(spec.w)에 맞춰 균일 배율을 준다 — 퓨전에서도 같은 배율을 쓴다.
+    s = max(0.05, e.get('w') or (L + 0.03)) / (L + 0.03)
+    L *= s
+    branch *= s
+    r1 *= s
+    r2 *= s
 
     def P(lx, ly, lz):
-        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+        return local_to_world(e, (lx, ly, lz))
 
-    if add_cylinder(comp, P(-0.15, 0, 0), P(0.15, 0, 0), 0.058 * sx, tag + '_Run'):
+    if add_cylinder(comp, P(-L / 2, 0, 0), P(L / 2, 0, 0), r1, tag + '_Run'):
         made += 1
-    if add_cylinder(comp, P(0, 0, 0), P(0, 0.15, 0), 0.052 * sx, tag + '_Branch'):
+    if add_cylinder(comp, P(0, 0, 0), P(0, branch, 0), r2, tag + '_Branch'):
         made += 1
-    if add_cylinder(comp, P(0, 0.14, 0), P(0, 0.165, 0), 0.085 * sx, tag + '_BranchFlange'):
+    if add_cylinder(comp, P(0, branch, 0), P(0, branch + 0.03, 0), r2 * 1.4, tag + '_BranchFlange'):
         made += 1
     return made
 
 
 def build_reducer(comp, e, tag):
-    """레듀샤 — 이경 원통 2단 + 양단 플랜지"""
+    """레듀샤 — 1차 관경에서 2차 관경으로 줄어드는 이경 원통 + 양단 플랜지"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.32, 0.22, 0.22)
-    L = 0.22
+    b1 = e.get('bore1') or '100A'
+    b2 = e.get('bore2') or '50A'
+    r1 = _bore(b1, 0.1143) / 2.0
+    r2 = _bore(b2, 0.0605) / 2.0
+    L = max(0.1, 0.12 + 0.6 * abs(r1 - r2) * 2.0)
+    FT = 0.024
+    s = max(0.05, e.get('w') or (L + FT * 2)) / (L + FT * 2)
+    L *= s
+    r1 *= s
+    r2 *= s
+    FT *= s
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx, ly, lz))
+
+    # 원뿔을 3단 원통으로 근사 — 1차 관경에서 2차 관경으로 줄어드는 모양
+    steps = 3
+    for i in range(steps):
+        xa = -L / 2 + (L / steps) * i
+        xb = -L / 2 + (L / steps) * (i + 1)
+        ra = r1 + (r2 - r1) * (float(i) / steps)
+        if add_cylinder(comp, P(xa, 0, 0), P(xb, 0, 0), ra, '%s_Cone%d' % (tag, i + 1)):
+            made += 1
+    if add_cylinder(comp, P(-L / 2 - FT, 0, 0), P(-L / 2, 0, 0), r1 * 1.22, tag + '_FlangeBig'):
+        made += 1
+    if add_cylinder(comp, P(L / 2, 0, 0), P(L / 2 + FT, 0, 0), r2 * 1.35, tag + '_FlangeSmall'):
+        made += 1
+    return made
+
+
+def build_nipple(comp, e, tag):
+    """니쁠(단니쁠) — 육각 너트부 + 양단 수나사"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.146, 0.1, 0.1)
+    rs = (sx + sy + sz) / 3.0
 
     def P(lx, ly, lz):
         return local_to_world(e, (lx * sx, ly * sy, lz * sz))
 
-    if add_cylinder(comp, P(-L / 2, 0, 0), P(-L / 6, 0, 0), 0.1 * sx, tag + '_Big'):
+    if add_cylinder(comp, P(-0.025, 0, 0), P(0.025, 0, 0), 0.05 * rs, tag + '_HexNut'):
         made += 1
-    if add_cylinder(comp, P(-L / 6, 0, 0), P(L / 2, 0, 0), 0.07 * sx, tag + '_Small'):
+    if add_cylinder(comp, P(-0.07, 0, 0), P(-0.026, 0, 0), 0.03 * rs, tag + '_ThreadA'):
         made += 1
-    for d, r in ((-1, 0.112), (1, 0.072)):
-        if add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.026), 0, 0), r * sx, tag + '_Flange'):
+    if add_cylinder(comp, P(0.026, 0, 0), P(0.07, 0, 0), 0.03 * rs, tag + '_ThreadB'):
+        made += 1
+    return made
+
+
+def build_elbow45(comp, e, tag):
+    """45° 엘보 — 45° 곡관(3분할) + 입·출구 직관 스텁"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.123, 0.21, 0.1)
+    rs = (sx + sy + sz) / 3.0
+    R = 0.13
+    r = 0.05
+    A = math.pi / 4.0
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(R, 0, 0), P(R + 0.05, 0, 0), r * rs, tag + '_StubIn'):
+        made += 1
+    pts = [(R, 0, 0)]
+    for i in range(1, 4):
+        a = A * i / 3.0
+        pts.append((R * math.cos(a), R * math.sin(a), 0))
+    for i in range(len(pts) - 1):
+        if add_cylinder(comp, P(pts[i][0], pts[i][1], 0), P(pts[i + 1][0], pts[i + 1][1], 0), r * rs,
+                        '%s_Bend%d' % (tag, i + 1)):
             made += 1
+    ex = R * math.cos(A)
+    ey = R * math.sin(A)
+    tx = -math.sin(A)
+    ty = math.cos(A)
+    if add_cylinder(comp, P(ex, ey, 0), P(ex + tx * 0.05, ey + ty * 0.05, 0), r * rs, tag + '_StubOut'):
+        made += 1
+    return made
+
+
+def build_cap(comp, e, tag):
+    """엔드캡 — 원통 몸체 + 돔 마감"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.148, 0.11, 0.11)
+    rs = (sy + sz) / 2.0
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.058, 0, 0), P(0.018, 0, 0), 0.055 * rs, tag + '_Body'):
+        made += 1
+    if add_cylinder(comp, P(0.018, 0, 0), P(0.05, 0, 0), 0.04 * rs, tag + '_Dome'):
+        made += 1
+    return made
+
+
+def build_union(comp, e, tag):
+    """유니온 — 육각 조임 너트 3단 + 양단 소켓"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.206, 0.1, 0.1)
+    rs = (sy + sz) / 2.0
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.03, 0, 0), P(0.03, 0, 0), 0.05 * rs, tag + '_NutCenter'):
+        made += 1
+    if add_cylinder(comp, P(-0.068, 0, 0), P(-0.026, 0, 0), 0.043 * rs, tag + '_NutA'):
+        made += 1
+    if add_cylinder(comp, P(0.026, 0, 0), P(0.068, 0, 0), 0.043 * rs, tag + '_NutB'):
+        made += 1
+    if add_cylinder(comp, P(-0.103, 0, 0), P(-0.068, 0, 0), 0.033 * rs, tag + '_SocketA'):
+        made += 1
+    if add_cylinder(comp, P(0.068, 0, 0), P(0.103, 0, 0), 0.033 * rs, tag + '_SocketB'):
+        made += 1
+    return made
+
+
+def build_flow(comp, e, tag):
+    """유량계 — 플랜지 바디 + 상부 트랜스미터 헤드"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.24, 0.42, 0.24)
+    rs = (sx + sy + sz) / 3.0
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(-0.09, 0, 0), P(0.09, 0, 0), 0.06 * rs, tag + '_Body'):
+        made += 1
+    for d in (-1, 1):
+        if add_cylinder(comp, P(d * 0.088, 0, 0), P(d * 0.12, 0, 0), 0.1 * rs, tag + '_Flange'):
+            made += 1
+    if add_cylinder(comp, P(0, 0.04, 0), P(0, 0.16, 0), 0.035 * rs, tag + '_Stem'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.19, 0), P(0, 0.35, 0), 0.082 * rs, tag + '_Head'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.35, 0), P(0, 0.38, 0), 0.086 * rs, tag + '_HeadCap'):
+        made += 1
     return made
 
 
@@ -643,6 +784,11 @@ def build(comp, scene, report):
         'elbow': build_elbow,
         'tee': build_tee,
         'reducer': build_reducer,
+        'nipple': build_nipple,
+        'elbow45': build_elbow45,
+        'cap': build_cap,
+        'union': build_union,
+        'flow': build_flow,
         'flange': build_flange,
         'support': build_support,
         'gauge': build_gauge,
@@ -679,7 +825,7 @@ def run(context):
         scene = json.loads(SCENE_JSON)
 
         # 새 문서 생성 (기존 문서를 건드리지 않음)
-        app.documents.add(adsk.fusion.DocumentTypes.FusionDesignDocumentType)
+        app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
         design = adsk.fusion.Design.cast(app.activeProduct)
         if not design:
             ui.messageBox('Fusion 360 디자인 문서를 열 수 없습니다. 디자인 워크스페이스에서 다시 실행해 주세요.')
