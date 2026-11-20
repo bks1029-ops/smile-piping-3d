@@ -69,7 +69,7 @@ async function callModel({ apiKey, model, text, mimeType, base64 }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text }, { inlineData: { mimeType, data: base64 } }] }],
-        generationConfig: { temperature: 0.15, responseMimeType: 'application/json', maxOutputTokens: 8192 },
+        generationConfig: { temperature: 0.15, responseMimeType: 'application/json', maxOutputTokens: 16384 },
       }),
     });
   } catch (e) {
@@ -97,9 +97,16 @@ async function callModel({ apiKey, model, text, mimeType, base64 }) {
 
   const data = await res.json();
   const cand = data.candidates && data.candidates[0];
+  if (cand && cand.finishReason === 'MAX_TOKENS') {
+    throw new Error('분석 결과가 길어 잘렸습니다. 사진을 나눠 올리거나 현장 메모를 빼고 다시 시도해 주세요.');
+  }
   const parts = cand && cand.content && cand.content.parts;
   const raw = parts ? parts.map((p) => p.text || '').join('') : '';
-  if (!raw) throw new Error('Gemini가 결과를 반환하지 않았습니다. 사진이 흐리거나 해상도가 낮을 수 있습니다.');
+  if (!raw) {
+    const block = data.promptFeedback && data.promptFeedback.blockReason;
+    if (block) throw new Error(`Gemini가 이 사진을 처리하지 못했습니다 (${block}). 다른 사진으로 시도해 주세요.`);
+    throw new Error('Gemini가 결과를 반환하지 않았습니다. 사진이 흐리거나 해상도가 낮을 수 있습니다.');
+  }
   return raw;
 }
 
