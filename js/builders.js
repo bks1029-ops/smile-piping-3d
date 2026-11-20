@@ -635,7 +635,6 @@ function buildElbow45(spec) {
 
   return g;
 }
-}
 
 // ── 엔드캡 (배관 끝단 마감 · 용접 캡) ─────────────────────
 function buildCap(spec) {
