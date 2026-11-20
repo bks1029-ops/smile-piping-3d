@@ -32,6 +32,13 @@ const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/
 
 const VIEW_NAMES = ['iso', 'top', 'front', 'reset'];
 
+// 배관을 끊고 그 자리에 앉는 부속(인라인) — 실제 길이(spec.w)만큼 커서가 전진한다.
+const INLINE_TYPES = new Set([
+  'valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'tee', 'reducer', 'flange',
+  'nipple', 'elbow45', 'cap', 'union', 'flow',
+]);
+const ON_FLOOR_TYPES = new Set(['hx', 'pump', 'vpump', 'tank', 'stank', 'rtank', 'panel', 'support']);
+
 function isQuotaError(e) {
   if (!e) return false;
   if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') return true;
@@ -342,16 +349,9 @@ class App {
     this.refreshHighlight();
     this.renderProps();
     this.renderLists();
-    // 선택한 배관 끝점·장비 위에서 다음 명령이 이어지게 커서를 맞춘다.
+    // 선택한 부속·배관의 출구로 주황색 커서를 옆기고 그 방향으로 다음 명령을 이어 쓴다.
     const spec = this.getSelectedSpec();
-    if (spec) {
-      if (kind === 'pipe' && spec.points && spec.points.length) {
-        const p = spec.points[spec.points.length - 1];
-        this.setCmdCursor({ x: p.x, y: p.y, z: p.z }, true);
-      } else if (kind === 'equipment') {
-        this.setCmdCursor({ x: spec.x, y: spec.y + spec.h, z: spec.z }, true);
-      }
-    }
+    if (spec) this.aimAt(spec);
     if (window.innerWidth <= 860) {
       $('#drawer').classList.remove('open');
     }
@@ -362,6 +362,99 @@ class App {
     this.refreshHighlight();
     this.renderProps();
     this.renderLists();
+  }
+
+  // rot(도) → 그리기 방향. cmdRotFor()와 같은 규칙을 쓴다.
+  headingFromRot(rot) {
+    const r = ((Math.round(Number(rot) || 0) % 360) + 360) % 360;
+    if (r === 90) return { axis: 'z', sign: 1 };
+    if (r === 180) return { axis: 'x', sign: -1 };
+    if (r === 270) return { axis: 'z', sign: -1 };
+    return { axis: 'x', sign: 1 };
+  }
+
+  // 부속의 출구(길이 방향 끝면) — 인라인 부속은 배관이 이어지는 자리, 설비는 윗면 중심.
+  equipExit(spec) {
+    const h = this.headingFromRot(spec.rot);
+    const len = INLINE_TYPES.has(spec.type) ? (spec.w || 0) : 0;
+    if (!len) return { x: spec.x, y: r3((spec.y || 0) + (spec.h || 0)), z: spec.z };
+    const d = len / 2;
+    return {
+      x: r3(spec.x + (h.axis === 'x' ? h.sign * d : 0)),
+      y: Math.max(0, r3(spec.y || 0)),
+      z: r3(spec.z + (h.axis === 'z' ? h.sign * d : 0)),
+    };
+  }
+
+  // 선택한 것을 "이어 그릴 자리"로 삼는다 — 커서·방향·관경·재질까지.
+  aimAt(spec) {
+    if (!spec) return;
+    if (Array.isArray(spec.points) && spec.points.length) {
+      const pts = spec.points;
+      const p = pts[pts.length - 1];
+      const q = pts.length > 1 ? pts[pts.length - 2] : { x: p.x + 1, y: p.y, z: p.z };
+      const dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
+      const ax = Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) >= Math.abs(dz) ? 'x'
+        : (Math.abs(dz) >= Math.abs(dy) ? 'z' : 'y');
+      const delta = ax === 'x' ? dx : ax === 'z' ? dz : dy;
+      this.cmdAxis = ax;
+      this.cmdSign = delta < 0 ? -1 : 1;
+      this.cmdRot = this.cmdRotFor(this.cmdAxis, this.cmdSign);
+      if (BORES[spec.bore]) this.cmdBore = spec.bore;
+      if (MATERIALS[spec.material]) this.cmdMaterial = spec.material;
+      this.setCmdCursor({ x: p.x, y: p.y, z: p.z }, true);
+      return;
+    }
+    const h = this.headingFromRot(spec.rot);
+    this.cmdAxis = h.axis;
+    this.cmdSign = h.sign;
+    this.cmdRot = this.cmdRotFor(h.axis, h.sign);
+    if (spec.type === 'reducer' && spec.bore2) this.cmdBore = spec.bore2;
+    else if (spec.bore1) this.cmdBore = spec.bore1;
+    this.setCmdCursor(this.equipExit(spec), true);
+  }
+
+  fromHere() {
+    const spec = this.getSelectedSpec();
+    if (!spec) return;
+    this.aimAt(spec);
+    this.clearSelection();
+    const c = this.cmdCursor;
+    this.toast(`📍 여기서 이어 그립니다 · ${this.cmdBore} · 커서 (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})m`);
+  }
+
+  // 손가락 터치가 작은 부속을 빗나가도 화면 기준 32px 안의 가장 가까운 것을 고른다.
+  nearestPick(ev, radiusPx) {
+    if (!this.root) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const v = new THREE.Vector3();
+    let best = null;
+    let bestD = radiusPx;
+    const test = (pick, x, y, z) => {
+      v.set(x, y, z).project(this.camera);
+      if (v.z > 1 || v.z < -1) return;
+      const sx = (v.x * 0.5 + 0.5) * rect.width;
+      const sy = (-v.y * 0.5 + 0.5) * rect.height;
+      const d = Math.hypot(sx - px, sy - py);
+      if (d < bestD) { bestD = d; best = pick; }
+    };
+    this.state.equipment.forEach((e) => {
+      test({ kind: 'equipment', id: e.id }, e.x, e.y + Math.min(0.4, (e.h || 0.3) * 0.5), e.z);
+    });
+    this.state.pipes.forEach((p) => {
+      const pts = p.points || [];
+      if (!pts.length) return;
+      const pick = { kind: 'pipe', id: p.id };
+      pts.forEach((q) => test(pick, q.x, q.y, q.z));
+      for (let i = 1; i < pts.length; i += 1) {
+        const a = pts[i - 1], b = pts[i];
+        test(pick, (a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+      }
+    });
+    return best;
   }
 
   // ── 패널 렌더 ────────────────────────────────────────────
@@ -430,6 +523,9 @@ class App {
           <label class="field">색상<input type="color" data-f="color" value="${esc(spec.color)}"></label>
         </div>
         <div class="prop-actions">
+          <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
+        </div>
+        <div class="prop-actions">
           <button class="btn small ghost" data-act="ground">바닥에</button>
           <button class="btn small ghost" data-act="dup">복제</button>
           <button class="btn small danger" data-act="del">삭제</button>
@@ -458,6 +554,9 @@ class App {
         <div class="prop-section">포인트 (X / 높이 Y / Z)</div>
         <div class="pt-head"><span>#</span><span>X</span><span>Y</span><span>Z</span><span></span></div>
         <div class="pt-list">${rows}</div>
+        <div class="prop-actions">
+          <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
+        </div>
         <div class="prop-actions">
           <button class="btn small ghost" data-act="addpt">점 추가</button>
           <button class="btn small danger" data-act="del">배관 삭제</button>
@@ -756,11 +855,8 @@ class App {
     };
 
     // 파이프가 끊기는 부속(인라인) — 부속의 실제 길이(spec.w)만큼만 커서를 전진시킨다.
-    const INLINE = new Set([
-      'valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'tee', 'reducer', 'flange',
-      'nipple', 'elbow45', 'cap', 'union', 'flow',
-    ]);
-    const ON_FLOOR = new Set(['hx', 'pump', 'vpump', 'tank', 'stank', 'rtank', 'panel', 'support']);
+    const INLINE = INLINE_TYPES;
+    const ON_FLOOR = ON_FLOOR_TYPES;
 
     for (const op of ops) {
       if (op.op === 'bore') { bore = op.bore; continue; }
@@ -1064,16 +1160,20 @@ class App {
     const canvas = this.renderer.domElement;
     let down = null;
     canvas.addEventListener('pointerdown', (e) => {
-      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+      if (down) return;
+      down = { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId };
     });
     canvas.addEventListener('pointerup', (e) => {
       if (!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const dt = performance.now() - down.t;
+      if (down.id != null && e.pointerId !== down.id) return; // 다른 손가락의 이동
       down = null;
-      if (moved > 9 || dt > 900) return;
+      // 모바일 손가락은 미세하게 흔들리므로 탭으로 볼 여유를 둔다.
+      if (moved > 14 || dt > 1600) return;
       this.onCanvasClick(e);
     });
+    canvas.addEventListener('pointercancel', () => { down = null; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
@@ -1107,6 +1207,9 @@ class App {
         o = o.parent;
       }
     }
+    // 작은 밸브·피팅은 정확한 광선이 빗나가기 쉬우므로 화면 32px 안에서 가장 가까운 것을 고른다.
+    const near = this.nearestPick(ev, 32);
+    if (near) { this.select(near.kind, near.id); return; }
     this.clearSelection();
   }
 
@@ -1611,6 +1714,7 @@ class App {
       const spec = this.getSelectedSpec();
       if (!spec) return;
       if (act === 'del') this.deleteSelected();
+      else if (act === 'from') this.fromHere();
       else if (act === 'dup') this.duplicateSelected();
       else if (act === 'ground') { this.pushUndo('바닥에 붙이기'); spec.y = 0; this.refreshScene(); this.renderProps(); }
       else if (act === 'addpt') {
