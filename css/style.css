@@ -259,8 +259,11 @@ html, body {
   min-width: 0;
 }
 .field input:focus, select:focus, input:focus { outline: none; border-color: #3f6da8; }
-.field.range { margin-bottom: 12px; }
-.field.range .val { float: right; color: var(--dim2); font-variant-numeric: tabular-nums; }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.field.range { margin-bottom: 12px; position: relative; }
+.field.range .val { position: absolute; right: 0; top: 0; color: var(--dim2); font-variant-numeric: tabular-nums; }
 input[type="range"] { width: 100%; accent-color: var(--accent); height: 22px; }
 input[type="color"] {
   appearance: none; border: 1px solid var(--line); background: #0f1419;
@@ -315,8 +318,8 @@ input[type="color"] {
 .prop-body::-webkit-scrollbar { width: 8px; }
 .prop-body::-webkit-scrollbar-thumb { background: #2b3541; border-radius: 4px; }
 .prop-body .field { margin-bottom: 10px; }
-.prop-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; margin-bottom: 10px; }
-.prop-section { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--dim2); margin: 14px 0 7px; }
+.prop-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+.prop-section { font-size: 10.5px; letter-spacing: 0.4px; color: var(--dim2); margin: 14px 0 7px; }
 .prop-actions { display: flex; gap: 6px; margin-top: 12px; }
 .prop-actions .btn { flex: 1; }
 .pt-list { display: flex; flex-direction: column; gap: 5px; }
