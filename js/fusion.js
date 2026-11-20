@@ -1,5 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
+import { elbowBasis } from './store.js?v=18';
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기
@@ -10,11 +11,28 @@ function pyString(text) {
 export function buildFusionScript(state) {
   const scene = {
     name: state.name || '스마일산업 배관 도면',
-    equipment: state.equipment.map((e) => ({
-      type: e.type, name: e.name, x: e.x, y: e.y, z: e.z,
-      w: e.w, h: e.h, d: e.d, rot: e.rot,
-      bore1: e.bore1 || null, bore2: e.bore2 || null,
-    })),
+    equipment: state.equipment.map((e) => {
+      const item = {
+        type: e.type, name: e.name, x: e.x, y: e.y, z: e.z,
+        w: e.w, h: e.h, d: e.d, rot: e.rot,
+        bore1: e.bore1 || null, bore2: e.bore2 || null,
+      };
+      // 엘보는 관경과 두 다리 방향을 함께 넘겨야 Fusion에서도 배관과 같은 방향으로 앉는다.
+      if (e.type === 'elbow' || e.type === 'elbow45') {
+        item.bore = e.bore || e.bore1 || '100A';
+        if (Array.isArray(e.inDir) && Array.isArray(e.outDir)) {
+          item.inDir = e.inDir;
+          item.outDir = e.outDir;
+          item.rmat = elbowBasis(e.inDir, e.outDir).map((v) => Math.round(v * 1e6) / 1e6);
+        } else {
+          const th = (Number(e.rot) || 0) * Math.PI / 180;
+          const c = Math.cos(th);
+          const s = Math.sin(th);
+          item.rmat = [c, 0, s, 0, 1, 0, -s, 0, c];
+        }
+      }
+      return item;
+    }),
     pipes: state.pipes.map((p) => ({
       name: p.name, bore: p.bore, material: p.material,
       points: p.points.map((pt) => ({ x: pt.x, y: pt.y, z: pt.z })),
@@ -137,11 +155,16 @@ def add_box(comp, cx, cy, cz, w, h, d, rot, name):
 
 
 def local_to_world(e, local):
-    """장비 회전(rot)까지 반영한 로컬 좌표 → 웹앱 좌표"""
+    """장비 회전(엘보는 rmat, 나머지는 rot)까지 반영한 로컬 좌표 → 웹앱 좌표"""
+    lx, ly, lz = local
+    m = e.get('rmat')
+    if m:
+        return (e['x'] + m[0] * lx + m[1] * ly + m[2] * lz,
+                e['y'] + m[3] * lx + m[4] * ly + m[5] * lz,
+                e['z'] + m[6] * lx + m[7] * ly + m[8] * lz)
     th = math.radians(e.get('rot', 0) or 0)
     c = math.cos(th)
     s = math.sin(th)
-    lx, ly, lz = local
     return (e['x'] + lx * c + lz * s,
             e['y'] + ly,
             e['z'] - lx * s + lz * c)
@@ -412,25 +435,33 @@ def build_bellows(comp, e, tag):
 
 
 def build_elbow(comp, e, tag):
-    """90도 엘보 — 직관 2개 + 곡관부(3분할 원통)"""
+    """90도 엘보 — 꼭짓점에서 +X·+Y 두 다리, 안쪽 곡관(중심 (R,R)) + 양단 직관 스텁
+       (예전엔 곡관이 바깥으로 불룩해 배관을 뚫었다)"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.3, 0.3, 0.22)
-    r = 0.055 * sx
-    R = 0.11
+    bore = e.get('bore') or e.get('bore1') or '100A'
+    od = BORES.get(bore, 0.1143)
+    r = od / 2.0
+    R = 1.5 * od
+    Ls = 0.18 * R
 
     def P(lx, ly, lz):
-        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+        return local_to_world(e, (lx, ly, lz))
 
-    if add_cylinder(comp, P(R, 0, 0), P(R + 0.05, 0, 0), r, tag + '_Stub1'):
+    # 곡관 — 중심 (R,R) 원호를 8분할 원통으로 (phi 180° → 270°)
+    steps = 8
+    prev = None
+    for i in range(steps + 1):
+        phi = (180.0 + 90.0 * i / float(steps)) * math.pi / 180.0
+        cur = (R + R * math.cos(phi), R + R * math.sin(phi), 0.0)
+        if prev is not None:
+            if add_cylinder(comp, P(prev[0], prev[1], prev[2]), P(cur[0], cur[1], cur[2]), r, '%s_Bend%d' % (tag, i)):
+                made += 1
+        prev = cur
+    # 양단 직관 스텁 (배관 접합면)
+    if add_cylinder(comp, P(R, 0, 0), P(R + Ls, 0, 0), r, tag + '_StubX'):
         made += 1
-    if add_cylinder(comp, P(0, R, 0), P(0, R + 0.05, 0), r, tag + '_Stub2'):
+    if add_cylinder(comp, P(0, R, 0), P(0, R + Ls, 0), r, tag + '_StubY'):
         made += 1
-    pts = [(R, 0, 0), (R * 0.9, R * 0.36, 0), (R * 0.36, R * 0.9, 0), (0, R, 0)]
-    for i in range(len(pts) - 1):
-        a = P(pts[i][0], pts[i][1], pts[i][2])
-        b = P(pts[i + 1][0], pts[i + 1][1], pts[i + 1][2])
-        if add_cylinder(comp, a, b, r * 0.98, '%s_Bend%d' % (tag, i + 1)):
-            made += 1
     return made
 
 
@@ -519,32 +550,34 @@ def build_nipple(comp, e, tag):
 
 
 def build_elbow45(comp, e, tag):
-    """45° 엘보 — 45° 곡관(3분할) + 입·출구 직관 스텁"""
+    """45° 엘보 — 두 다리가 135° 벌어진 곡관 (배관은 45°만 꺾인다)"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.123, 0.21, 0.1)
-    rs = (sx + sy + sz) / 3.0
-    R = 0.13
-    r = 0.05
-    A = math.pi / 4.0
+    bore = e.get('bore') or e.get('bore1') or '100A'
+    od = BORES.get(bore, 0.1143)
+    r = od / 2.0
+    R = 1.5 * od
+    T = R * math.tan(math.pi / 8.0)
+    Ls = 0.18 * R
+    cx, cy = T, R
 
     def P(lx, ly, lz):
-        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+        return local_to_world(e, (lx, ly, lz))
 
-    if add_cylinder(comp, P(R, 0, 0), P(R + 0.05, 0, 0), r * rs, tag + '_StubIn'):
+    # 곡관 — 중심 (T,R) 원호, phi -135° → -90°
+    steps = 6
+    prev = None
+    for i in range(steps + 1):
+        phi = (-135.0 + 45.0 * i / float(steps)) * math.pi / 180.0
+        cur = (cx + R * math.cos(phi), cy + R * math.sin(phi), 0.0)
+        if prev is not None:
+            if add_cylinder(comp, P(prev[0], prev[1], prev[2]), P(cur[0], cur[1], cur[2]), r, '%s_Bend%d' % (tag, i)):
+                made += 1
+        prev = cur
+    ux = -math.sqrt(0.5)
+    uy = math.sqrt(0.5)
+    if add_cylinder(comp, P(T, 0, 0), P(T + Ls, 0, 0), r, tag + '_StubX'):
         made += 1
-    pts = [(R, 0, 0)]
-    for i in range(1, 4):
-        a = A * i / 3.0
-        pts.append((R * math.cos(a), R * math.sin(a), 0))
-    for i in range(len(pts) - 1):
-        if add_cylinder(comp, P(pts[i][0], pts[i][1], 0), P(pts[i + 1][0], pts[i + 1][1], 0), r * rs,
-                        '%s_Bend%d' % (tag, i + 1)):
-            made += 1
-    ex = R * math.cos(A)
-    ey = R * math.sin(A)
-    tx = -math.sin(A)
-    ty = math.cos(A)
-    if add_cylinder(comp, P(ex, ey, 0), P(ex + tx * 0.05, ey + ty * 0.05, 0), r * rs, tag + '_StubOut'):
+    if add_cylinder(comp, P(T * ux, T * uy, 0), P((T + Ls) * ux, (T + Ls) * uy, 0), r, tag + '_Stub45'):
         made += 1
     return made
 

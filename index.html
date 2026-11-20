@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=17">
+<link rel="stylesheet" href="./css/style.css?v=18">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -73,57 +73,39 @@
       <form id="cmdForm" class="cmd-bar" autocomplete="off">
         <span class="cmd-caret" aria-hidden="true">›</span>
         <input id="cmdInput" class="cmd-input" type="text" inputmode="text" enterkeyhint="send"
-               placeholder="50a 오른쪽으로 1000 위로 1500" aria-label="배관 명령 입력 (숫자는 mm)"
+               placeholder="50a 오른쪽으로 1000 / 1000" aria-label="배관 명령 입력 (숫자는 mm)"
                autocapitalize="off" autocorrect="off" spellcheck="false">
         <button class="btn small accent cmd-run" id="cmdRun" type="submit">실행</button>
+        <button class="btn small ghost cmd-mic" id="cmdMic" type="button" aria-pressed="false"
+                title="말로 명령 (예: 50에이 오른쪽 1000)" aria-label="음성 명령">🎤</button>
         <button class="btn small ghost cmd-undo" id="cmdUndo" type="button"
                 title="실행취소 (직전 명령·부속 추가와 커서를 되돌립니다)" aria-label="실행취소">
           <span class="undo-ico">↩</span><span class="undo-txt">실행취소</span>
         </button>
+        <button class="btn small ghost cmd-clear" id="cmdClear" type="button"
+                title="새 도면 (장비·배관 전체 삭제 · 실행취소 가능)" aria-label="새 도면">🗑️</button>
         <button class="btn small ghost cmd-pad" id="cmdPad" type="button"
-                title="방향·각도 패드 (누르면 바로 그려짐)" aria-label="방향 패드" aria-expanded="false">
-          <span class="pad-ico">🧭</span><span class="pad-txt">패드</span>
+                title="방향 조이스틱 켜기/끄기" aria-label="방향 조이스틱" aria-expanded="true">
+          <span class="pad-ico">🧭</span><span class="pad-txt">방향</span>
         </button>
         <button class="btn small ghost cmd-help" id="cmdHelp" type="button" title="명령 예시" aria-label="명령 예시">?</button>
       </form>
 
-      <!-- 방향·각도 패드: 길이(mm) 고르고 방향·45° 버튼만 누르면 바로 배관이 이어진다 -->
-      <div id="dirPad" class="dir-pad" hidden>
-        <div class="pad-head">
-          <span class="pad-title">🧭 방향 · 각도 패드</span>
-          <span class="pad-info" id="padInfo">50A · 커서 0, 0.5, 0m</span>
-          <button class="btn icon tiny" id="padClose" type="button" title="닫기" aria-label="패드 닫기">✕</button>
+      <!-- 콤팩트 방향 조이스틱 — 방향을 고르고 길이(mm)만 치면 그 방향으로 그려진다 -->
+      <div id="dirPad" class="dir-pad">
+        <button type="button" class="pad-frame" id="btnFrame" data-frame="me" aria-pressed="true"
+                title="방향 기준: 내 시점(지금 보는 화면) ↔ 도면 축(X·Z 고정)">내 시점 기준</button>
+        <div class="pad-grid">
+          <button type="button" class="pad-btn" data-dir="x:-1" title="왼쪽" aria-label="왼쪽">←</button>
+          <button type="button" class="pad-btn" data-dir="y:1" title="위" aria-label="위">↑</button>
+          <button type="button" class="pad-btn" data-dir="x:1" title="오른쪽" aria-label="오른쪽">→</button>
+          <button type="button" class="pad-btn pad45" id="pad45" title="45° 경사 모드" aria-pressed="false">45°</button>
+          <button type="button" class="pad-btn" data-dir="z:1" title="앞" aria-label="앞">앞</button>
+          <button type="button" class="pad-btn" data-dir="y:-1" title="아래" aria-label="아래">↓</button>
+          <button type="button" class="pad-btn" data-dir="z:-1" title="뒤" aria-label="뒤">뒤</button>
+          <button type="button" class="pad-btn pad-ico" id="padUndo" title="실행취소" aria-label="실행취소">↩</button>
         </div>
-        <div class="pad-len">
-          <label class="pad-len-field">길이
-            <input type="number" id="padLen" value="1000" min="1" step="50" inputmode="numeric">
-            <span class="unit">mm</span>
-          </label>
-          <div class="pad-quick">
-            <button type="button" class="pad-q" data-len="500">500</button>
-            <button type="button" class="pad-q active" data-len="1000">1000</button>
-            <button type="button" class="pad-q" data-len="1500">1500</button>
-            <button type="button" class="pad-q" data-len="2000">2000</button>
-          </div>
-        </div>
-        <div class="pad-axes">
-          <button type="button" class="pad-btn" data-dir="x:-1">← 좌</button>
-          <button type="button" class="pad-btn" data-dir="y:1">↑ 위</button>
-          <button type="button" class="pad-btn" data-dir="x:1">→ 우</button>
-          <button type="button" class="pad-btn" data-dir="z:1">↙ 앞</button>
-          <button type="button" class="pad-btn" data-dir="y:-1">↓ 아래</button>
-          <button type="button" class="pad-btn" data-dir="z:-1">↗ 뒤</button>
-        </div>
-        <div class="pad-diag">
-          <button type="button" class="pad-btn diag" data-diag="x:1:1">45°↗ 우상</button>
-          <button type="button" class="pad-btn diag" data-diag="x:1:-1">45°↘ 우하</button>
-          <button type="button" class="pad-btn diag" data-diag="x:-1:1">45°↖ 좌상</button>
-          <button type="button" class="pad-btn diag" data-diag="x:-1:-1">45°↙ 좌하</button>
-        </div>
-        <div class="pad-foot">
-          <button type="button" class="pad-btn" id="padTurn">↻ 90° 돌리기</button>
-          <button type="button" class="pad-btn" id="padUndo">↩ 되돌리기</button>
-        </div>
+        <div class="pad-info" id="padInfo">50A · 흑관·카본스틸 · 0, 0.5, 0m</div>
       </div>
     </div>
 
@@ -247,6 +229,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=17"></script>
+<script type="module" src="./js/main.js?v=18"></script>
 </body>
 </html>

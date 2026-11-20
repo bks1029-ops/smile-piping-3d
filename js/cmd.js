@@ -1,6 +1,47 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=17';
+import { BORES, MATERIALS } from './store.js?v=18';
+
+// ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
+// 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
+// 숫자·관경 표기로 바꿔 두면 아래 파서가 그대로 알아본다.
+const KO_DIGIT = { 영: 0, 일: 1, 이: 2, 삼: 3, 사: 4, 오: 5, 육: 6, 칠: 7, 팔: 8, 구: 9 };
+const KO_SCALE = { 십: 10, 백: 100, 천: 1000, 만: 10000 };
+
+// '천오백'=1500, '오백'=500, '이천'=2000, '오십'=50 — 단위(십·백·천·만)가 있을 때만 숫자로 본다.
+// ('이'·'삼' 같은 한 글자는 '이어'·'삼각' 같은 말과 헷갈릴 수 있어 건드리지 않는다.)
+function koNumeralToInt(tok) {
+  if (!/^[영일이삼사오육칠팔구십백천만]+$/.test(tok)) return null;
+  if (!/[십백천만]/.test(tok)) return null;
+  let total = 0;
+  let cur = 0;
+  for (const ch of tok) {
+    if (KO_DIGIT[ch] != null) { cur = KO_DIGIT[ch]; continue; }
+    const u = KO_SCALE[ch];
+    if (!u) return null;
+    total += (cur || 1) * u;
+    cur = 0;
+  }
+  total += cur;
+  return total > 0 && total <= 100000 ? total : null;
+}
+
+export function normalizeSpoken(text) {
+  let s = String(text == null ? '' : text);
+  // 1) 1,000 처럼 숫자 사이에 찍힌 쉼표
+  s = s.replace(/(\d),(?=\d{3}(?:\D|$))/g, '$1');
+  // 2) '50에이' · '오십에이' → '50a' (관경)
+  s = s.replace(/(\d+|[영일이삼사오육칠팔구십백천만]+)\s*(?:에이형|에이급|에이에|에이)(?![가-힣])/g, (m, num) => {
+    const n = /^\d+$/.test(num) ? num : koNumeralToInt(num);
+    return n == null ? m : `${n}a`;
+  });
+  // 3) 남은 고유어 수사 → 숫자
+  s = s.split(/(\s+)/).map((tok) => {
+    const n = koNumeralToInt(tok);
+    return n == null ? tok : String(n);
+  }).join('');
+  return s;
+}
 
 // 방향 — 긴 표현을 먼저 본다. (긴 것부터 매칭)
 const DIRS = [
@@ -74,6 +115,8 @@ const COMMANDS = [
   ['새배관', 'newpipe'], ['새파이프', 'newpipe'], ['새로', 'newpipe'], ['줄바꿈', 'newpipe'], ['새줄', 'newpipe'], ['new', 'newpipe'],
   ['되돌리기', 'undo'], ['되돌려', 'undo'], ['언두', 'undo'], ['취소', 'undo'], ['undo', 'undo'],
   ['초기화', 'reset'], ['리셋', 'reset'], ['클리어', 'reset'], ['비우기', 'reset'], ['reset', 'reset'],
+  ['전체삭제', 'reset'], ['새도면', 'reset'], ['다지워', 'reset'], ['모두지워', 'reset'], ['싹지워', 'reset'],
+  ['처음부터', 'reset'], ['빈도면', 'reset'], ['clear', 'reset'],
   ['도움말', 'help'], ['도움', 'help'], ['예시', 'help'], ['사용법', 'help'], ['help', 'help'], ['?', 'help'],
   ['실행', 'noop'], ['run', 'noop'],
   // 말로 이어 쓰는 연결어·위치 표현은 실행에 영향이 없다
@@ -134,7 +177,7 @@ function tokenize(text) {
 }
 
 function parseLength(token) {
-  const m = /^(\d+(?:\.\d+)?)(mm|cm|m|미터|센치미터|센치)?$/i.exec(token);
+  const m = /^(\d+(?:\.\d+)?)(mm|cm|m|미터|센치미터|센치|미리|밀리|미리미터|밀리미터)?$/i.exec(token);
   if (!m) return null;
   const v = parseFloat(m[1]);
   if (!Number.isFinite(v)) return null;
@@ -169,7 +212,7 @@ function nextSmallerBore(bore) {
  *    | {op:'newpipe'|'undo'|'reset'|'help'}
  */
 export function parseCommand(text) {
-  const tokens = tokenize(text);
+  const tokens = tokenize(normalizeSpoken(text));
   const unknown = [];
 
   // 1) 토큰 분류
@@ -348,20 +391,19 @@ export const CMD_HELP = `
     <li><code>100a sus 앞으로 800</code> — 100A 스테인리스, 앞으로 0.8m</li>
     <li><code>80a 왼쪽 600 아래로 300 뒤로 400</code> — 쉼표·공백 모두 구분자로 씁니다</li>
     <li><code>오른쪽 45도 위 1000</code> · <code>45도 위 1000</code> — 45° 경사 상승 1m (수직 0.71m · 수평 0.71m)</li>
-    <li><code>왼쪽 45도 아래 800</code> — 45° 경사 하강</li>
     <li><code>100a에서 50a 레듀샤</code> · <code>100x50 레듀샤</code> — 이경 레듀샤(1차 100A·2차 50A), 다음 배관은 50A로 이어집니다</li>
-    <li><code>100a 티 50a 분기</code> — 주배관 100A·분기 50A 티</li>
     <li><code>니쁠</code> · <code>45도엘보</code> · <code>캡</code> · <code>유니온</code> · <code>유량계</code> — 지금 위치에 그 부속을 답니다</li>
-    <li><code>버터플라이</code> · <code>볼밸브</code> · <code>압력계</code> — 기존 부속도 같은 방식</li>
     <li><code>새배관</code> — 새 배관을 시작합니다 (지금 위치에서)</li>
-    <li><code>벨브에 붙여줘</code> · <code>플랜지에 이어줘</code> — 지금 커서에서 가장 가까운 그 부속까지 배관으로 잇습니다</li>
-    <li><code>오른쪽 배관이랑 이어줘</code> · <code>배관 연결해줘</code> — 다른 배관 끝점까지 잇습니다 (방향을 빼면 가장 가까운 곳)</li>
     <li><code>밸브 하나 달아줘</code> · <code>50미리 위로 좀 올려줘 500</code> — 말하듯 써도 알아듣습니다(군더더기 무시)</li>
     <li><code>지워</code> · <code>삭제</code> — 방금 추가한 배관·부속을 지웁니다</li>
-    <li><code>되돌리기</code> · <code>초기화</code> — 직전 명령 취소 · 씬 비우기</li>
+    <li><code>되돌리기</code> — 직전 명령 취소 · <code>새도면</code>·<code>전체삭제</code>·<code>다지워</code>·<code>처음부터</code> — 전부 지우고 원점으로</li>
   </ul>
-  <p class="hint">방향: 오른쪽(+X) 왼쪽(−X) 위(+Y) 아래(−Y) 앞(+Z) 뒤(−Z). 관경·재질을 안 쓰면 직전 값을 이어 씁니다(기본 50A 흑관).
-  타자 없이 그리려면 명령창 옆 <b>🧭 패드</b>를 열어 방향·각도·길이 버튼만 누르면 됩니다.</p>
+  <p class="hint">
+  <b>🎤 말로</b> — 명령창의 🎤을 누르고 말하면 받아쓰기해 바로 실행합니다. <code>오십에이 오른쪽 천</code>, <code>천오백</code>처럼 구어체 숫자도 <code>50a</code>·<code>1000</code>·<code>1500</code>으로 알아듣습니다.<br>
+  <b>🧭 조이스틱</b> — 방향을 고르고 길이만 치고 실행하면 그 방향으로 그려집니다. 같은 방향을 한 번 더 누르면 바로 그립니다.<br>
+  <b>자동 엘보</b> — 방향이 꺾이면 90°·45° 엘보가 꼭짓점에 자동으로 들어가고, 배관은 접합면에서 끝나 배관을 뚫지 않습니다.<br>
+  방향: <code>[내 시점 기준]</code>은 화면에서 보는 좌·우·앞·뒤, <code>[도면 축 기준]</code>은 고정 X·Z 축. 위/아래는 항상 높이(Y)입니다.
+  </p>
 `;
 
 export function materialLabel(id) {

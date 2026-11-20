@@ -20,6 +20,40 @@ export function boreOd(bore) {
   return (BORES[bore] || BORES['100A']).od;
 }
 
+// ── 엘보(90°·45°) 치수 — 관경 외경에서 그대로 뽑는다 ─────────────────────────
+// r   : 배관 외경 반지름 (= 엘보 관 반지름, 배관과 같은 굵기로 앉는다)
+// R   : 곡률 반경 (긴 반경 엘보 = 1.5D, D = 외경)
+// T   : 꼭짓점에서 곡관 접점까지 거리 (90°는 R, 45°는 R·tan22.5°)
+// Ls  : 접점에서 접합면까지 직관 스텁
+// face: 꼭짓점 → 접합면 거리 = T + Ls  (배관을 이만큼 당겨 엘보를 앉힌다)
+export function elbowDims(type, bore) {
+  const od = boreOd(bore || '100A');
+  const r = od / 2;
+  const R = 1.5 * od;
+  const Ls = 0.18 * R;
+  const T = type === 'elbow45' ? R * Math.tan(Math.PI / 8) : R;
+  return { od, r, R, Ls, T, face: round3(T + Ls) };
+}
+
+// 엘보 배치용 회전행렬 (행 우선 3×3).
+// 로컬 +X = inDir(들어오는 배관 쪽으로 나가는 다리), 로컬 +Y = outDir의 직교 성분.
+// 이렇게 돌리면 어느 평면(XY·YZ·XZ)에서 꺾이든 두 입구가 배관과 정확히 일직선이 된다.
+export function elbowBasis(inDir, outDir) {
+  const nrm = (v) => {
+    const l = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0] / l, v[1] / l, v[2] / l];
+  };
+  const a = Array.isArray(inDir) && inDir.length === 3 ? nrm(inDir) : [1, 0, 0];
+  const b0 = Array.isArray(outDir) && outDir.length === 3 ? nrm(outDir) : [0, 1, 0];
+  const d = a[0] * b0[0] + a[1] * b0[1] + a[2] * b0[2];
+  let w = [b0[0] - d * a[0], b0[1] - d * a[1], b0[2] - d * a[2]];
+  if (Math.hypot(w[0], w[1], w[2]) < 1e-6) w = [0, 1, 0]; // 180° — 꺾임 없음
+  w = nrm(w);
+  const n = [a[1] * w[2] - a[2] * w[1], a[2] * w[0] - a[0] * w[2], a[0] * w[1] - a[1] * w[0]];
+  // 열 = (a, w, n)
+  return [a[0], w[0], n[0], a[1], w[1], n[1], a[2], w[2], n[2]];
+}
+
 // 이경 부속(레듀샤·티)의 실제 폭(m). builders.js·fusion.js의 치수식과 같다.
 //  · 레듀샤: 큰 관경에서 작은 관경으로 줄어드는 원뿔 길이 + 양단 플랜지
 //  · 티: 주배관 길이 + 양단 용접 비드
@@ -110,8 +144,8 @@ export const EQUIP_TYPES = {
     defaults: { w: 0.304, h: 0.34, d: 0.34 }, color: '#cfd4d8',
   },
   elbow: {
-    cat: 'fitting', label: '90° 엘보', short: 'EL',
-    defaults: { w: 0.3, h: 0.3, d: 0.22 }, color: '#c9d0d6',
+    cat: 'fitting', label: '90° 엘보', short: 'EL', bore: '100A',
+    defaults: { w: 0.26, h: 0.12, d: 0.12 }, color: '#c9d0d6',
   },
   tee: {
     cat: 'fitting', label: '티 분기관', short: 'TE',
@@ -128,8 +162,8 @@ export const EQUIP_TYPES = {
     defaults: { w: 0.146, h: 0.1, d: 0.1 }, color: '#b9c0c7',
   },
   elbow45: {
-    cat: 'fitting', label: '45° 엘보', short: 'E45',
-    defaults: { w: 0.14, h: 0.16, d: 0.11 }, color: '#c9d0d6',
+    cat: 'fitting', label: '45° 엘보', short: 'E45', bore: '100A',
+    defaults: { w: 0.15, h: 0.12, d: 0.12 }, color: '#c9d0d6',
   },
   cap: {
     cat: 'fitting', label: '캡 (엔드캡·마개)', short: 'CP',
@@ -185,6 +219,16 @@ export function makeEquipment(type, opts) {
     rot: num(o.rot, 0),
     color: o.color || t.color,
   };
+  // 엘보는 관경과 두 다리 방향(inDir·outDir)을 기억한다 — 3D 회전은 이 벡터로 잡는다.
+  if (type === 'elbow' || type === 'elbow45') {
+    spec.bore = BORES[o.bore] ? o.bore : (BORES[o.bore1] ? o.bore1 : (t.bore || '100A'));
+    const dims = elbowDims(type, spec.bore);
+    spec.w = o.w == null ? dims.face : num(o.w, dims.face);
+    spec.h = dims.r * 2;
+    spec.d = dims.r * 2;
+    if (Array.isArray(o.inDir) && o.inDir.length === 3) spec.inDir = o.inDir.map((v) => round3(Number(v) || 0));
+    if (Array.isArray(o.outDir) && o.outDir.length === 3) spec.outDir = o.outDir.map((v) => round3(Number(v) || 0));
+  }
   // 이경 부속(레듀샤·티)은 1차/2차 관경을 기억하고, 실제 관경 크기로 폭을 잡는다.
   if (type === 'reducer' || type === 'tee') {
     spec.bore1 = BORES[o.bore1] ? o.bore1 : (t.bore1 || '100A');
@@ -289,7 +333,11 @@ export function sampleScene() {
   const HDR_Y = 0.6;
   const HDR_Z = 5.2;
   s.pipes.push(pipe('PL-201 부속 진열 헤더', '80A', 'sus', [
-    [-6.2, HDR_Y, HDR_Z], [5.4, HDR_Y, HDR_Z], [5.4, 2.1, HDR_Z],
+    [-6.2, HDR_Y, HDR_Z], [5.4 - elbowDims('elbow', '80A').face, HDR_Y, HDR_Z],
+  ]));
+  // 엘보 자리에서 배관을 끊고 엘보 접합면에서 다시 올린다 (자동 엘보와 같은 방식)
+  s.pipes.push(pipe('PL-201b 부속 진열 헤더 상승', '80A', 'sus', [
+    [5.4, HDR_Y + elbowDims('elbow', '80A').face, HDR_Z], [5.4, 2.1, HDR_Z],
   ]));
 
   const inline = (type, name, x) =>
@@ -304,7 +352,10 @@ export function sampleScene() {
     inline('tee', 'TE-101 티 분기', 1.8),
     inline('reducer', 'RD-101 레듀샤 80A→50A', 3.0),
     inline('flange', 'FL-101 플랜지', 4.2),
-    makeEquipment('elbow', { name: 'EL-101 90° 엘보', x: 5.4, y: 2.1, z: HDR_Z, rot: 180 }),
+    makeEquipment('elbow', {
+      name: 'EL-101 90° 엘보', x: 5.4, y: HDR_Y, z: HDR_Z, bore: '80A',
+      inDir: [-1, 0, 0], outDir: [0, 1, 0], rot: 90,
+    }),
     makeEquipment('gauge', { name: 'PG-101 압력계', x: -5.6, y: HDR_Y, z: HDR_Z }),
     makeEquipment('support', { name: 'SP-101 파이프 서포트', x: -5.0, y: 0, z: HDR_Z, h: HDR_Y - 0.1 }),
     makeEquipment('support', { name: 'SP-102 파이프 서포트', x: 2.6, y: 0, z: HDR_Z, h: HDR_Y - 0.1 }),
@@ -355,6 +406,18 @@ export function normalizeState(raw) {
       if (type === 'reducer' || type === 'tee') {
         item.bore1 = BORES[e.bore1] ? e.bore1 : (t.bore1 || '100A');
         item.bore2 = BORES[e.bore2] ? e.bore2 : (type === 'tee' ? item.bore1 : (t.bore2 || '50A'));
+      }
+      if (type === 'elbow' || type === 'elbow45') {
+        item.bore = BORES[e.bore] ? e.bore : (BORES[e.bore1] ? e.bore1 : (t.bore || '100A'));
+        const dims = elbowDims(type, item.bore);
+        item.w = dims.face;
+        item.h = dims.r * 2;
+        item.d = dims.r * 2;
+        const vec = (v) => (Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(Number(n)))
+          ? v.map((n) => round3(Number(n))) : null);
+        const i1 = vec(e.inDir);
+        const i2 = vec(e.outDir);
+        if (i1 && i2) { item.inDir = i1; item.outDir = i2; }
       }
       s.equipment.push(item);
     });

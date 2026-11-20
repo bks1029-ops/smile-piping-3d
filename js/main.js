@@ -4,13 +4,13 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
-  sampleScene, normalizeState, pipeLength, fittingNaturalWidth,
-} from './store.js?v=17';
-import { buildScene } from './builders.js?v=17';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=17';
-import { buildOBJ } from './obj.js?v=17';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=17';
-import { parseCommand, CMD_HELP } from './cmd.js?v=17';
+  sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims,
+} from './store.js?v=18';
+import { buildScene } from './builders.js?v=18';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=18';
+import { buildOBJ } from './obj.js?v=18';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=18';
+import { parseCommand, CMD_HELP } from './cmd.js?v=18';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -71,6 +71,14 @@ class App {
     this.cmdSign = 1;
     this.cmdMarked = false;
     this.padOpen = false;
+    // 방향 기준: 'me' = 지금 보는 화면 기준(기본), 'plan' = 도면 축 기준
+    this.dirFrame = 'me';
+    this.lastDirV = null;   // 직전에 그린 구간의 진행 방향(단위 벡터) — 명령을 건너 이어서 꺾임을 본다
+    this.pending = null;    // 콤팩트 조이스틱에서 고른 방향(길이만 치면 그 방향으로 그린다)
+    this.diag45 = false;    // 조이스틱 45° 경사 모드
+    this.padLen = 1000;     // 조이스틱에서 마지막으로 쓴 길이(mm)
+    this.listening = false;
+    this.recognition = null;
     // 휴대폰 뒤로가기로 페이지가 나가지 않고 열린 창만 닫히게 하는 상태
     this.overlayEntry = false;
     this.suppressPop = 0;
@@ -84,12 +92,20 @@ class App {
     this.setupFloorPlan();
     this.setupDraft();
     this.setupCmdCursor();
+    this.setupVoice();
     this.bindUI();
     this.bindPad();
     this.bindSceneEvents();
     this.rebuild();
     this.resize();
     this.loop();
+
+    // 방향 기준은 지난번에 고른 값을 그대로 (기본: 내 시점 기준), 조이스틱은 기본으로 보이게
+    let savedFrame = null;
+    try { savedFrame = localStorage.getItem('smilePiping3D.dirFrame'); } catch (e) { /* ignore */ }
+    this.setDirFrame(savedFrame === 'plan' ? 'plan' : 'me', true);
+    this.setPadOpen(true);
+    this.updateMicUi();
 
     const v = new URLSearchParams(location.search).get('view');
     if (v && VIEW_NAMES.includes(v)) this.setView(v, true);
@@ -403,6 +419,8 @@ class App {
       this.cmdAxis = ax;
       this.cmdSign = delta < 0 ? -1 : 1;
       this.cmdRot = this.cmdRotFor(this.cmdAxis, this.cmdSign);
+      const dlen = Math.hypot(dx, dy, dz) || 1;
+      this.lastDirV = { x: dx / dlen, y: dy / dlen, z: dz / dlen };
       if (BORES[spec.bore]) this.cmdBore = spec.bore;
       if (MATERIALS[spec.material]) this.cmdMaterial = spec.material;
       this.setCmdCursor({ x: p.x, y: p.y, z: p.z }, true);
@@ -412,6 +430,8 @@ class App {
     this.cmdAxis = h.axis;
     this.cmdSign = h.sign;
     this.cmdRot = this.cmdRotFor(h.axis, h.sign);
+    this.lastDirV = h.axis === 'x' ? { x: h.sign, y: 0, z: 0 }
+      : h.axis === 'z' ? { x: 0, y: 0, z: h.sign } : { x: 0, y: h.sign, z: 0 };
     if (spec.type === 'reducer' && spec.bore2) this.cmdBore = spec.bore2;
     else if (spec.bore1) this.cmdBore = spec.bore1;
     this.setCmdCursor(this.equipExit(spec), true);
@@ -566,6 +586,11 @@ class App {
           <label class="field">높이<input type="number" step="0.1" data-f="y" value="${fmt(spec.y)}"></label>
           <label class="field">Z<input type="number" step="0.1" data-f="z" value="${fmt(spec.z)}"></label>
         </div>
+        ${(spec.type === 'elbow' || spec.type === 'elbow45') ? `
+        <div class="prop-section">방향 (배관에 맞춤)</div>
+        <p class="hint">${Array.isArray(spec.inDir)
+    ? `진입 ${spec.inDir.join(', ')} → 진출 ${(spec.outDir || []).join(', ')} — 회전값을 바꾸면 도면 축 기준으로 다시 놓입니다.`
+    : '회전값(도)으로만 놓인 엘보입니다. 배관을 이어 그리면 방향이 자동으로 맞춰집니다.'}</p>` : ''}
         <div class="prop-section">크기 (m)</div>
         <div class="prop-grid3">
           <label class="field">가로<input type="number" step="0.1" min="0.1" data-f="w" value="${fmt(spec.w)}"></label>
@@ -621,9 +646,19 @@ class App {
 
   // 레듀샤·티는 1차/2차 관경을 속성 패널에서 바꿀 수 있다 (바꾸면 길이도 실제 관경에 맞춰 다시 잡는다).
   boreFields(spec) {
-    if (spec.type !== 'reducer' && spec.type !== 'tee') return '';
+    const isElbow = spec.type === 'elbow' || spec.type === 'elbow45';
+    if (spec.type !== 'reducer' && spec.type !== 'tee' && !isElbow) return '';
     const opts = (cur) => Object.keys(BORES).map((b) =>
       `<option value="${b}"${b === cur ? ' selected' : ''}>${b} (${BORES[b].mm}mm)</option>`).join('');
+    if (isElbow) {
+      const d = elbowDims(spec.type, spec.bore || '100A');
+      return `
+        <div class="prop-section">관경 · 곡률</div>
+        <div class="field-row">
+          <label class="field">관경<select data-f="bore">${opts(spec.bore || '100A')}</select></label>
+          <label class="field">곡률 반경<span class="readonly" title="긴 반경 엘보(1.5D)">${fmt(d.R)} m</span></label>
+        </div>`;
+    }
     const tee = spec.type === 'tee';
     return `
         <div class="prop-section">${tee ? '주배관 · 분기 관경' : '1차 · 2차 관경'}</div>
@@ -664,6 +699,7 @@ class App {
         sign: this.cmdSign,
         rot: this.cmdRot,
         marked: this.cmdMarked,
+        dir: this.lastDirV ? { ...this.lastDirV } : null,
       },
     });
     if (this.undoStack.length > 30) this.undoStack.shift();
@@ -682,6 +718,7 @@ class App {
       this.cmdRot = u.cur.rot;
       this.cmdMarked = u.cur.marked;
       this.cmdCursor = { ...u.cur.p };
+      this.lastDirV = u.cur.dir ? { ...u.cur.dir } : null;
       this.updateCmdMarker();
       this.updatePadInfo();
     }
@@ -767,6 +804,26 @@ class App {
       return;
     }
     this.toast('지울 것이 없습니다.');
+  }
+
+  // 🗑️ 새 도면 — 장비·배관을 모두 비우고 커서를 원점 (0, 0.5, 0)으로. 실행취소 한 번이면 되돌아온다.
+  clearAll(opts) {
+    const o = opts || {};
+    this.pushUndo(o.label || '새 도면');
+    this.state.equipment = [];
+    this.state.pipes = [];
+    this.selection = null;
+    this.lastDirV = null;
+    this.cmdBore = '50A';
+    this.cmdMaterial = 'carbon';
+    this.cmdAxis = 'x';
+    this.cmdSign = 1;
+    this.cmdRot = 0;
+    this.setCmdCursor({ x: 0, y: 0.5, z: 0 }, false);
+    this.rebuild();
+    if (!o.silent) {
+      this.toast('새 도면 — 장비·배관을 모두 지웠습니다.', { action: '되돌리기', onAction: () => this.undo() });
+    }
   }
 
   // "옮겨" — 이름/ID로 장비·배관 위치 이동 (AI 명령 폴백용)
@@ -920,8 +977,19 @@ class App {
 
   runCommandLine(raw) {
     const text = String(raw || '').trim();
-    if (!text) return;
     const { ops, unknown } = parseCommand(text);
+    // 조이스틱에서 방향을 골라 둔 상태 — 길이(숫자)만 치고 실행하면 그 방향으로 그린다.
+    if (this.pending) {
+      const onlyLen = ops.length === 1 && ops[0].op === 'seg' && ops[0].loose;
+      if (!ops.length || onlyLen) {
+        if (unknown.length) { this.toast(`일부만 알아들었습니다 · ${unknown.join(' ')}`, { type: 'err' }); return; }
+        const meters = onlyLen ? ops[0].meters : this.padLen / 1000;
+        if (!(meters > 0)) { this.toast('길이(mm)를 숫자로 넣어 주세요. 예: 1000', { type: 'err' }); return; }
+        this.padDraw(this.pending, meters);
+        return;
+      }
+    }
+    if (!text) return;
     if (!ops.length) {
       this.naturalCommand(text, unknown);
       return;
@@ -1033,6 +1101,51 @@ class App {
     }
   }
 
+  // ── 방향 기준: 내 시점 / 도면 축 ─────────────────────────
+  // 카메라의 수평 전방·우측 벡터를 가장 가까운 90° 축으로 스냅한다.
+  viewBasis() {
+    const f = new THREE.Vector3();
+    this.camera.getWorldDirection(f);
+    f.y = 0;
+    if (f.lengthSq() < 1e-8) f.set(0, 0, -1);
+    f.normalize();
+    const fwd = Math.abs(f.x) >= Math.abs(f.z)
+      ? { axis: 'x', sign: f.x >= 0 ? 1 : -1 }
+      : { axis: 'z', sign: f.z >= 0 ? 1 : -1 };
+    // 화면 오른쪽 = 카메라 전방 × 위(0,1,0) = (−fz, 0, fx)
+    const right = fwd.axis === 'x'
+      ? { axis: 'z', sign: f.x >= 0 ? 1 : -1 }
+      : { axis: 'x', sign: -f.z >= 0 ? 1 : -1 };
+    return { fwd, right };
+  }
+
+  // 명령·패드가 말하는 방향(도면 축 x/z) → 실제 월드 축
+  dirToWorld(axis, sign) {
+    const s = sign < 0 ? -1 : 1;
+    if (this.dirFrame !== 'me' || axis === 'y') return { axis, sign: s };
+    const b = this.viewBasis();
+    const t = axis === 'z' ? b.fwd : b.right;
+    return { axis: t.axis, sign: t.sign * s };
+  }
+
+  // 월드 방향 벡터 → 부속 rot(도)
+  rotForDir(v, fallback) {
+    const ax = Math.abs(v.x) >= Math.abs(v.z) ? 'x' : 'z';
+    const s = ax === 'x' ? v.x : v.z;
+    if (Math.abs(s) < 0.2) return fallback == null ? this.cmdRot : fallback;
+    return this.cmdRotFor(ax, s > 0 ? 1 : -1);
+  }
+
+  // 명령 뒤에 오는 첫 이동 op (엘보 명시 여부를 미리 보기)
+  nextMoveOp(list, from) {
+    for (let j = from + 1; j < list.length; j += 1) {
+      const o = list[j];
+      if (o.op === 'seg' || o.op === 'diag') return o;
+      if (o.op === 'equip' || o.op === 'delete' || o.op === 'reset' || o.op === 'undo' || o.op === 'connect') return null;
+    }
+    return null;
+  }
+
   // 명령·패드가 함께 쓰는 실행기. 커서·관경·재질·방향을 이어받아 그림을 그리고,
   // 끝나면 커서를 다음 명령이 이어 쓸 수 있게 남겨 둔다.
   execOps(ops, opts) {
@@ -1047,8 +1160,13 @@ class App {
     let pipeSeq = this.state.pipes.length;
     const pipes = [];
     const equip = [];
+    const edits = [];       // 이미 있던 배관 끝을 엘보 자리만큼 당기는 수정
     const equipSeq = {};
     const notes = [];
+    let prevDir = null;     // 이번 명령에서 마지막으로 그린 구간의 진행 방향
+    let wantElbow = null;   // "엘보써서 위로 1000" — 다음 꺾임에 쓸 엘보
+
+    const put = (p) => ({ x: r3(p.x), y: Math.max(0, r3(p.y)), z: r3(p.z) });
 
     const flush = () => {
       if (pts && pts.length >= 2) {
@@ -1061,74 +1179,151 @@ class App {
       pts = null;
     };
 
-    const advance = (meters) => {
-      const d = { x: 0, y: 0, z: 0 };
-      d[axis] = sign * meters;
-      cursor = {
-        x: r3(cursor.x + d.x),
-        y: Math.max(0, r3(cursor.y + d.y)),
-        z: r3(cursor.z + d.z),
-      };
+    // 이미 놓인 배관 끝을 커서(꼭짓점)에서 접합면만큼 뒤로 당긴다 — 배관이 엘보를 뚫지 않게.
+    const trimPrevEnd = (face) => {
+      if (face <= 0) return;
+      if (pts && pts.length >= 2) {
+        const n = pts.length;
+        const a = pts[n - 2];
+        const b = pts[n - 1];
+        const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+        const f = Math.min(face, len * 0.45);
+        if (f > 1e-4) {
+          pts[n - 1] = put({
+            x: b.x - ((b.x - a.x) / len) * f,
+            y: b.y - ((b.y - a.y) / len) * f,
+            z: b.z - ((b.z - a.z) / len) * f,
+          });
+        }
+        return;
+      }
+      const local = pipes.length ? pipes[pipes.length - 1] : null;
+      const target = local || this.state.pipes[this.state.pipes.length - 1];
+      if (!target || !target.points || target.points.length < 2) return;
+      const n = target.points.length;
+      const a = target.points[n - 2];
+      const b = target.points[n - 1];
+      if (Math.hypot(b.x - cursor.x, b.y - cursor.y, b.z - cursor.z) > 0.03) return;
+      const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+      const f = Math.min(face, len * 0.45);
+      if (f <= 1e-4) return;
+      const np = put({
+        x: b.x - ((b.x - a.x) / len) * f,
+        y: b.y - ((b.y - a.y) / len) * f,
+        z: b.z - ((b.z - a.z) / len) * f,
+      });
+      if (local) local.points[n - 1] = np;
+      else edits.push({ id: target.id, index: n - 1, point: np });
     };
 
-    // 파이프가 끊기는 부속(인라인) — 부속의 실제 길이(spec.w)만큼만 커서를 전진시킨다.
-    const INLINE = INLINE_TYPES;
-    const ON_FLOOR = ON_FLOOR_TYPES;
+    const nextEqSeq = (type) => {
+      equipSeq[type] = (equipSeq[type] || this.state.equipment.filter((e) => e.type === type).length) + 1;
+      return equipSeq[type];
+    };
 
-    for (const op of ops) {
+    const putEquip = (type, extra) => {
+      const t = EQUIP_TYPES[type];
+      const spec = makeEquipment(type, {
+        name: `${t.short}-${100 + nextEqSeq(type)} ${t.label}`,
+        x: cursor.x, y: cursor.y, z: cursor.z, rot,
+        ...(extra || {}),
+      });
+      equip.push(spec);
+      return spec;
+    };
+
+    // 꺾이는 꼭짓점: 각도에 맞는 엘보를 놓고 배관을 접합면에서 끊는다.
+    const cornerJoin = (next, prev) => {
+      const dot = prev.x * next.x + prev.y * next.y + prev.z * next.z;
+      const bend = THREE.MathUtils.radToDeg(Math.acos(Math.max(-1, Math.min(1, dot))));
+      const auto = bend > 80 && bend < 100 ? 'elbow' : (bend > 30 && bend < 60 ? 'elbow45' : null);
+      const type = auto || wantElbow;
+      wantElbow = null;
+      if (!type) return 0;
+      const dims = elbowDims(type, bore);
+      trimPrevEnd(dims.face);
+      flush();
+      putEquip(type, {
+        bore,
+        inDir: [-prev.x, -prev.y, -prev.z],
+        outDir: [next.x, next.y, next.z],
+        rot: this.rotForDir(next, rot),
+      });
+      notes.push(type === 'elbow45' ? '45° 엘보 자동' : '엘보 자동');
+      return dims.face;
+    };
+
+    // 한 구간을 그린다. 방향이 바뀌는 꼭짓점이면 엘보를 자동으로 앉힌다.
+    const drawSegment = (v, meters) => {
+      const prevV = prevDir || this.lastDirV;
+      let face = 0;
+      if (prevV) {
+        const dot = prevV.x * v.x + prevV.y * v.y + prevV.z * v.z;
+        if (dot < 0.999) face = cornerJoin(v, prevV);
+        else if (wantElbow) wantElbow = null; // 일직선에는 꺾임이 없다
+      }
+      face = Math.min(face, meters * 0.45);
+      const from = face > 0
+        ? put({ x: cursor.x + v.x * face, y: cursor.y + v.y * face, z: cursor.z + v.z * face })
+        : { ...cursor };
+      const to = put({ x: cursor.x + v.x * meters, y: cursor.y + v.y * meters, z: cursor.z + v.z * meters });
+      if (!pts) pts = [from];
+      pts.push(to);
+      cursor = to;
+      prevDir = { x: v.x, y: v.y, z: v.z };
+      this.lastDirV = { ...prevDir };
+    };
+
+    for (let i = 0; i < ops.length; i += 1) {
+      const op = ops[i];
       if (op.op === 'bore') { bore = op.bore; continue; }
       if (op.op === 'material') { material = op.material; continue; }
-      if (op.op === 'newpipe') { flush(); continue; }
+      if (op.op === 'newpipe') { flush(); this.lastDirV = null; prevDir = null; continue; }
       if (op.op === 'seg') {
-        const ax = op.axis || axis;
-        const sg = op.axis ? op.sign : sign;
-        axis = ax;
-        sign = sg;
-        rot = this.cmdRotFor(ax, sg);
-        if (!pts) pts = [{ ...cursor }];
-        advance(op.meters);
-        pts.push({ ...cursor });
+        const m = op.axis ? this.dirToWorld(op.axis, op.sign) : { axis, sign };
+        axis = m.axis;
+        sign = m.sign < 0 ? -1 : 1;
+        rot = this.cmdRotFor(axis, sign);
+        drawSegment({ x: axis === 'x' ? sign : 0, y: axis === 'y' ? sign : 0, z: axis === 'z' ? sign : 0 }, op.meters);
         continue;
       }
       if (op.op === 'diag') {
         // 45° 경사 — 길이는 경사관 실제 길이, 수평·수직 성분으로 나뉜다.
         const ang = THREE.MathUtils.degToRad(op.angle || 45);
-        // 이 명령 안에서 이미 움직인 방향을 우선 쓰고, 수직 이동 중이었으면 마지막 수평 방향(rot)을 쓴다.
         const h = op.axis
-          ? { axis: op.axis, sign: op.sign }
-          : (axis !== 'y' ? { axis, sign } : this.headingFromRot(rot));
-        axis = h.axis;
-        sign = h.sign;
-        rot = this.cmdRotFor(axis, sign);
+          ? this.dirToWorld(op.axis, op.sign)
+          : (axis !== 'y' ? { axis, sign } : this.heading());
         const vert = op.vert < 0 ? -1 : 1;
-        const horiz = r3(op.meters * Math.cos(ang));
-        const rise = r3(op.meters * Math.sin(ang));
-        if (!pts) pts = [{ ...cursor }];
-        cursor = {
-          x: r3(cursor.x + (axis === 'x' ? sign * horiz : 0)),
-          y: Math.max(0, r3(cursor.y + vert * rise)),
-          z: r3(cursor.z + (axis === 'z' ? sign * horiz : 0)),
+        const c = Math.cos(ang);
+        const v = {
+          x: (h.axis === 'x' ? (h.sign < 0 ? -1 : 1) : 0) * c,
+          y: vert * Math.sin(ang),
+          z: (h.axis === 'z' ? (h.sign < 0 ? -1 : 1) : 0) * c,
         };
-        pts.push({ ...cursor });
-        notes.push(`${op.angle}° ${fmt(horiz)}·${fmt(rise)}m`);
+        axis = h.axis;
+        sign = h.sign < 0 ? -1 : 1;
+        rot = this.cmdRotFor(axis, sign);
+        drawSegment(v, op.meters);
+        notes.push(`${op.angle}° 경사 ${fmt(op.meters * Math.cos(ang))}·${fmt(op.meters * Math.sin(ang))}m`);
         continue;
       }
       if (op.op === 'turn') {
-        axis = op.axis;
-        sign = op.sign;
+        const m = this.dirToWorld(op.axis, op.sign);
+        axis = m.axis;
+        sign = m.sign < 0 ? -1 : 1;
         rot = this.cmdRotFor(axis, sign);
         notes.push('방향 전환');
         continue;
       }
       if (op.op === 'delete') {
         flush();
-        this.commitCmd(pipes, equip);
+        this.commitCmd(pipes, equip, edits);
         this.deleteLast(op);
         return null;
       }
       if (op.op === 'move') {
         flush();
-        this.commitCmd(pipes, equip);
+        this.commitCmd(pipes, equip, edits);
         this.moveTarget(op);
         return null;
       }
@@ -1154,6 +1349,9 @@ class App {
         const dv = axis === 'x' ? dx : axis === 'z' ? dz : dy;
         sign = dv < 0 ? -1 : 1;
         rot = this.cmdRotFor(axis, sign);
+        const len = Math.hypot(dx, dy, dz) || 1;
+        prevDir = { x: dx / len, y: dy / len, z: dz / len };
+        this.lastDirV = { ...prevDir };
         cursor = { x: hit.p.x, y: Math.max(0, hit.p.y), z: hit.p.z };
         notes.push(`${hit.label}에 연결 ${fmt(hit.d)}m`);
         continue;
@@ -1161,24 +1359,33 @@ class App {
       if (op.op === 'equip') {
         const t = EQUIP_TYPES[op.type];
         if (!t) continue;
-        const inline = INLINE.has(op.type);
+        const isElbow = op.type === 'elbow' || op.type === 'elbow45';
+        // "엘보써서 위로 1000" — 다음 구간이 꺾이면 그 꼭짓점에 엘보를 앉힌다 (중복 방지)
+        if (isElbow && this.nextMoveOp(ops, i) && (prevDir || this.lastDirV)) {
+          wantElbow = op.type;
+          continue;
+        }
+        const inline = INLINE_TYPES.has(op.type);
         if (inline) flush(); // 부속이 들어가는 자리에서 배관을 끊고, 부속 뒤에서 다시 이어 그린다.
-        equipSeq[op.type] = (equipSeq[op.type] || this.state.equipment.filter((e) => e.type === op.type).length) + 1;
-        const spec = makeEquipment(op.type, {
-          name: `${t.short}-${100 + equipSeq[op.type]} ${t.label}`,
-          rot,
-          ...(op.size1 && op.size2 ? { bore1: op.size1, bore2: op.size2 } : {}),
-        });
+        const extra = isElbow
+          ? { bore }
+          : (op.size1 && op.size2 ? { bore1: op.size1, bore2: op.size2 } : {});
+        const spec = putEquip(op.type, extra);
         // spec.w = builders.js 메시의 실제 좌우 접합면 폭. 그래서 이 값만큼만 전진시키면 틈이 생기지 않는다.
         const len = inline ? (spec.w || 0) : 0;
         // 양쪽 4mm씩 살짝 물리게 놓아 접합면에 실금 같은 틈이 보이지 않게 한다.
         const ov = len > 0 ? Math.min(0.004, len * 0.15) : 0;
         const half = len > 0 ? len / 2 - ov : 0;
         spec.x = r3(cursor.x + (axis === 'x' ? sign * half : 0));
-        spec.y = ON_FLOOR.has(op.type) ? 0 : Math.max(0, r3(cursor.y + (axis === 'y' ? sign * half : 0)));
+        spec.y = ON_FLOOR_TYPES.has(op.type) ? 0 : Math.max(0, r3(cursor.y + (axis === 'y' ? sign * half : 0)));
         spec.z = r3(cursor.z + (axis === 'z' ? sign * half : 0));
-        equip.push(spec);
-        if (inline) advance(len - ov * 2);
+        if (inline) {
+          cursor = put({
+            x: cursor.x + (axis === 'x' ? sign * (len - ov * 2) : 0),
+            y: cursor.y + (axis === 'y' ? sign * (len - ov * 2) : 0),
+            z: cursor.z + (axis === 'z' ? sign * (len - ov * 2) : 0),
+          });
+        }
         // 레듀샤는 2차 관경으로 커서 관경을 바꿔, 이어지는 배관이 작은 관경으로 나가게 한다.
         if (op.type === 'reducer' && op.size2 && BORES[op.size2]) {
           bore = op.size2;
@@ -1188,27 +1395,15 @@ class App {
       }
       if (op.op === 'undo') {
         flush();
-        this.commitCmd(pipes, equip);
+        this.commitCmd(pipes, equip, edits);
         this.undo();
         return null;
       }
       if (op.op === 'reset') {
         flush();
-        this.commitCmd(pipes, equip);
-        this.pushUndo('명령 초기화');
-        this.state.equipment = [];
-        this.state.pipes = [];
-        this.selection = null;
-        this.rebuild();
-        this.setCmdCursor({ x: 0, y: 0.5, z: 0 }, false);
-        this.cmdBore = '50A';
-        this.cmdMaterial = 'carbon';
-        this.cmdAxis = 'x';
-        this.cmdSign = 1;
-        this.cmdRot = 0;
-        this.cmdMarked = false;
-        this.updatePadInfo();
-        this.toast('씬을 비웠습니다.', { action: '되돌리기', onAction: () => this.undo() });
+        this.commitCmd(pipes, equip, edits);
+        this.clearAll({ silent: true });
+        this.toast('새 도면 — 장비·배관을 모두 지웠습니다.', { action: '되돌리기', onAction: () => this.undo() });
         return null;
       }
       if (op.op === 'help') { this.openCmdHelp(); return null; }
@@ -1230,7 +1425,7 @@ class App {
       return { cursor };
     }
 
-    this.commitCmd(pipes, equip);
+    this.commitCmd(pipes, equip, edits);
     // 다음 명령이 같은 자리에서 이어지도록 커서를 남긴다 (선택은 비어 있어도 커서는 유지).
     this.setCmdCursor(cursor, true);
 
@@ -1241,13 +1436,20 @@ class App {
       bits.push(equip.length > 1 ? `부속 ${equip.length}개 (${last} 등)` : last);
     }
     if (notes.length) bits.push(notes.join(' · '));
-    this.toast(`${bits.join(' · ')} 추가 · ${bore} · 커서 (${fmt(cursor.x)}, ${fmt(cursor.y)}, ${fmt(cursor.z)})m`);
+    this.toast(`${bits.join(' · ')} · ${bore} · 커서 (${fmt(cursor.x)}, ${fmt(cursor.y)}, ${fmt(cursor.z)})m`);
     return { cursor };
   }
 
-  commitCmd(pipes, equip) {
-    if (!pipes.length && !equip.length) return;
+  commitCmd(pipes, equip, edits) {
+    const hasEdits = Array.isArray(edits) && edits.length;
+    if (!pipes.length && !equip.length && !hasEdits) return;
     this.pushUndo('명령 실행');
+    if (hasEdits) {
+      edits.forEach((ed) => {
+        const target = this.state.pipes.find((p) => p.id === ed.id);
+        if (target && target.points[ed.index]) target.points[ed.index] = ed.point;
+      });
+    }
     if (pipes.length) this.state.pipes.push(...pipes);
     if (equip.length) this.state.equipment.push(...equip);
     if (equip.length) this.lastAdded = { kind: 'equipment', id: equip[equip.length - 1].id };
@@ -1257,80 +1459,189 @@ class App {
     this.rebuild();
   }
 
-  // ── 방향·각도 패드 (타자 없이 누르면 바로 그려짐) ─────
+  // ── 콤팩트 방향 조이스틱 (3×2 D패드) ─────────────────────────
+  // 방향을 고르면 그 방향이 강조되고, 명령창에 길이(mm)만 치고 [실행]하면 그 방향으로 그려진다.
   setPadOpen(on) {
     this.padOpen = !!on;
     const el = $('#dirPad');
     if (el) el.hidden = !this.padOpen;
     const btn = $('#cmdPad');
-    if (btn) btn.classList.toggle('active', this.padOpen);
-    if (this.padOpen) {
-      this.updatePadInfo();
-      if (window.innerWidth <= 860) this.setDrawerOpen(false);
-      this.syncOverlayEntry();
-    } else {
-      this.releaseOverlayEntry();
+    if (btn) {
+      btn.classList.toggle('active', this.padOpen);
+      btn.setAttribute('aria-expanded', this.padOpen ? 'true' : 'false');
     }
   }
 
   updatePadInfo() {
     const el = $('#padInfo');
-    if (!el) return;
-    const c = this.cmdCursor;
-    const mat = (MATERIALS[this.cmdMaterial] || MATERIALS.carbon).label;
-    el.textContent = `${this.cmdBore} · ${mat} · 커서 ${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)}m`;
-  }
-
-  padMeters() {
-    const v = parseFloat($('#padLen').value);
-    if (!Number.isFinite(v) || v <= 0) {
-      this.toast('길이(mm)를 먼저 넣어 주세요.', { type: 'err' });
-      return null;
+    if (el) {
+      const c = this.cmdCursor;
+      const mat = (MATERIALS[this.cmdMaterial] || MATERIALS.carbon).label;
+      el.textContent = `${this.cmdBore} · ${mat} · ${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)}m`;
     }
-    return r3(v / 1000);
+    this.highlightPad();
   }
 
-  padMove(op) {
-    const meters = this.padMeters();
-    if (!meters) return;
-    this.execOps([{ ...op, meters }], { source: 'pad' });
+  // [내 시점 기준] ↔ [도면 축 기준]
+  setDirFrame(mode, quiet) {
+    this.dirFrame = mode === 'plan' ? 'plan' : 'me';
+    try { localStorage.setItem('smilePiping3D.dirFrame', this.dirFrame); } catch (e) { /* ignore */ }
+    this.highlightPad();
+    if (!quiet) {
+      this.toast(this.dirFrame === 'me'
+        ? '내 시점 기준 — 지금 보는 화면의 좌·우·앞·뒤로 나갑니다.'
+        : '도면 축 기준 — 도면의 X·Z 축(고정)으로 나갑니다.');
+    }
+  }
+
+  highlightPad() {
+    const sel = this.pending;
+    const on = (axis, sign) => {
+      if (!sel) return false;
+      const ax = sel.axis;
+      if (sel.op === 'diag' && sel.axis == null) return axis === 'y' && sign === (sel.vert < 0 ? -1 : 1);
+      return ax === axis && (sel.sign < 0 ? -1 : 1) === sign;
+    };
+    $$('#dirPad [data-dir]').forEach((b) => {
+      const [axis, s] = b.dataset.dir.split(':');
+      b.classList.toggle('active', on(axis, Number(s)));
+    });
+    const d45 = $('#pad45');
+    if (d45) d45.classList.toggle('active', !!this.diag45);
+    const fr = $('#btnFrame');
+    if (fr) {
+      fr.textContent = this.dirFrame === 'me' ? '내 시점 기준' : '도면 축 기준';
+      fr.dataset.frame = this.dirFrame;
+      fr.setAttribute('aria-pressed', this.dirFrame === 'me' ? 'true' : 'false');
+    }
+  }
+
+  // 방향 버튼 하나 — 처음 누르면 선택(강조), 같은 방향을 한 번 더 누르면 바로 그린다.
+  tapDir(axis, sign) {
+    const s = sign < 0 ? -1 : 1;
+    const sel = this.diag45
+      ? (axis === 'y' ? { op: 'diag', axis: null, sign: 1, vert: s, angle: 45 }
+        : { op: 'diag', axis, sign: s, vert: 1, angle: 45 })
+      : { op: 'seg', axis, sign: s };
+    const same = this.pending && JSON.stringify(this.pending) === JSON.stringify(sel);
+    if (same) { this.padDraw(sel, this.padLen / 1000); return; }
+    this.pending = sel;
+    this.highlightPad();
+    const name = { x: s > 0 ? '우' : '좌', y: s > 0 ? '위' : '아래', z: s > 0 ? '앞' : '뒤' }[axis];
+    this.toast(this.diag45
+      ? `45° ${name} 선택 — 길이(mm)만 넣고 실행하면 그 방향으로 오르내립니다.`
+      : `${name} 선택 — 명령창에 1000처럼 길이만 넣고 실행하세요.`);
+  }
+
+  padDraw(sel, meters) {
+    if (!sel) return null;
+    const m = Math.max(0.005, Number(meters) || (this.padLen / 1000));
+    this.padLen = Math.round(m * 1000);
+    const op = sel.op === 'diag'
+      ? { op: 'diag', axis: sel.axis, sign: sel.sign, vert: sel.vert || 1, angle: sel.angle || 45, meters: m }
+      : { op: 'seg', axis: sel.axis, sign: sel.sign, meters: m };
+    const res = this.execOps([op], { source: 'pad' });
     this.updatePadInfo();
+    return res;
   }
 
   bindPad() {
     const pad = $('#dirPad');
     if (!pad) return;
     $('#cmdPad').addEventListener('click', () => this.setPadOpen(!this.padOpen));
-    $('#padClose').addEventListener('click', () => this.setPadOpen(false));
-    $('#padUndo').addEventListener('click', () => this.undo());
-    $('#padLen').addEventListener('change', () => this.updatePadInfo());
-
-    // 90° 방향 버튼 — 누른 즉시 그 방향으로 길이(mm)만큼 그린다.
-    $$('[data-dir]', pad).forEach((b) => b.addEventListener('click', () => {
-      const [axis, s] = b.dataset.dir.split(':');
-      this.padMove({ op: 'seg', axis, sign: Number(s) });
-    }));
-
-    // 45° 경사 버튼 — 축과 수직 방향을 함께 보낸다.
-    $$('[data-diag]', pad).forEach((b) => b.addEventListener('click', () => {
-      const [axis, s, v] = b.dataset.diag.split(':');
-      this.padMove({ op: 'diag', axis, sign: Number(s), vert: Number(v), angle: 45 });
-    }));
-
-    // 빠른 길이 (500 / 1000 / 1500 / 2000 mm)
-    $$('[data-len]', pad).forEach((b) => b.addEventListener('click', () => {
-      $('#padLen').value = b.dataset.len;
-      $$('[data-len]', pad).forEach((x) => x.classList.toggle('active', x === b));
-    }));
-
-    // 그리지 않고 수평 방향만 90° 돌리기
-    $('#padTurn').addEventListener('click', () => {
-      const h = this.heading();
-      const seq = [['x', 1], ['z', 1], ['x', -1], ['z', -1]];
-      const i = seq.findIndex(([a, s]) => a === h.axis && s === h.sign);
-      const n = seq[(i + 1) % 4];
-      this.execOps([{ op: 'turn', axis: n[0], sign: n[1] }], { source: 'pad' });
+    $('#btnFrame').addEventListener('click', () => this.setDirFrame(this.dirFrame === 'me' ? 'plan' : 'me'));
+    $('#pad45').addEventListener('click', () => {
+      this.diag45 = !this.diag45;
+      this.highlightPad();
+      this.toast(this.diag45 ? '45° 경사 모드 — 방향을 고르면 45°로 오르내립니다.' : '90° 방향 모드로 돌아왔습니다.');
     });
+    $('#padUndo').addEventListener('click', () => this.undo());
+    $$('#dirPad [data-dir]').forEach((b) => {
+      const [axis, s] = b.dataset.dir.split(':');
+      b.addEventListener('click', () => this.tapDir(axis, Number(s)));
+    });
+  }
+
+  // ── 🎤 음성 명령 (Web Speech API) ─────────────────────────
+  setupVoice() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    this.speechSupported = !!SR;
+    if (!SR) return;
+    try {
+      const rec = new SR();
+      rec.lang = 'ko-KR';
+      rec.interimResults = true;
+      rec.continuous = false;
+      rec.maxAlternatives = 1;
+      rec.onstart = () => { this.listening = true; this.updateMicUi(); };
+      rec.onend = () => { this.listening = false; this.updateMicUi(); };
+      rec.onerror = (ev) => {
+        this.listening = false;
+        this.updateMicUi();
+        const code = (ev && ev.error) || '';
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          this.toast('마이크 권한이 필요합니다. 주소창 자물쇠 → 마이크를 허용한 뒤 다시 눌러 주세요.', { type: 'err' });
+        } else if (code === 'no-speech') {
+          this.toast('소리가 들리지 않았습니다. 버튼을 누르고 다시 말해 주세요.');
+        } else if (code === 'audio-capture') {
+          this.toast('마이크를 찾지 못했습니다. 마이크가 연결돼 있는지 확인해 주세요.', { type: 'err' });
+        } else if (code === 'network') {
+          this.toast('음성 인식 서버에 연결하지 못했습니다. 잠시 뒤 다시 시도해 주세요.', { type: 'err' });
+        } else if (code !== 'aborted') {
+          this.toast(`음성 인식이 중단되었습니다 (${code}).`, { type: 'err' });
+        }
+      };
+      rec.onresult = (ev) => {
+        let text = '';
+        for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+          text += ev.results[i][0].transcript || '';
+        }
+        const t = String(text).trim();
+        if (!t) return;
+        const input = $('#cmdInput');
+        if (input) input.value = t;
+        const last = ev.results[ev.results.length - 1];
+        if (last && last.isFinal) {
+          try { rec.stop(); } catch (e) { /* ignore */ }
+          this.listening = false;
+          this.updateMicUi();
+          if (input) input.value = '';
+          this.runCommandLine(t);
+        }
+      };
+      this.recognition = rec;
+    } catch (e) {
+      this.speechSupported = false;
+      this.recognition = null;
+    }
+  }
+
+  updateMicUi() {
+    const btn = $('#cmdMic');
+    if (!btn) return;
+    btn.classList.toggle('listening', !!this.listening);
+    btn.setAttribute('aria-pressed', this.listening ? 'true' : 'false');
+    btn.title = this.listening ? '듣는 중… 다시 누르면 멈춥니다' : '말로 명령 (예: 50에이 오른쪽 1000)';
+  }
+
+  toggleVoice() {
+    if (!this.speechSupported || !this.recognition) {
+      this.toast('이 브라우저는 음성 인식을 지원하지 않습니다. Chrome 최신 버전에서 사용해 주세요.', { type: 'err' });
+      return;
+    }
+    if (this.listening) {
+      try { this.recognition.stop(); } catch (e) { /* ignore */ }
+      return;
+    }
+    if (this.drawMode) this.setDrawMode(false);
+    try {
+      $('#cmdInput').value = '';
+      this.recognition.start();
+    } catch (e) {
+      this.listening = false;
+      this.updateMicUi();
+      this.toast('음성 인식을 시작하지 못했습니다. 잠시 뒤 다시 눌러 주세요.', { type: 'err' });
+    }
   }
 
   openCmdHelp() {
@@ -1955,10 +2266,26 @@ class App {
         this.refreshScene();
         return;
       }
+      // 엘보 관경을 바꾸면 외경·곡률·접합면 폭을 다시 뽑는다.
+      if (t.dataset.f === 'bore' && (spec.type === 'elbow' || spec.type === 'elbow45')) {
+        spec.bore = BORES[t.value] ? t.value : '100A';
+        const d = elbowDims(spec.type, spec.bore);
+        spec.w = d.face;
+        spec.h = d.r * 2;
+        spec.d = d.r * 2;
+        this.refreshScene();
+        this.renderProps();
+        return;
+      }
       if (t.dataset.f) {
         let v = t.type === 'number' ? parseFloat(t.value) : t.value;
         if (t.type === 'number' && !Number.isFinite(v)) return;
         if (t.dataset.f === 'name') v = String(v);
+        // 엘보 회전값을 직접 바꾸면 자동 방향(inDir/outDir)을 풀고 도면 축 기준으로 놓는다.
+        if (t.dataset.f === 'rot' && (spec.type === 'elbow' || spec.type === 'elbow45')) {
+          delete spec.inDir;
+          delete spec.outDir;
+        }
         spec[t.dataset.f] = v;
         this.refreshScene();
       } else if (t.dataset.ptf) {
@@ -2068,16 +2395,7 @@ class App {
       this.syncPlanInputs();
       this.toast('샘플 현장을 불러왔습니다.');
     });
-    $('#btnClear').addEventListener('click', () => {
-      this.pushUndo('씬 비우기');
-      const fp = this.state.floorPlan;
-      this.state.equipment = [];
-      this.state.pipes = [];
-      this.state.floorPlan = fp;
-      this.selection = null;
-      this.rebuild();
-      this.toast('씬을 비웠습니다.', { action: '되돌리기', onAction: () => this.undo() });
-    });
+    $('#btnClear').addEventListener('click', () => this.clearAll());
     $('#btnHelp').addEventListener('click', () => this.openHelp());
     // [파일] 탭에서도 설정을 바로 열 수 있게 (모바일에서 상단 ⚙를 못 찾는 경우 대비)
     $('#btnSettings2').addEventListener('click', () => this.openSettings());
@@ -2113,6 +2431,10 @@ class App {
     $('#cmdHelp').addEventListener('click', () => this.openCmdHelp());
     // 화면에서 한 번에 누르는 실행취소 — 직전 명령·패드 입력과 커서까지 되돌린다.
     $('#cmdUndo').addEventListener('click', () => this.undo());
+    // 🎤 말로 명령
+    $('#cmdMic').addEventListener('click', () => this.toggleVoice());
+    // 🗑️ 새 도면 (전체 삭제 — 실행취소 한 번이면 되돌아온다)
+    $('#cmdClear').addEventListener('click', () => this.clearAll());
 
     // 설정 · 모달
     $('#btnSettings').addEventListener('click', () => this.openSettings());
@@ -2135,7 +2457,8 @@ class App {
     const modal = $('#modalRoot');
     const props = $('#props');
     const drawer = $('#drawer');
-    return !!((modal && !modal.hidden) || (props && !props.hidden) || this.padOpen
+    // 조이스틱은 상시 도구라 뒤로가기로 닫지 않는다.
+    return !!((modal && !modal.hidden) || (props && !props.hidden)
       || (drawer && drawer.classList.contains('open')));
   }
 

@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd } from './store.js?v=17';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis } from './store.js?v=18';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -498,31 +498,33 @@ function buildBellows(spec) {
   return g;
 }
 
-// ── 90° 엘보 피팅 (곡관 + 양단 용접 비드) ─────────────────────
+// ── 90° 엘보 피팅 ────────────────────────────────────────
+// 꼭짓점(0,0,0)에서 두 다리가 +X·+Y로 나가는 모습으로 그리고, 배치할 때
+// inDir/outDir 회전을 걸어 어느 평면에서 꺾여도 두 입구가 배관과 일직선이 되게 한다.
+// 곡관은 꼭짓점 안쪽을 도는 원호(중심 (R,R)) — 예전처럼 바깥으로 불룩한 고리(배관을 뚫는) 모양이 아니다.
 function buildElbow(spec) {
   const g = new THREE.Group();
-  const inner = new THREE.Group();
+  const dims = elbowDims('elbow', spec.bore || spec.bore1);
+  const { r, R, Ls } = dims;
   const bodyMat = MAT(spec.color, 0.4, 0.8);
   const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
-  const R = 0.11;
-  const r = 0.055;
 
   const arc = new THREE.Mesh(
-    G(`elbowarc|${R}|${r}`, () => new THREE.TorusGeometry(R, r, 12, 26, Math.PI / 2)),
-    bodyMat);
+    G(`elbowarc|${R.toFixed(4)}|${r.toFixed(4)}`, () => new THREE.TorusGeometry(R, r, 14, 30, Math.PI / 2)), bodyMat);
+  arc.rotation.z = Math.PI;          // 0~90° 호를 돌려 (R,R) 중심의 안쪽 곡관으로
+  arc.position.set(R, R, 0);
   arc.castShadow = true;
   arc.receiveShadow = true;
-  inner.add(arc);
+  g.add(arc);
 
-  // 양단 직관 스텁 + 용접 비드
-  addTube(inner, [R, 0, 0], [R + 0.05, 0, 0], r, bodyMat, 20);
-  addTube(inner, [0, R, 0], [0, R + 0.05, 0], r, bodyMat, 20);
-  add(inner, torus(r * 1.08, 0.007), beadMat, R + 0.047, 0, 0, 0, Math.PI / 2, 0);
-  add(inner, torus(r * 1.08, 0.007), beadMat, 0, R + 0.047, 0, Math.PI / 2, 0, 0);
+  // 양단 직관 스텁 — 접합면까지 (배관은 이 면에서 끝난다)
+  addTube(g, [R, 0, 0], [R + Ls, 0, 0], r, bodyMat, 22);
+  addTube(g, [0, R, 0], [0, R + Ls, 0], r, bodyMat, 22);
 
-  inner.position.set(-(R + 0.05) / 2, -(R + 0.05) / 2, 0);
-  g.add(inner);
-  g.scale.set(spec.w / 0.3, spec.h / 0.3, spec.d / 0.22);
+  // 접합면 용접 비드
+  add(g, torus(r * 1.02, r * 0.1), beadMat, R + Ls, 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(r * 1.02, r * 0.1), beadMat, 0, R + Ls, 0, Math.PI / 2, 0, 0);
+
   return g;
 }
 
@@ -602,41 +604,37 @@ function buildNipple(spec) {
   return g;
 }
 
-// ── 45° 엘보 (곡관 45° + 양단 직관 스텁) ─────────────────
+// ── 45° 엘보 — 두 다리가 135° 벌어진 곡관 (배관은 45°만 꺾인다) ─────
+// 꼭짓점(0,0,0), 다리는 +X 와 (−0.707, +0.707). 곡관 중심은 (T, R).
 function buildElbow45(spec) {
   const g = new THREE.Group();
-  const inner = new THREE.Group();
+  const dims = elbowDims('elbow45', spec.bore || spec.bore1);
+  const { r, R, T, Ls } = dims;
   const bodyMat = MAT(spec.color, 0.4, 0.8);
   const beadMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
-  const R = 0.13;
-  const r = 0.05;
   const A = Math.PI / 4;
+  const u = [-Math.SQRT1_2, Math.SQRT1_2];
 
   const arc = new THREE.Mesh(
-    G(`elbow45arc|${R}|${r}`, () => new THREE.TorusGeometry(R, r, 12, 24, A)), bodyMat);
+    G(`elbow45arc|${R.toFixed(4)}|${r.toFixed(4)}`, () => new THREE.TorusGeometry(R, r, 12, 26, A)), bodyMat);
+  arc.rotation.z = -Math.PI * 0.75;   // −135°~−90° 호 → 중심 (T,R) 의 45° 곡관
+  arc.position.set(T, R, 0);
   arc.castShadow = true;
   arc.receiveShadow = true;
-  inner.add(arc);
+  g.add(arc);
 
-  const end = [R * Math.cos(A), R * Math.sin(A), 0];
-  const tan = [-Math.sin(A), Math.cos(A), 0];
-  addTube(inner, [R, 0, 0], [R + 0.05, 0, 0], r, bodyMat, 20);
-  addTube(inner, end, [end[0] + tan[0] * 0.05, end[1] + tan[1] * 0.05, 0], r, bodyMat, 20);
+  addTube(g, [T, 0, 0], [T + Ls, 0, 0], r, bodyMat, 22);
+  addTube(g, [T * u[0], T * u[1], 0], [(T + Ls) * u[0], (T + Ls) * u[1], 0], r, bodyMat, 22);
 
-  const bead = (pos, dir) => {
-    const m = new THREE.Mesh(torus(r * 1.08, 0.006), beadMat);
-    m.position.set(pos[0], pos[1], 0);
-    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(dir[0], dir[1], 0).normalize());
-    m.castShadow = true;
-    inner.add(m);
-  };
-  bead([R + 0.046, 0], [1, 0]);
-  bead([end[0] + tan[0] * 0.046, end[1] + tan[1] * 0.046], tan);
+  add(g, torus(r * 1.02, r * 0.1), beadMat, T + Ls, 0, 0, 0, Math.PI / 2, 0);
+  const bead = new THREE.Mesh(torus(r * 1.02, r * 0.1), beadMat);
+  bead.position.set((T + Ls) * u[0], (T + Ls) * u[1], 0);
+  bead.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(u[0], u[1], 0));
+  bead.castShadow = true;
+  g.add(bead);
 
-  inner.position.set(-(R + 0.05) / 2, -(R * Math.sin(A) + 0.04) / 2, 0);
-  g.add(inner);
-  g.scale.set(spec.w / 0.123, spec.h / 0.21, spec.d / 0.1);
   return g;
+}
 }
 
 // ── 엔드캡 (배관 끝단 마감 · 용접 캡) ─────────────────────
@@ -815,9 +813,9 @@ export function buildPipe(spec) {
     if (i === pts.length - 1) addFlange(g, b, dir, r, flangeMat);
   }
 
-  // 엘보 조인트 (구체)
+  // 엘보 조인트 (구관 — 엘보 부속을 안 놓은 꼭짓점만. 엘보 관 안에 잠기도록 배관과 같은 반지름)
   for (let i = 1; i < pts.length - 1; i += 1) {
-    const s = new THREE.Mesh(G(`sphere|${(r * 1.16).toFixed(4)}`, () => new THREE.SphereGeometry(r * 1.16, 20, 14)), mat);
+    const s = new THREE.Mesh(G(`sphere|${(r * 1.02).toFixed(4)}`, () => new THREE.SphereGeometry(r * 1.02, 18, 12)), mat);
     s.position.copy(pts[i]);
     s.castShadow = true;
     s.receiveShadow = true;
@@ -841,7 +839,20 @@ export function buildEquipment(spec) {
   const build = EQUIP_BUILDERS[spec.type] || buildTank;
   const g = build(spec);
   g.position.set(spec.x, spec.y, spec.z);
-  g.rotation.y = D(spec.rot);
+  const elbowLike = spec.type === 'elbow' || spec.type === 'elbow45';
+  if (elbowLike && Array.isArray(spec.inDir) && Array.isArray(spec.outDir)) {
+    // 진입·진출 벡터로 두 입구를 배관에 정확히 맞춘다 (XY·YZ·XZ 어느 평면이든)
+    const b = elbowBasis(spec.inDir, spec.outDir);
+    const m = new THREE.Matrix4().set(
+      b[0], b[1], b[2], 0,
+      b[3], b[4], b[5], 0,
+      b[6], b[7], b[8], 0,
+      0, 0, 0, 1,
+    );
+    g.quaternion.setFromRotationMatrix(m);
+  } else {
+    g.rotation.y = D(spec.rot);
+  }
   g.userData.pick = { kind: 'equipment', id: spec.id };
   g.userData.spec = spec;
   return g;
