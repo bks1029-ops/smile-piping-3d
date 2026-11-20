@@ -96,6 +96,16 @@ function modelUnavailable(status, detail) {
   return /no longer available|not found|not supported|unsupported|does not exist|decommission|deprecated|discontinued|is not available|no access/i.test(s);
 }
 
+// 서버가 잠깐 혼잡하거나 과부하된 경우인지 (모델 자체는 살아 있으므로 다른 모델로 재시도한다)
+// 무료 한도 초과(429)와 API 키 오류는 재시도해도 결과가 같으므로 여기서 제외한다.
+function modelRetryable(status, detail) {
+  if (status === 429) return false;
+  const s = String(detail || '');
+  if (/api key/i.test(s)) return false;
+  if (status === 500 || status === 502 || status === 503 || status === 504) return true;
+  return /high demand|overloaded|temporarily unavailable|try again/i.test(s);
+}
+
 async function callModel({ apiKey, model, text, mimeType, base64 }) {
   const url = `${API_ROOT}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   let res;
@@ -125,6 +135,10 @@ async function callModel({ apiKey, model, text, mimeType, base64 }) {
     e.status = res.status;
     e.detail = detail;
     e.modelUnavailable = modelUnavailable(res.status, detail) || (res.status === 400 && /model/i.test(detail) && /not|invalid/i.test(detail) && !/api key/i.test(detail));
+    e.modelRetryable = !e.modelUnavailable && modelRetryable(res.status, detail);
+    if (e.modelRetryable) {
+      e.message = `Gemini 서버가 지금 혼잡합니다. (${detail})`;
+    }
     if (!e.modelUnavailable) {
       if (res.status === 400 || res.status === 403) {
         if (/api key/i.test(detail)) e.message = `API 키가 올바르지 않습니다. (${detail})`;
@@ -197,7 +211,7 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
       return { raw, model: current };
     } catch (e) {
       lastErr = e;
-      if (!e || !e.modelUnavailable) throw e;
+      if (!e || !(e.modelUnavailable || e.modelRetryable)) throw e;
       // 아직 목록을 못 봤다면, 이 키에서 실제로 쓸 수 있는 모델을 조회해 대기열에 넣는다.
       if (!listed) {
         listed = true;
@@ -207,6 +221,9 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
     }
   }
 
+  if (lastErr && lastErr.modelRetryable) {
+    throw new Error('Gemini 서버가 혼잡해 잠시 분석하지 못했습니다. 1~2분 뒤 다시 시도해 주세요.');
+  }
   throw lastErr || new Error('Gemini 모델을 찾지 못했습니다. 설정에서 모델을 다시 골라 주세요.');
 }
 

@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis } from './store.js?v=24';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis } from './store.js?v=25';
 
 const geoCache = new Map();
 const matCache = new Map();
