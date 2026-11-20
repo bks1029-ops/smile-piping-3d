@@ -719,8 +719,8 @@ class App {
 
   loop() {
     this.renderer.setAnimationLoop(() => {
-      this.controls.update();
       this.updateCamAnim();
+      this.controls.update();
       this.renderer.render(this.scene, this.camera);
     });
   }
