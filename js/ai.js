@@ -7,7 +7,7 @@ export const DEFAULT_MODEL = 'gemini-3.8-flash';
 
 export const MODEL_OPTIONS = [
   { id: 'gemini-3.8-flash', label: 'gemini-3.8-flash (기본·권장)' },
-  { id: 'gemini-3.8-pro', label: 'gemini-3.8-pro (정밀 분석·느림)' },
+  { id: 'gemini-4-hydrogen', label: 'gemini-4-hydrogen (최신 4세대)' },
   { id: 'gemini-2.5-flash', label: 'gemini-2.5-flash (구형·기존 키 전용)' },
 ];
 
@@ -103,7 +103,8 @@ async function callModel({ apiKey, model, text, mimeType, base64 }) {
   return raw;
 }
 
-// 지금 이 키로 쓸 수 있는 flash 계열 모델 이름 (최신 버전 우선)
+// 지금 이 키로 쓸 수 있는 모델 이름 (flash 계열 우선, 그다음 최신 버전 순)
+// 모델 이름 규칙은 세대마다 바뀌므로 flash가 없으면 다른 텍스트 모델도 후보로 남긴다.
 export async function listFlashModels(apiKey) {
   try {
     const res = await fetch(`${API_ROOT}/models?pageSize=200&key=${encodeURIComponent(apiKey)}`);
@@ -112,11 +113,15 @@ export async function listFlashModels(apiKey) {
     const names = (data.models || [])
       .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
       .map((m) => cleanModel(m.name))
-      .filter((n) => /flash/i.test(n) && !/tts|image|audio|embedding|aqa|live|native/i.test(n));
-    return names.sort((a, b) => versionScore(b) - versionScore(a));
+      .filter((n) => !/tts|image|audio|embedding|aqa|live|native|omni|transcribe|lyria|genie/i.test(n));
+    return names.sort((a, b) => rank(b) - rank(a));
   } catch (e) {
     return [];
   }
+}
+
+function rank(name) {
+  return (/flash/i.test(name) ? 10000 : 0) + versionScore(name);
 }
 
 function versionScore(name) {
