@@ -203,9 +203,13 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
   push(DEFAULT_MODEL);          // 신규 키 기준 최신 기본값
   let listed = false;
   let lastErr = null;
+  let attempts = 0;
+  // 서버가 계속 혼잡할 때 모델 수십 개를 끝까지 돌며 오래 기다리지 않도록 횟수를 제한한다.
+  const MAX_ATTEMPTS = 8;
 
-  while (queue.length) {
+  while (queue.length && attempts < MAX_ATTEMPTS) {
     const current = queue.shift();
+    attempts++;
     try {
       const raw = await callModel({ apiKey, model: current, text, mimeType, base64 });
       return { raw, model: current };
@@ -218,6 +222,8 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
         const avail = await listFlashModels(apiKey);
         avail.forEach(push);
       }
+      // 과부하는 짧게 지나가는 경우가 많아 다음 모델로 넘어가기 전에 잠깐 쉰다.
+      if (e.modelRetryable && queue.length) await new Promise((r) => setTimeout(r, 600));
     }
   }
 
