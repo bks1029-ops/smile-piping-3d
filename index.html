@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<title>스마일산업 3D 배관</title>
+<meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<link rel="stylesheet" href="./css/style.css">
+<script type="importmap">
+{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
+</script>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="mark">S</span>
+      <div class="brand-text">
+        <strong>스마일산업 3D 배관</strong>
+        <span>Piping Layout Prototype</span>
+      </div>
+    </div>
+
+    <div class="viewbar" id="viewbar">
+      <button class="vbtn active" data-view="iso">등각</button>
+      <button class="vbtn" data-view="top">위에서</button>
+      <button class="vbtn" data-view="front">정면</button>
+      <button class="vbtn ghost" data-view="reset">리셋</button>
+    </div>
+
+    <div class="top-actions">
+      <button class="btn accent" id="btnAi">✨ AI 자동 분석</button>
+      <button class="btn ghost" id="btnExport">내보내기</button>
+      <button class="btn icon" id="btnSettings" title="설정">⚙</button>
+      <button class="btn icon only-mobile" id="btnDrawer" title="도구">☰</button>
+    </div>
+  </header>
+
+  <main id="stage">
+    <div id="viewport">
+      <canvas id="scene"></canvas>
+
+      <div id="viewHud" class="overlay-note">
+        <span id="sceneName">샘플 현장</span>
+        <span class="sep">·</span>
+        <span id="sceneCount">장비 0 / 배관 0</span>
+      </div>
+
+      <div id="drawHud" class="hud" hidden>
+        <div class="hud-title">배관 그리기</div>
+        <div class="hud-row">
+          <span>점 <b id="draftCount">0</b>개</span>
+          <label class="hud-label">높이
+            <input type="number" id="draftHeight" value="1.5" step="0.1" min="0" max="20">
+            <span class="unit">m</span>
+          </label>
+        </div>
+        <div class="hud-actions">
+          <button class="btn small ghost" id="draftUndo">점 취소</button>
+          <button class="btn small accent" id="draftFinish">완료</button>
+          <button class="btn small ghost" id="draftCancel">그만두기</button>
+        </div>
+        <div class="hud-tip">바닥을 터치해 점을 찍으세요. 점을 2개 이상 찍으면 배관이 만들어집니다.</div>
+      </div>
+
+      <div id="toastHost"></div>
+    </div>
+
+    <aside id="drawer" class="panel">
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="equip">장비</button>
+        <button class="tab" data-tab="pipe">배관</button>
+        <button class="tab" data-tab="plan">도면</button>
+        <button class="tab" data-tab="file">파일</button>
+      </div>
+
+      <!-- 장비 -->
+      <section class="tabpane active" data-pane="equip">
+        <p class="hint">버튼을 누르면 현재 화면 가운데 바닥에 장비가 추가됩니다.</p>
+        <div class="equip-grid" id="equipGrid"></div>
+        <div class="list-head"><span>배치된 장비</span><span class="count" id="eqCount">0</span></div>
+        <ul class="pick-list" id="eqList"></ul>
+      </section>
+
+      <!-- 배관 -->
+      <section class="tabpane" data-pane="pipe">
+        <div class="field-row">
+          <label class="field">구경
+            <select id="newBore"></select>
+          </label>
+          <label class="field">재질
+            <select id="newMaterial"></select>
+          </label>
+        </div>
+        <button class="btn accent wide" id="btnDrawPipe">3D에서 배관 그리기</button>
+        <p class="hint">바닥을 터치해 점을 찍으면 파이프와 엘보가 자동으로 만들어집니다.</p>
+        <div class="list-head"><span>배관 목록</span><span class="count" id="pipeCount">0</span></div>
+        <ul class="pick-list" id="pipeList"></ul>
+      </section>
+
+      <!-- 도면 -->
+      <section class="tabpane" data-pane="plan">
+        <input type="file" id="planFile" accept="image/*" hidden>
+        <button class="btn wide" id="btnPlanUpload">도면·현장 사진 올리기</button>
+        <p class="hint">올린 이미지가 3D 바닥에 반투명으로 깔립니다. 그 위를 따라 장비와 배관을 놓으세요.</p>
+
+        <div class="plan-controls" id="planControls">
+          <label class="switch"><input type="checkbox" id="planVisible" checked> 바닥에 표시</label>
+          <label class="field range">투명도<span class="val" id="planOpacityVal">55%</span>
+            <input type="range" id="planOpacity" min="0.05" max="1" step="0.05" value="0.55">
+          </label>
+          <label class="field range">가로 크기<span class="val" id="planWidthVal">12 m</span>
+            <input type="range" id="planWidth" min="2" max="40" step="0.5" value="12">
+          </label>
+          <label class="field range">회전<span class="val" id="planRotVal">0°</span>
+            <input type="range" id="planRot" min="-180" max="180" step="5" value="0">
+          </label>
+          <div class="field-row">
+            <label class="field">X 위치<input type="number" id="planX" step="0.5" value="0"></label>
+            <label class="field">Z 위치<input type="number" id="planZ" step="0.5" value="0"></label>
+          </div>
+          <button class="btn small ghost" id="btnPlanClear">도면 지우기</button>
+        </div>
+        <div class="plan-empty" id="planEmpty">아직 올린 도면이 없습니다.</div>
+
+        <div class="ai-card">
+          <div class="ai-card-title">AI 자동 배치</div>
+          <p class="hint">사진이나 손그림을 올린 뒤 <b>AI 자동 분석</b>을 누르면 장비·배관을 자동으로 배치합니다. (Gemini API 키 필요)</p>
+          <button class="btn wide" id="btnAi2">✨ AI 자동 분석</button>
+        </div>
+      </section>
+
+      <!-- 파일 -->
+      <section class="tabpane" data-pane="file">
+        <input type="file" id="loadFile" accept=".json,application/json" hidden>
+        <div class="stack">
+          <button class="btn wide" id="btnSave">JSON 저장</button>
+          <button class="btn wide" id="btnLoad">JSON 불러오기</button>
+        </div>
+        <div class="divider"></div>
+        <div class="stack">
+          <button class="btn wide accent" id="btnFusion">Fusion 360 스크립트(.py) 저장</button>
+          <button class="btn wide" id="btnObj">3D 모델(.obj) 저장</button>
+        </div>
+        <p class="hint">Fusion 360 → 도구 → 스크립트 및 추가기능에서 .py 파일을 실행하면 장비·배관이 실제 바디로 만들어집니다.</p>
+        <div class="divider"></div>
+        <div class="stack">
+          <button class="btn wide ghost" id="btnSample">샘플 씬 불러오기</button>
+          <button class="btn wide ghost" id="btnClear">씬 비우기</button>
+          <button class="btn wide ghost" id="btnHelp">사용 방법</button>
+        </div>
+        <div class="stat" id="stats"></div>
+      </section>
+    </aside>
+
+    <aside id="props" class="panel props" hidden>
+      <div class="prop-head">
+        <span class="badge" id="propBadge">장비</span>
+        <button class="btn icon tiny" id="btnPropClose" title="닫기">✕</button>
+      </div>
+      <div class="prop-body" id="propBody"></div>
+    </aside>
+  </main>
+</div>
+
+<div id="modalRoot" class="modal-root" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modalTitle">설정</h3>
+      <button class="btn icon tiny" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-actions" id="modalActions"></div>
+  </div>
+</div>
+
+<input type="file" id="aiFile" accept="image/*" hidden>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
