@@ -1093,7 +1093,10 @@ class App {
       if (op.op === 'diag') {
         // 45° 경사 — 길이는 경사관 실제 길이, 수평·수직 성분으로 나뉜다.
         const ang = THREE.MathUtils.degToRad(op.angle || 45);
-        const h = op.axis ? { axis: op.axis, sign: op.sign } : this.heading();
+        // 이 명령 안에서 이미 움직인 방향을 우선 쓰고, 수직 이동 중이었으면 마지막 수평 방향(rot)을 쓴다.
+        const h = op.axis
+          ? { axis: op.axis, sign: op.sign }
+          : (axis !== 'y' ? { axis, sign } : this.headingFromRot(rot));
         axis = h.axis;
         sign = h.sign;
         rot = this.cmdRotFor(axis, sign);
