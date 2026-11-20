@@ -13,8 +13,6 @@
 
 ![mm 한 줄 배관 명령](preview-cmd.png)
 
-![방향·각도 패드와 실행취소](preview-pad.png)
-
 ![모바일 390×844 — 콤팩트 조이스틱·명령창·음성 버튼이 3D를 가리지 않는다](preview-voice-view.png)
 
 ![자동 엘보 확대 — 위(+Y)→오른쪽(+X), 오른쪽→위 두 꺾임 모두 두 입구가 배관과 반듯하게 맞는다](preview-elbow-zoom.png)
