@@ -5,12 +5,12 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims,
-} from './store.js?v=20';
-import { buildScene } from './builders.js?v=20';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=20';
-import { buildOBJ } from './obj.js?v=20';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=20';
-import { parseCommand, CMD_HELP } from './cmd.js?v=20';
+} from './store.js?v=21';
+import { buildScene } from './builders.js?v=21';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=21';
+import { buildOBJ } from './obj.js?v=21';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=21';
+import { parseCommand, CMD_HELP } from './cmd.js?v=21';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
