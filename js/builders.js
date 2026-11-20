@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis } from './store.js?v=19';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis } from './store.js?v=20';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -781,7 +781,7 @@ function buildGauge(spec) {
 }
 
 // ── 배관 (파이프 + 엘보 조인트 + 플랜지) ─────────────────────────────────────
-export function buildPipe(spec) {
+export function buildPipe(spec, equipments) {
   const g = new THREE.Group();
   const m = MATERIALS[spec.material] || MATERIALS.carbon;
   const bore = BORES[spec.bore] || BORES['100A'];
@@ -792,6 +792,10 @@ export function buildPipe(spec) {
   const pts = (spec.points || []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
   const up = new THREE.Vector3(0, 1, 0);
   const unit = G(`ucyl|${r.toFixed(4)}`, () => new THREE.CylinderGeometry(r, r, 1, 18));
+
+  const joints = equipments || [];
+  // 배관 끝이 부속(엘보·밸브·플랜지 등)과 만나는 자리면 플랜지를 그리지 않는다 — 용접 이음으로 보이게.
+  const jointAt = (p) => joints.some((e) => Math.hypot((e.x || 0) - p.x, (e.y || 0) - p.y, (e.z || 0) - p.z) < 0.28);
 
   for (let i = 1; i < pts.length; i += 1) {
     const a = pts[i - 1];
@@ -807,9 +811,9 @@ export function buildPipe(spec) {
     pipe.receiveShadow = true;
     g.add(pipe);
 
-    // 구간 끝 플랜지
-    if (i === 1) addFlange(g, a, dir, r, flangeMat);
-    if (i === pts.length - 1) addFlange(g, b, dir, r, flangeMat);
+    // 구간 끝 플랜지 (부속과 만나는 끝은 생략)
+    if (i === 1 && !jointAt(a)) addFlange(g, a, dir, r, flangeMat);
+    if (i === pts.length - 1 && !jointAt(b)) addFlange(g, b, dir, r, flangeMat);
   }
 
   // 엘보 조인트 (구관 — 엘보 부속을 안 놓은 꼭짓점만. 엘보 관 안에 잠기도록 배관과 같은 반지름)
@@ -888,6 +892,6 @@ export function buildScene(state) {
   const root = new THREE.Group();
   root.name = 'sceneRoot';
   state.equipment.forEach((spec) => root.add(buildEquipment(spec)));
-  state.pipes.forEach((spec) => root.add(buildPipe(spec)));
+  state.pipes.forEach((spec) => root.add(buildPipe(spec, state.equipment)));
   return root;
 }

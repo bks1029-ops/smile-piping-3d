@@ -5,12 +5,12 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims,
-} from './store.js?v=19';
-import { buildScene } from './builders.js?v=19';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=19';
-import { buildOBJ } from './obj.js?v=19';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=19';
-import { parseCommand, CMD_HELP } from './cmd.js?v=19';
+} from './store.js?v=20';
+import { buildScene } from './builders.js?v=20';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=20';
+import { buildOBJ } from './obj.js?v=20';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=20';
+import { parseCommand, CMD_HELP } from './cmd.js?v=20';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -812,6 +812,7 @@ class App {
     this.pushUndo(o.label || '새 도면');
     this.state.equipment = [];
     this.state.pipes = [];
+    this.state.name = '내 배관 도면';
     this.selection = null;
     this.lastDirV = null;
     this.cmdBore = '50A';
