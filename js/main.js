@@ -29,6 +29,13 @@ const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/
 
 const VIEW_NAMES = ['iso', 'top', 'front', 'reset'];
 
+function isQuotaError(e) {
+  if (!e) return false;
+  if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') return true;
+  if (e.code === 22 || e.code === 1014) return true;
+  return /quota|exceed/i.test(String(e.message || e));
+}
+
 class App {
   constructor() {
     this.state = this.restore() || sampleScene();
@@ -744,13 +751,40 @@ class App {
   // ── 저장 / 불러오기 / 내보내기 ───────────────────────────
   scheduleSave() {
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
-      } catch (e) {
-        if (String(e).includes('quota')) this.toast('저장 공간이 부족합니다. 도면 이미지를 줄여보세요.', { type: 'err' });
+    this.saveTimer = setTimeout(() => this.flushSave(), 600);
+  }
+
+  // 저장 공간이 모자라면 도면 이미지(src)만 빼고 장비·배관은 반드시 남긴다.
+  flushSave() {
+    this.saveTimer = null;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      this.saveWarned = false;
+      return true;
+    } catch (e) {
+      if (!isQuotaError(e)) {
+        console.warn('자동 저장 실패', e);
+        return false;
       }
-    }, 600);
+      try {
+        const slim = Object.assign({}, this.state, {
+          floorPlan: Object.assign({}, this.state.floorPlan, { src: null }),
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+        if (!this.saveWarned) {
+          this.saveWarned = true;
+          this.toast('장비·배관은 저장했습니다. 도면 사진은 저장 공간이 모자라 함께 저장하지 못했어요.');
+        }
+        return true;
+      } catch (e2) {
+        console.warn('자동 저장 실패(도면 제외 저장도 실패)', e2);
+        if (!this.saveWarned) {
+          this.saveWarned = true;
+          this.toast('자동 저장에 실패했습니다. [파일] 탭에서 JSON으로 저장해 두세요.', { type: 'err' });
+        }
+        return false;
+      }
+    }
   }
 
   saveJson() {
@@ -841,12 +875,63 @@ class App {
     $('#btnPlanUpload').textContent = has ? '다른 도면 올리기' : '도면·현장 사진 올리기';
   }
 
+  // 휴대폰 고해상도 사진은 긴 변 1600px · JPEG 0.82로 줄여서 넘긴다.
   readImageFile(file, cb) {
     if (!file) return;
     if (!/^image\//.test(file.type)) { this.toast('이미지 파일만 올릴 수 있습니다.', { type: 'err' }); return; }
-    const reader = new FileReader();
-    reader.onload = () => cb(String(reader.result));
-    reader.readAsDataURL(file);
+    const MAX_SIDE = 1600;
+    const QUALITY = 0.82;
+
+    const viaFileReader = () => {
+      const reader = new FileReader();
+      reader.onload = () => cb(String(reader.result));
+      reader.onerror = () => this.toast('이미지를 읽지 못했습니다. JPG/PNG 파일을 사용해 주세요.', { type: 'err' });
+      reader.readAsDataURL(file);
+    };
+
+    let url = '';
+    try { url = URL.createObjectURL(file); } catch (e) { viaFileReader(); return; }
+
+    const img = new Image();
+    img.onload = () => {
+      let out = null;
+      try {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        if (!w || !h) throw new Error('이미지 크기를 읽지 못했습니다.');
+        const scale = Math.min(1, MAX_SIDE / Math.max(w, h));
+        const tw = Math.max(1, Math.round(w * scale));
+        const th = Math.max(1, Math.round(h * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = tw;
+        canvas.height = th;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('캔버스를 만들지 못했습니다.');
+        ctx.fillStyle = '#ffffff'; // 투명 PNG도 JPEG에서 까맣게 나오지 않도록
+        ctx.fillRect(0, 0, tw, th);
+        ctx.imageSmoothingEnabled = true;
+        if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, tw, th);
+        const dataUrl = canvas.toDataURL('image/jpeg', QUALITY);
+        if (!dataUrl || dataUrl.indexOf('data:image/jpeg') !== 0 || dataUrl.length < 128) {
+          throw new Error('압축 결과가 올바르지 않습니다.');
+        }
+        canvas.width = 0;
+        canvas.height = 0;
+        out = dataUrl;
+      } catch (e) {
+        console.warn('이미지 자동 압축 실패, 원본으로 대체', e);
+      } finally {
+        if (url) URL.revokeObjectURL(url);
+      }
+      if (out) cb(out); else viaFileReader();
+    };
+    img.onerror = () => {
+      if (url) URL.revokeObjectURL(url);
+      console.warn('이미지 디코드 실패, 원본으로 대체');
+      viaFileReader();
+    };
+    img.src = url;
   }
 
   // ── AI ─────────────────────────────────────────────────
