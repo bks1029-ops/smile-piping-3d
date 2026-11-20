@@ -5,11 +5,11 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength,
-} from './store.js?v=9';
-import { buildScene } from './builders.js?v=9';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=9';
-import { buildOBJ } from './obj.js?v=9';
-import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=9';
+} from './store.js?v=10';
+import { buildScene } from './builders.js?v=10';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=10';
+import { buildOBJ } from './obj.js?v=10';
+import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=10';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -1004,7 +1004,8 @@ class App {
         body: `<p class="err-text">${esc(e.message || e)}</p>
                <p class="hint">API 키와 모델을 확인하거나, 사진을 바닥에 깔고 직접 배치해 보세요.</p>`,
         actions: [
-          { label: '설정 열기', onClick: () => this.openSettings() },
+          // keep: true — 설정 모달을 연 뒤 이 핸들러의 closeModal()이 새 모달까지 닫지 않게 한다.
+          { label: '설정 열기', keep: true, onClick: () => this.openSettings() },
           { label: '닫기', cls: 'accent' },
         ],
       });
@@ -1219,6 +1220,8 @@ class App {
       this.toast('씬을 비웠습니다.', { action: '되돌리기', onAction: () => this.undo() });
     });
     $('#btnHelp').addEventListener('click', () => this.openHelp());
+    // [파일] 탭에서도 설정을 바로 열 수 있게 (모바일에서 상단 ⚙를 못 찾는 경우 대비)
+    $('#btnSettings2').addEventListener('click', () => this.openSettings());
     $('#btnExport').addEventListener('click', () => {
       $$('#tabs .tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === 'file'));
       $$('.tabpane').forEach((p) => p.classList.toggle('active', p.dataset.pane === 'file'));

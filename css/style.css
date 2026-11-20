@@ -458,8 +458,15 @@ input[type="color"] {
   .vbtn { padding: 7px 11px; font-size: 12px; }
   .top-actions .btn.ghost { display: none; }
   .only-mobile { display: inline-flex; }
-  #btnAi { padding: 8px 10px; font-size: 12px; }
-  #btnSettings { display: none; }
+  /* 모바일에서도 ⚙ 설정은 항상 상단에 노출 */
+  #btnAi { padding: 7px 9px; font-size: 12px; }
+  #btnAi .ai-extra { display: none; } /* 좁은 화면에서는 "AI 자동 분석" → "AI 분석" */
+  #btnSettings { display: inline-flex; padding: 7px 9px; font-size: 15px; line-height: 1; }
+  #topbar { gap: 6px; }
+  .brand { flex: 1 1 auto; min-width: 0; }
+  .top-actions { flex: 0 0 auto; }
+  .brand-text { flex: 1 1 auto; }
+  .brand-text strong { overflow: hidden; text-overflow: ellipsis; }
 
   #drawer {
     position: fixed;
@@ -495,4 +502,6 @@ input[type="color"] {
 @media (max-width: 380px) {
   .brand-text strong { font-size: 12px; }
   .vbtn { padding: 6px 8px; font-size: 11.5px; }
+  #btnAi { padding: 6px 8px; font-size: 11.5px; }
+  #btnSettings { padding: 6px 8px; font-size: 14px; }
 }

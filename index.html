@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=9">
+<link rel="stylesheet" href="./css/style.css?v=10">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -33,7 +33,7 @@
     </div>
 
     <div class="top-actions">
-      <button class="btn accent" id="btnAi">✨ AI 자동 분석</button>
+      <button class="btn accent" id="btnAi">✨ AI<span class="ai-extra"> 자동</span> 분석</button>
       <button class="btn ghost" id="btnExport">내보내기</button>
       <button class="btn icon" id="btnSettings" title="설정">⚙</button>
       <button class="btn icon only-mobile" id="btnDrawer" title="도구">☰</button>
@@ -149,6 +149,10 @@
         <p class="hint">Fusion 360 → 도구 → 스크립트 및 추가기능에서 .py 파일을 실행하면 장비·배관이 실제 바디로 만들어집니다.</p>
         <div class="divider"></div>
         <div class="stack">
+          <button class="btn wide ghost" id="btnSettings2">⚙ 설정 (API 키 · 모델)</button>
+        </div>
+        <div class="divider"></div>
+        <div class="stack">
           <button class="btn wide ghost" id="btnSample">샘플 씬 불러오기</button>
           <button class="btn wide ghost" id="btnClear">씬 비우기</button>
           <button class="btn wide ghost" id="btnHelp">사용 방법</button>
@@ -181,6 +185,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=9"></script>
+<script type="module" src="./js/main.js?v=10"></script>
 </body>
 </html>
