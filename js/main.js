@@ -5,12 +5,12 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth,
-} from './store.js?v=16';
-import { buildScene } from './builders.js?v=16';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=16';
-import { buildOBJ } from './obj.js?v=16';
-import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=16';
-import { parseCommand, CMD_HELP } from './cmd.js?v=16';
+} from './store.js?v=17';
+import { buildScene } from './builders.js?v=17';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=17';
+import { buildOBJ } from './obj.js?v=17';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=17';
+import { parseCommand, CMD_HELP } from './cmd.js?v=17';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -700,6 +700,7 @@ class App {
     });
     this.pushUndo(t.label + ' 추가');
     this.state.equipment.push(spec);
+    this.lastAdded = { kind: 'equipment', id: spec.id };
     this.selection = { kind: 'equipment', id: spec.id };
     this.rebuild();
     this.toast(`${t.label}을(를) 추가했습니다. 속성 패널에서 위치·크기를 조정하세요.`);
@@ -730,6 +731,64 @@ class App {
     this.selection = { kind: 'equipment', id: copy.id };
     this.rebuild();
     this.toast('장비를 복제했습니다.');
+  }
+
+  // "지워/삭제/빼" — 선택한 것, 없으면 방금 추가한 것
+  deleteLast(op) {
+    const o = op || {};
+    if (o.id || o.name) {
+      const eq = this.state.equipment.find((e) => e.id === o.id || (o.name && e.name === o.name));
+      const pp = this.state.pipes.find((p) => p.id === o.id || (o.name && p.name === o.name));
+      const target = eq || pp;
+      if (target) {
+        this.selection = { kind: eq ? 'equipment' : 'pipe', id: target.id };
+        this.deleteSelected();
+        return;
+      }
+    }
+    if (this.selection) { this.deleteSelected(); return; }
+    const la = this.lastAdded;
+    if (la) {
+      const list = la.kind === 'pipe' ? this.state.pipes : this.state.equipment;
+      if (list.some((x) => x.id === la.id)) {
+        this.selection = { kind: la.kind, id: la.id };
+        this.deleteSelected();
+        return;
+      }
+    }
+    if (this.state.pipes.length) {
+      this.selection = { kind: 'pipe', id: this.state.pipes[this.state.pipes.length - 1].id };
+      this.deleteSelected();
+      return;
+    }
+    if (this.state.equipment.length) {
+      this.selection = { kind: 'equipment', id: this.state.equipment[this.state.equipment.length - 1].id };
+      this.deleteSelected();
+      return;
+    }
+    this.toast('지울 것이 없습니다.');
+  }
+
+  // "옮겨" — 이름/ID로 장비·배관 위치 이동 (AI 명령 폴백용)
+  moveTarget(op) {
+    const o = op || {};
+    const eq = this.state.equipment.find((e) => e.id === o.id || (o.name && e.name === o.name));
+    const pp = this.state.pipes.find((p) => p.id === o.id || (o.name && p.name === o.name));
+    if (!eq && !pp) { this.toast('옮길 대상을 찾지 못했습니다.', { type: 'err' }); return; }
+    this.pushUndo('이동');
+    if (eq) {
+      if (Number.isFinite(Number(o.x))) eq.x = Number(o.x);
+      if (Number.isFinite(Number(o.y))) eq.y = Math.max(0, Number(o.y));
+      if (Number.isFinite(Number(o.z))) eq.z = Number(o.z);
+    } else {
+      const dx = Number.isFinite(Number(o.x)) ? Number(o.x) - pp.points[0].x : 0;
+      const dy = Number.isFinite(Number(o.y)) ? Number(o.y) - pp.points[0].y : 0;
+      const dz = Number.isFinite(Number(o.z)) ? Number(o.z) - pp.points[0].z : 0;
+      pp.points = pp.points.map((p) => ({ x: r3(p.x + dx), y: Math.max(0, r3(p.y + dy)), z: r3(p.z + dz) }));
+    }
+    this.selection = null;
+    this.rebuild();
+    this.toast('옮겼습니다.', { action: '되돌리기', onAction: () => this.undo() });
   }
 
   nextPipeName() {
@@ -864,11 +923,114 @@ class App {
     if (!text) return;
     const { ops, unknown } = parseCommand(text);
     if (!ops.length) {
-      this.toast(`명령을 이해하지 못했습니다${unknown.length ? ' · ' + unknown.join(' ') : ''}`, { type: 'err' });
+      this.naturalCommand(text, unknown);
       return;
     }
     if (unknown.length) this.toast(`일부만 알아들었습니다 · ${unknown.join(' ')}`, { type: 'err' });
     this.execOps(ops, { source: 'cmd' });
+  }
+
+  // ── 자유로운 말 → 명령 (로컬 파서가 못 알아들었을 때만 Gemini 사용) ──
+  sceneSummary() {
+    return {
+      cursor: { ...this.cmdCursor },
+      bore: this.cmdBore,
+      material: this.cmdMaterial,
+      equipment: this.state.equipment.slice(0, 40).map((e) => ({
+        id: e.id, type: e.type, name: e.name, x: e.x, y: e.y, z: e.z, rot: e.rot, w: e.w,
+        bore1: e.bore1 || null, bore2: e.bore2 || null,
+      })),
+      pipes: this.state.pipes.slice(0, 40).map((p) => ({
+        id: p.id, name: p.name, bore: p.bore, material: p.material, points: p.points,
+      })),
+    };
+  }
+
+  // Gemini가 돌려준 동작 JSON을 앱 내부 op로 바꾼다.
+  toOps(list) {
+    const OUT = [];
+    const DIRS = { '오른쪽': ['x', 1], '우': ['x', 1], '왼쪽': ['x', -1], '좌': ['x', -1], '위': ['y', 1], '아래': ['y', -1], '앞': ['z', 1], '뒤': ['z', -1] };
+    (Array.isArray(list) ? list : []).forEach((o) => {
+      if (!o || !o.op) return;
+      const mm = Number(o.mm);
+      if (o.op === 'seg') {
+        let axis = ['x', 'y', 'z'].includes(o.axis) ? o.axis : null;
+        let sign = Number(o.sign) || 1;
+        if (!axis && DIRS[o.dir]) { axis = DIRS[o.dir][0]; sign = DIRS[o.dir][1]; }
+        if (axis && Number.isFinite(mm) && mm > 0) OUT.push({ op: 'seg', axis, sign, meters: mm / 1000 });
+      } else if (o.op === 'diag') {
+        if (Number.isFinite(mm) && mm > 0) {
+          OUT.push({
+            op: 'diag',
+            axis: ['x', 'z'].includes(o.axis) ? o.axis : null,
+            sign: Number(o.sign) || 1,
+            vert: Number(o.vert) < 0 ? -1 : 1,
+            angle: Number(o.angle) || 45,
+            meters: mm / 1000,
+          });
+        }
+      } else if (o.op === 'bore') {
+        if (BORES[o.bore]) OUT.push({ op: 'bore', bore: o.bore });
+      } else if (o.op === 'material') {
+        if (MATERIALS[o.material]) OUT.push({ op: 'material', material: o.material });
+      } else if (o.op === 'equip') {
+        if (EQUIP_TYPES[o.type]) OUT.push({ op: 'equip', type: o.type, size1: o.bore1, size2: o.bore2 });
+      } else if (o.op === 'connect') {
+        OUT.push({
+          op: 'connect',
+          target: o.target === 'pipe' ? 'pipe' : 'equip',
+          type: EQUIP_TYPES[o.type] ? o.type : null,
+          axis: ['x', 'y', 'z'].includes(o.axis) ? o.axis : null,
+          sign: Number(o.sign) || 1,
+        });
+      } else if (o.op === 'delete') {
+        OUT.push({ op: 'delete', id: o.id || null, name: o.name || null });
+      } else if (o.op === 'move') {
+        OUT.push({ op: 'move', id: o.id || null, name: o.name || null, x: o.x, y: o.y, z: o.z });
+      } else if (o.op === 'newpipe' || o.op === 'undo' || o.op === 'reset') {
+        OUT.push({ op: o.op });
+      }
+    });
+    return OUT;
+  }
+
+  async naturalCommand(text, unknown) {
+    const key = this.apiKey();
+    if (!key) {
+      this.toast(
+        `명령을 이해하지 못했습니다${unknown && unknown.length ? ' · ' + unknown.join(' ') : ''}. 설정에서 Gemini API 키를 넣으면 "밸브 하나 달아줘" 같은 자유로운 말도 알아듣습니다.`,
+        { type: 'err', action: 'API 키 넣기', onAction: () => this.openSettings() },
+      );
+      return;
+    }
+    if (this.aiRunning) { this.toast('AI가 아직 처리 중입니다. 끝나면 다시 말해 주세요.'); return; }
+    this.aiRunning = true;
+    this.acquireWakeLock();
+    this.showAiProgress();
+    try {
+      const planned = await planCommand({ apiKey: key, model: this.model(), text, scene: this.sceneSummary() });
+      const ops = this.toOps(planned.ops);
+      if (!ops.length) {
+        this.toast(planned.say || '문장을 명령으로 바꾸지 못했습니다. 조금 더 구체적으로 말해 주세요.', { type: 'err' });
+        return;
+      }
+      this.execOps(ops, { source: 'ai' });
+      if (planned.say) this.toast(`🤖 ${planned.say}`);
+    } catch (e) {
+      this.openModal({
+        title: '자유 명령 해석 실패',
+        body: `<p class="err-text">${esc(e.message || e)}</p>
+               <p class="hint">API 키와 모델을 확인하거나, 명령 예시처럼 짧게 말해 보세요. (예: <code>밸브 하나 달아줘</code>)</p>`,
+        actions: [
+          { label: '설정 열기', keep: true, onClick: () => this.openSettings() },
+          { label: '닫기', cls: 'accent' },
+        ],
+      });
+    } finally {
+      this.aiRunning = false;
+      this.releaseWakeLock();
+      this.hideAiProgress();
+    }
   }
 
   // 명령·패드가 함께 쓰는 실행기. 커서·관경·재질·방향을 이어받아 그림을 그리고,
@@ -954,6 +1116,18 @@ class App {
         rot = this.cmdRotFor(axis, sign);
         notes.push('방향 전환');
         continue;
+      }
+      if (op.op === 'delete') {
+        flush();
+        this.commitCmd(pipes, equip);
+        this.deleteLast(op);
+        return null;
+      }
+      if (op.op === 'move') {
+        flush();
+        this.commitCmd(pipes, equip);
+        this.moveTarget(op);
+        return null;
       }
       if (op.op === 'connect') {
         flush();
@@ -1073,6 +1247,8 @@ class App {
     this.pushUndo('명령 실행');
     if (pipes.length) this.state.pipes.push(...pipes);
     if (equip.length) this.state.equipment.push(...equip);
+    if (equip.length) this.lastAdded = { kind: 'equipment', id: equip[equip.length - 1].id };
+    else if (pipes.length) this.lastAdded = { kind: 'pipe', id: pipes[pipes.length - 1].id };
     // 연속으로 명령을 칠 수 있게 선택은 비워 둔다 (모바일에서 속성 패널이 명령창을 가리는 것 방지)
     this.selection = null;
     this.rebuild();

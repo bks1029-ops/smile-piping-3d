@@ -1,16 +1,33 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=16';
+import { BORES, MATERIALS } from './store.js?v=17';
 
 // 방향 — 긴 표현을 먼저 본다. (긴 것부터 매칭)
 const DIRS = [
-  ['오른쪽', 'x', 1], ['우측', 'x', 1], ['오른', 'x', 1], ['우', 'x', 1],
-  ['왼쪽', 'x', -1], ['좌측', 'x', -1], ['왼', 'x', -1], ['좌', 'x', -1],
-  ['위쪽', 'y', 1], ['위로', 'y', 1], ['위', 'y', 1], ['상승', 'y', 1], ['상', 'y', 1], ['올려', 'y', 1], ['올리', 'y', 1],
-  ['아래쪽', 'y', -1], ['아래로', 'y', -1], ['아래', 'y', -1], ['하강', 'y', -1], ['하', 'y', -1], ['내려', 'y', -1], ['내리', 'y', -1],
+  ['오른쪽', 'x', 1], ['우측', 'x', 1], ['오른', 'x', 1], ['우', 'x', 1], ['우로', 'x', 1], ['오른쪽으로', 'x', 1],
+  ['왼쪽', 'x', -1], ['좌측', 'x', -1], ['왼', 'x', -1], ['좌', 'x', -1], ['좌로', 'x', -1], ['왼쪽으로', 'x', -1],
+  ['위쪽', 'y', 1], ['위로', 'y', 1], ['위', 'y', 1], ['상승', 'y', 1], ['상', 'y', 1],
+  ['올려', 'y', 1], ['올리', 'y', 1], ['올라', 'y', 1], ['올려줘', 'y', 1], ['올려서', 'y', 1], ['올리고', 'y', 1], ['올라가', 'y', 1],
+  ['아래쪽', 'y', -1], ['아래로', 'y', -1], ['아래', 'y', -1], ['하강', 'y', -1], ['하', 'y', -1],
+  ['내려', 'y', -1], ['내리', 'y', -1], ['내려줘', 'y', -1], ['내려서', 'y', -1], ['내리고', 'y', -1], ['내려가', 'y', -1], ['내려와', 'y', -1],
   ['앞쪽', 'z', 1], ['앞으로', 'z', 1], ['앞', 'z', 1], ['전진', 'z', 1], ['전', 'z', 1],
+  ['나와', 'z', 1], ['나가', 'z', 1], ['나오', 'z', 1], ['앞으로가', 'z', 1],
   ['뒤쪽', 'z', -1], ['뒤로', 'z', -1], ['뒤', 'z', -1], ['후진', 'z', -1], ['후', 'z', -1],
+  ['들어가', 'z', -1], ['들어', 'z', -1], ['뒤로가', 'z', -1],
 ];
+
+// 말버릇·군더더기 — 뜻이 없으므로 무시한다.
+const FILLER = new Set([
+  '좀', '쫌', '줌', '조금', '약간', '잠깐', '대충', '다시', '한번', '번', '더', '좀더',
+  '해줘', '해주세요', '해라', '해봐', '해', '주세요', '줘', '줄래', '줄래요',
+  '달아줘', '달아주세요', '달아', '달어', '놔줘', '놔', '놓고', '놔라',
+  '가다가', '해서', '써서', '쓰고', '같은', '하나', '한개', '한', '개', '이거', '그거', '저거',
+  '바꿔서', '바꿔', '바꾸고', '바꿔줘', '맞춰서', '맞춰', '가면서', '가서', '놓으면', '하면',
+  '요', '여기', '거기', '저기', '이쪽', '그쪽', '쪽', '정도', '쯤', '반', '번쯤',
+]);
+
+// 지우기 의도
+const DELETE_WORDS = new Set(['지워', '지우', '지워줘', '삭제', '삭제해', '삭제해줘', '빼', '빼줘', '없애', '없애줘', '제거', '제거해']);
 
 // 부속·장비 별칭 (공백을 지운 형태로 비교)
 const EQUIP_ALIASES = [
@@ -88,7 +105,12 @@ const stripSuffix = (t) => {
   for (const suf of VERB_SUFFIX) {
     if (s.length > suf.length && s.endsWith(suf)) { s = s.slice(0, -suf.length); break; }
   }
-  s = s.replace(/(으로|로|쪽으로|쪽|에서|부터|까지|이랑|랑|와|과|를|을|에)$/u, '');
+  // "오른쪽으로가" → "오른쪽"처럼 조사·어미를 두 번까지 벗긴다.
+  for (let i = 0; i < 2; i += 1) {
+    const next = s.replace(/(으로|로|쪽으로|쪽|에서|부터|까지|이랑|랑|와|과|를|을|에|가)$/u, '');
+    if (next === s) break;
+    s = next;
+  }
   return s.replace(/\s+/g, '');
 };
 
@@ -154,10 +176,15 @@ export function parseCommand(text) {
   const items = tokens.map((raw) => {
     const t = norm(raw);
     if (BORE_RE.test(t)) return { raw, t, kind: 'bore', bore: t.toUpperCase() };
+    // "50미리", "100파이" 같은 현장 말투
+    const mmBore = /^(50|80|100|150|200)(미리|미리미터|밀리|밀리미터|파이|빠이|mm)$/i.exec(t);
+    if (mmBore) return { raw, t, kind: 'bore', bore: mmBore[1] + 'A' };
+    if (DELETE_WORDS.has(t)) return { raw, t, kind: 'delete' };
     if (CONNECT_WORDS.has(t) || CONNECT_WORDS.has(String(raw).toLowerCase())) {
       return { raw, t, kind: 'connect' };
     }
     if (PIPE_WORDS.has(t)) return { raw, t, kind: 'piperef' };
+    if (FILLER.has(t)) return { raw, t, kind: 'cmd', cmd: 'noop' };
     const angle = parseAngle(t);
     if (angle) return { raw, t, kind: 'angle', angle };
     const len = parseLength(t);
@@ -239,6 +266,7 @@ export function parseCommand(text) {
   const ops = [];
   let pendingDirs = []; // 각도 앞뒤로 온 방향들 (수평 방향 + 위/아래)
   let pendingAngle = 0;
+  const usedDir = new Set(); // 길이 뒤에서 미리 끌어다 쓴 방향
   let lastKind = '';
   let lastEquip = '';
 
@@ -251,6 +279,7 @@ export function parseCommand(text) {
     if (it.kind === 'bore') { ops.push({ op: 'bore', bore: it.bore }); continue; }
     if (it.kind === 'angle') { pendingAngle = it.angle; continue; }
     if (it.kind === 'dir') {
+      if (usedDir.has(i)) continue;
       pendingDirs.push({ axis: it.axis, sign: it.sign });
       if (pendingDirs.length > 2) pendingDirs.shift();
       continue;
@@ -267,9 +296,21 @@ export function parseCommand(text) {
     }
     if (i === verbIdx && connectOp) { ops.push(connectOp); continue; }
     if (it.kind === 'connect' || it.kind === 'piperef') continue;
+    if (it.kind === 'delete') { ops.push({ op: 'delete' }); continue; }
     if (it.kind === 'len') {
       lastKind = 'len';
       lastEquip = '';
+      // "500 올려줘"처럼 길이 뒤에 방향이 오는 말투도 받아준다.
+      if (!pendingDirs.length && !pendingAngle) {
+        for (let j = i + 1; j < items.length && j <= i + 3; j += 1) {
+          if (items[j].kind === 'cmd') continue;
+          if (items[j].kind === 'dir') {
+            pendingDirs.push({ axis: items[j].axis, sign: items[j].sign });
+            usedDir.add(j);
+          }
+          break;
+        }
+      }
       const horiz = pendingDirs.find((d) => d.axis !== 'y');
       const vert = pendingDirs.find((d) => d.axis === 'y');
       if (pendingAngle && pendingAngle < 90) {
@@ -315,6 +356,8 @@ export const CMD_HELP = `
     <li><code>새배관</code> — 새 배관을 시작합니다 (지금 위치에서)</li>
     <li><code>벨브에 붙여줘</code> · <code>플랜지에 이어줘</code> — 지금 커서에서 가장 가까운 그 부속까지 배관으로 잇습니다</li>
     <li><code>오른쪽 배관이랑 이어줘</code> · <code>배관 연결해줘</code> — 다른 배관 끝점까지 잇습니다 (방향을 빼면 가장 가까운 곳)</li>
+    <li><code>밸브 하나 달아줘</code> · <code>50미리 위로 좀 올려줘 500</code> — 말하듯 써도 알아듣습니다(군더더기 무시)</li>
+    <li><code>지워</code> · <code>삭제</code> — 방금 추가한 배관·부속을 지웁니다</li>
     <li><code>되돌리기</code> · <code>초기화</code> — 직전 명령 취소 · 씬 비우기</li>
   </ul>
   <p class="hint">방향: 오른쪽(+X) 왼쪽(−X) 위(+Y) 아래(−Y) 앞(+Z) 뒤(−Z). 관경·재질을 안 쓰면 직전 값을 이어 씁니다(기본 50A 흑관).

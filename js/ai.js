@@ -104,7 +104,10 @@ async function callModel({ apiKey, model, text, mimeType, base64 }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text }, { inlineData: { mimeType, data: base64 } }] }],
+        contents: [{
+          role: 'user',
+          parts: base64 ? [{ text }, { inlineData: { mimeType, data: base64 } }] : [{ text }],
+        }],
         generationConfig: { temperature: 0.15, responseMimeType: 'application/json', maxOutputTokens: 16384 },
       }),
     });
@@ -174,21 +177,16 @@ function versionScore(name) {
   return s;
 }
 
-export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
-  const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl || '');
-  if (!m) throw new Error('이미지를 읽을 수 없습니다. JPG/PNG 파일을 올려주세요.');
-  const mimeType = m[1];
-  const base64 = m[2];
-  const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
-
+// 모델 폴백(고른 모델 → 기본 → 이 키에서 쓸 수 있는 모델 목록)을 한 곳에 모아 둔다.
+async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
   const tried = new Set();
   const queue = [];
   const push = (id) => {
     const c = cleanModel(id);
     if (c && !tried.has(c)) { tried.add(c); queue.push(c); }
   };
-  push(model || DEFAULT_MODEL);   // 사용자가 고른 모델
-  push(DEFAULT_MODEL);            // 신규 키 기준 최신 기본값
+  push(model || DEFAULT_MODEL); // 사용자가 고른 모델
+  push(DEFAULT_MODEL);          // 신규 키 기준 최신 기본값
   let listed = false;
   let lastErr = null;
 
@@ -196,7 +194,7 @@ export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
     const current = queue.shift();
     try {
       const raw = await callModel({ apiKey, model: current, text, mimeType, base64 });
-      return { data: parseResult(raw), model: current };
+      return { raw, model: current };
     } catch (e) {
       lastErr = e;
       if (!e || !e.modelUnavailable) throw e;
@@ -210,6 +208,53 @@ export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
   }
 
   throw lastErr || new Error('Gemini 모델을 찾지 못했습니다. 설정에서 모델을 다시 골라 주세요.');
+}
+
+export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
+  const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl || '');
+  if (!m) throw new Error('이미지를 읽을 수 없습니다. JPG/PNG 파일을 올려주세요.');
+  const mimeType = m[1];
+  const base64 = m[2];
+  const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
+  const { raw, model: used } = await requestWithFallback({ apiKey, model, text, mimeType, base64 });
+  return { data: parseResult(raw), model: used };
+}
+
+// ── 자유로운 말 → 명령 (로컬 파서가 못 알아들었을 때만) ─────────────────────
+const COMMAND_PROMPT = `너는 배관 3D 앱의 명령 변환기다.
+사용자의 자유로운 한국어 문장을 아래 ops JSON으로 바꿔라. 설명 문장은 넣지 말고 JSON 하나만 출력하라.
+
+[동작]
+- {"op":"bore","bore":"50A"}                       관경 변경 (50A·80A·100A·150A·200A)
+- {"op":"material","material":"carbon|sus|insulated"} 재질 변경
+- {"op":"seg","axis":"x|y|z","sign":1|-1,"mm":500}  직선 배관 (x=오른쪽/왼쪽, y=위/아래, z=앞/뒤)
+- {"op":"diag","axis":"x|z","sign":1|-1,"vert":1|-1,"angle":45,"mm":1000}  45도 경사
+- {"op":"newpipe"}                                   새 배관 시작
+- {"op":"equip","type":"...","bore1":"100A","bore2":"50A"}  부속·장비 달기
+- {"op":"connect","target":"equip|pipe","type":"valve","axis":"x","sign":1}  가까운 대상까지 잇기
+- {"op":"delete","id":"...","name":"..."}          삭제 (방금 추가한 것을 지우면 {"op":"delete"})
+- {"op":"move","id":"...","name":"...","x":1,"y":0,"z":2}  이동
+- {"op":"undo"} | {"op":"reset"}
+
+[type 값]
+hx, pump, vpump, tank, stank, rtank, panel, valve(게이트밸브), bfly(버터플라이), yvalve(경사형·스트레이너),
+ball(볼밸브), check(체크밸브), bellows(신축관), elbow(90도 엘보), elbow45(45도 엘보), tee(티), reducer(레듀샤),
+nipple(니쁠), cap(캡·마개), union(유니온·소켓), flange(플랜지), support(서포트), gauge(압력계), flow(유량계)
+
+[규칙]
+- 길이 단위는 mm. "1미터"=1000, "50미리"는 관경 50A다.
+- 현재 씬에 있는 이름/ID를 쓰면 그 대상을 지우거나 옮길 수 있다.
+- 문장이 이미 애매하면 가장 그럴듯한 동작 하나만 만들고 say에 짧게 적어라.
+- 출력 형식: {"say":"한 줄 요약","ops":[ ... ]}`;
+
+export async function planCommand({ apiKey, model, text, scene }) {
+  const prompt = `${COMMAND_PROMPT}\n\n[현재 씬]\n${JSON.stringify(scene)}\n\n[사용자 문장]\n${text}`;
+  const { raw } = await requestWithFallback({ apiKey, model, text: prompt });
+  const data = parseResult(raw);
+  return {
+    ops: Array.isArray(data.ops) ? data.ops : [],
+    say: typeof data.say === 'string' ? data.say : '',
+  };
 }
 
 function parseResult(raw) {
