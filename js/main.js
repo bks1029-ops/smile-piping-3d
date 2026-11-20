@@ -142,41 +142,56 @@ class App {
     rim.position.set(2, 8, 16);
     this.scene.add(rim);
 
-    // 바닥
+    // 바닥 (1m 격자 · 5m 강조선을 텍스처로 그려 거리에서 자연스럽게 사라지게)
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(150, 150),
-      new THREE.MeshStandardMaterial({ color: 0x1b2229, roughness: 0.96, metalness: 0.02 }),
+      new THREE.MeshStandardMaterial({ map: this.makeGridTexture(), roughness: 0.95, metalness: 0.02 }),
     );
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.y = -0.012;
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
 
-    // 1m 그리드
-    const grid = new THREE.GridHelper(120, 120, 0x5d6f80, 0x2e3944);
-    grid.position.y = 0.001;
-    grid.material.transparent = true;
-    grid.material.opacity = 0.5;
-    this.scene.add(grid);
-
-    const grid5 = new THREE.GridHelper(120, 24, 0x7f93a6, 0x3b4a59);
-    grid5.position.y = 0.0015;
-    grid5.material.transparent = true;
-    grid5.material.opacity = 0.3;
-    this.scene.add(grid5);
-
     // 축
     const axisLine = (a, b, color) => {
       const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...a), new THREE.Vector3(...b)]);
-      const m = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 });
+      const m = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 });
       return new THREE.Line(g, m);
     };
-    this.scene.add(axisLine([0, 0.004, 0], [3.4, 0.004, 0], 0xd9534f));
-    this.scene.add(axisLine([0, 0.004, 0], [0, 2.6, 0], 0x3fb950));
-    this.scene.add(axisLine([0, 0.004, 0], [0, 0.004, 3.4], 0x3b82f6));
-    const lx = this.makeLabel('X', '#ff8f8a'); lx.position.set(3.7, 0.25, 0); this.scene.add(lx);
-    const ly = this.makeLabel('Y', '#8ff0a4'); ly.position.set(0, 2.95, 0); this.scene.add(ly);
-    const lz = this.makeLabel('Z', '#8fb6ff'); lz.position.set(0, 0.25, 3.7); this.scene.add(lz);
+    this.scene.add(axisLine([0, 0.004, 0], [2.4, 0.004, 0], 0xd9534f));
+    this.scene.add(axisLine([0, 0.004, 0], [0, 2.4, 0], 0x3fb950));
+    this.scene.add(axisLine([0, 0.004, 0], [0, 0.004, 2.4], 0x3b82f6));
+    const lx = this.makeLabel('X', '#ff8f8a'); lx.position.set(2.7, 0.22, 0); this.scene.add(lx);
+    const ly = this.makeLabel('Y', '#8ff0a4'); ly.position.set(0, 2.7, 0); this.scene.add(ly);
+    const lz = this.makeLabel('Z', '#8fb6ff'); lz.position.set(0, 0.22, 2.7); this.scene.add(lz);
+  }
+
+  makeGridTexture() {
+    const S = 512;
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    const g = c.getContext('2d');
+    g.fillStyle = '#1b2229';
+    g.fillRect(0, 0, S, S);
+    const step = S / 5;
+    g.strokeStyle = '#333f4b';
+    g.lineWidth = 2;
+    for (let i = 1; i < 5; i += 1) {
+      const p = Math.round(i * step) + 0.5;
+      g.beginPath(); g.moveTo(p, 0); g.lineTo(p, S); g.stroke();
+      g.beginPath(); g.moveTo(0, p); g.lineTo(S, p); g.stroke();
+    }
+    g.strokeStyle = '#4f6070';
+    g.lineWidth = 4;
+    g.beginPath(); g.moveTo(2, 0); g.lineTo(2, S); g.stroke();
+    g.beginPath(); g.moveTo(0, 2); g.lineTo(S, 2); g.stroke();
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(30, 30);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    return tex;
   }
 
   makeLabel(text, color) {
