@@ -479,6 +479,44 @@ input[type="color"] {
 .ai-progress[hidden] { display: none; }
 .ai-progress .loader { flex: 0 0 auto; margin-right: 8px; }
 
+/* ── mm 한 줄 배관 명령 ──────────────────────────────────── */
+.cmd-bar {
+  position: absolute;
+  left: calc(50% + 150px);
+  /* 하단 보기 바·HUD 위에 놓는다 */
+  bottom: 46px;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: min(620px, calc(100% - 360px));
+  padding: 6px 6px 6px 10px;
+  background: rgba(18, 23, 29, 0.95);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+}
+.cmd-bar[hidden] { display: none; }
+.cmd-caret { color: var(--accent); font-weight: 800; font-size: 15px; line-height: 1; flex: 0 0 auto; }
+.cmd-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--txt);
+  background: #0f1419;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  outline: none;
+}
+.cmd-input::placeholder { color: var(--dim2); }
+.cmd-input:focus { border-color: var(--accent); }
+.cmd-bar .cmd-run, .cmd-bar .cmd-help { flex: 0 0 auto; min-width: 0; }
+.cmd-bar .cmd-help { width: 32px; padding: 0; }
+
 /* ── 모바일 ─────────────────────────────────────────────── */
 @media (max-width: 860px) {
   #topbar { height: 52px; gap: 8px; padding: 0 10px; }
@@ -541,6 +579,14 @@ input[type="color"] {
   .overlay-note { bottom: 58px; font-size: 10.5px; }
   .hud { bottom: calc(70px + env(safe-area-inset-bottom)); }
   .modal-card { width: calc(100% - 20px); max-height: 82dvh; }
+  /* 하단 보기 바·HUD 위에 명령창을 둔다 */
+  .cmd-bar {
+    left: 50%;
+    width: calc(100% - 16px);
+    bottom: calc(88px + env(safe-area-inset-bottom));
+    padding: 5px 5px 5px 9px;
+  }
+  .cmd-input { height: 34px; font-size: 16px; }
 }
 
 @media (max-width: 380px) {

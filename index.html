@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=13">
+<link rel="stylesheet" href="./css/style.css?v=14">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -68,6 +68,16 @@
       </div>
 
       <div id="toastHost"></div>
+
+      <!-- mm 단위 한 줄 배관 명령 -->
+      <form id="cmdForm" class="cmd-bar" autocomplete="off">
+        <span class="cmd-caret" aria-hidden="true">›</span>
+        <input id="cmdInput" class="cmd-input" type="text" inputmode="text" enterkeyhint="send"
+               placeholder="50a 오른쪽으로 1000 위로 1500" aria-label="배관 명령 입력 (숫자는 mm)"
+               autocapitalize="off" autocorrect="off" spellcheck="false">
+        <button class="btn small accent cmd-run" id="cmdRun" type="submit">실행</button>
+        <button class="btn small ghost cmd-help" id="cmdHelp" type="button" title="명령 예시" aria-label="명령 예시">?</button>
+      </form>
     </div>
 
     <aside id="drawer" class="panel">
@@ -190,6 +200,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=13"></script>
+<script type="module" src="./js/main.js?v=14"></script>
 </body>
 </html>

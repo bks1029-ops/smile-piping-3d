@@ -5,11 +5,12 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength,
-} from './store.js?v=13';
-import { buildScene } from './builders.js?v=13';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=13';
-import { buildOBJ } from './obj.js?v=13';
-import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=13';
+} from './store.js?v=14';
+import { buildScene } from './builders.js?v=14';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=14';
+import { buildOBJ } from './obj.js?v=14';
+import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=14';
+import { parseCommand, CMD_HELP } from './cmd.js?v=14';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -53,6 +54,14 @@ class App {
     this.pendingAi = false;
     this.aiRunning = false;
     this.wakeLock = null;
+    // 한 줄 명령 상태 — 커서(마지막 끝점)와 직전 관경·재질을 이어 쓴다.
+    this.cmdCursor = { x: 0, y: 0.5, z: 0 };
+    this.cmdBore = '50A';
+    this.cmdMaterial = 'carbon';
+    this.cmdRot = 0;
+    this.cmdAxis = 'x';
+    this.cmdSign = 1;
+    this.cmdMarked = false;
   }
 
   // ── 초기화 ───────────────────────────────────────────────
@@ -61,6 +70,7 @@ class App {
     this.setupScene();
     this.setupFloorPlan();
     this.setupDraft();
+    this.setupCmdCursor();
     this.bindUI();
     this.bindSceneEvents();
     this.rebuild();
@@ -329,6 +339,16 @@ class App {
     this.refreshHighlight();
     this.renderProps();
     this.renderLists();
+    // 선택한 배관 끝점·장비 위에서 다음 명령이 이어지게 커서를 맞춘다.
+    const spec = this.getSelectedSpec();
+    if (spec) {
+      if (kind === 'pipe' && spec.points && spec.points.length) {
+        const p = spec.points[spec.points.length - 1];
+        this.setCmdCursor({ x: p.x, y: p.y, z: p.z }, true);
+      } else if (kind === 'equipment') {
+        this.setCmdCursor({ x: spec.x, y: spec.y + spec.h, z: spec.z }, true);
+      }
+    }
     if (window.innerWidth <= 860) {
       $('#drawer').classList.remove('open');
     }
@@ -525,6 +545,7 @@ class App {
   setDrawMode(on) {
     this.drawMode = on;
     $('#drawHud').hidden = !on;
+    $('#cmdForm').hidden = on; // 그리기 HUD와 자리를 비켜 준다
     $('#btnDrawPipe').textContent = on ? '그리기 취소' : '3D에서 배관 그리기';
     if (!on) {
       this.draft = [];
@@ -593,6 +614,187 @@ class App {
     this.selection = { kind: 'pipe', id: spec.id };
     this.rebuild();
     this.toast(`배관 생성 · ${fmt(pipeLength(spec.points))}m`);
+  }
+
+  // ── mm 한 줄 배관 명령 ──────────────────────────────────
+  setupCmdCursor() {
+    this.cmdMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 14, 10),
+      new THREE.MeshBasicMaterial({ color: 0xf5a623, transparent: true, opacity: 0.95, depthTest: false }),
+    );
+    this.cmdMarker.renderOrder = 998;
+    this.cmdMarker.visible = false;
+    this.scene.add(this.cmdMarker);
+    this.updateCmdMarker();
+  }
+
+  updateCmdMarker() {
+    if (!this.cmdMarker) return;
+    const c = this.cmdCursor;
+    this.cmdMarker.position.set(c.x, c.y, c.z);
+    this.cmdMarker.visible = !!this.cmdMarked;
+  }
+
+  setCmdCursor(p, mark) {
+    this.cmdCursor = {
+      x: Math.round(Number(p.x) * 1000) / 1000,
+      y: Math.round(Math.max(0, Number(p.y)) * 1000) / 1000,
+      z: Math.round(Number(p.z) * 1000) / 1000,
+    };
+    if (mark) this.cmdMarked = true;
+    this.updateCmdMarker();
+  }
+
+  // 부속·장비는 커서(마지막 끝점) 위치에, 진행 방향(lastDir)에 맞춰 놓는다.
+  cmdRotFor(axis, sign) {
+    if (axis === 'x') return sign > 0 ? 0 : 180;
+    if (axis === 'z') return sign > 0 ? 90 : 270;
+    return this.cmdRot; // 수직 이동 중에는 직전 수평 방향 유지
+  }
+
+  runCommandLine(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return;
+    const { ops, unknown } = parseCommand(text);
+    if (!ops.length) {
+      this.toast(`명령을 이해하지 못했습니다${unknown.length ? ' · ' + unknown.join(' ') : ''}`, { type: 'err' });
+      return;
+    }
+    if (unknown.length) this.toast(`일부만 알아들었습니다 · ${unknown.join(' ')}`, { type: 'err' });
+
+    let cursor = { ...this.cmdCursor };
+    let bore = this.cmdBore;
+    let material = this.cmdMaterial;
+    let rot = this.cmdRot;
+    let axis = this.cmdAxis;
+    let sign = this.cmdSign;
+    let pts = null;
+    let pipeSeq = this.state.pipes.length;
+    const pipes = [];
+    const equip = [];
+    const equipSeq = {};
+
+    const flush = () => {
+      if (pts && pts.length >= 2) {
+        pipeSeq += 1;
+        pipes.push(makePipe({
+          name: `PL-${String(pipeSeq).padStart(3, '0')} 새 배관`,
+          bore, material, points: pts.slice(),
+        }));
+      }
+      pts = null;
+    };
+
+    const advance = (meters) => {
+      const d = { x: 0, y: 0, z: 0 };
+      d[axis] = sign * meters;
+      cursor = {
+        x: Math.round((cursor.x + d.x) * 1000) / 1000,
+        y: Math.max(0, Math.round((cursor.y + d.y) * 1000) / 1000),
+        z: Math.round((cursor.z + d.z) * 1000) / 1000,
+      };
+    };
+
+    // 파이프가 끊기는 부속(인라인) — 부속 폭만큼 커서를 전진시켜 서로 겹치지 않게 한다.
+    const INLINE = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'tee', 'reducer', 'flange']);
+    const ON_FLOOR = new Set(['hx', 'pump', 'vpump', 'tank', 'stank', 'rtank', 'panel', 'support']);
+
+    for (const op of ops) {
+      if (op.op === 'bore') { bore = op.bore; continue; }
+      if (op.op === 'material') { material = op.material; continue; }
+      if (op.op === 'newpipe') { flush(); continue; }
+      if (op.op === 'seg') {
+        const ax = op.axis || axis;
+        const sg = op.axis ? op.sign : sign;
+        axis = ax;
+        sign = sg;
+        rot = this.cmdRotFor(ax, sg);
+        if (!pts) pts = [{ ...cursor }];
+        advance(op.meters);
+        pts.push({ ...cursor });
+        continue;
+      }
+      if (op.op === 'equip') {
+        const t = EQUIP_TYPES[op.type];
+        if (!t) continue;
+        const inline = INLINE.has(op.type);
+        const w = (t.defaults && t.defaults.w) || 0;
+        if (inline) flush(); // 부속이 들어가는 자리에서 배관을 끊고, 부속 뒤에서 다시 이어 그린다.
+        // 부속은 커서에 중심을 두면 앞 배관과 반만큼 겹치므로, 폭의 절반만큼 먼저 진행한 자리에 놓는다.
+        const half = inline && w > 0 ? w / 2 : 0;
+        const px = Math.round((cursor.x + (axis === 'x' ? sign * half : 0)) * 1000) / 1000;
+        const py = Math.round((cursor.y + (axis === 'y' ? sign * half : 0)) * 1000) / 1000;
+        const pz = Math.round((cursor.z + (axis === 'z' ? sign * half : 0)) * 1000) / 1000;
+        equipSeq[op.type] = (equipSeq[op.type] || this.state.equipment.filter((e) => e.type === op.type).length) + 1;
+        equip.push(makeEquipment(op.type, {
+          name: `${t.short}-${100 + equipSeq[op.type]} ${t.label}`,
+          x: px,
+          y: ON_FLOOR.has(op.type) ? 0 : Math.max(0, py),
+          z: pz,
+          rot,
+        }));
+        if (inline) advance(w);
+        continue;
+      }
+      if (op.op === 'undo') {
+        flush();
+        this.commitCmd(pipes, equip);
+        this.undo();
+        return;
+      }
+      if (op.op === 'reset') {
+        this.pushUndo('명령 초기화');
+        this.state.equipment = [];
+        this.state.pipes = [];
+        this.selection = null;
+        this.rebuild();
+        this.setCmdCursor({ x: 0, y: 0.5, z: 0 }, false);
+        this.toast('씬을 비웠습니다.', { action: '되돌리기', onAction: () => this.undo() });
+        return;
+      }
+      if (op.op === 'help') { this.openCmdHelp(); return; }
+    }
+    flush();
+
+    this.cmdBore = bore;
+    this.cmdMaterial = material;
+    this.cmdAxis = axis;
+    this.cmdSign = sign;
+    this.cmdRot = rot;
+
+    if (!pipes.length && !equip.length) {
+      this.toast(`다음 배관: ${bore} ${MATERIALS[material].label} · 커서 (${fmt(cursor.x)}, ${fmt(cursor.y)}, ${fmt(cursor.z)})m`);
+      return;
+    }
+
+    this.commitCmd(pipes, equip);
+    this.setCmdCursor(cursor, true);
+
+    const bits = [];
+    if (pipes.length) bits.push(`배관 ${pipes.length}개 ${fmt(pipes.reduce((s, p) => s + pipeLength(p.points), 0))}m`);
+    if (equip.length) {
+      const last = EQUIP_TYPES[equip[equip.length - 1].type].label;
+      bits.push(equip.length > 1 ? `부속 ${equip.length}개 (${last} 등)` : last);
+    }
+    this.toast(`${bits.join(' · ')} 추가 · ${bore} · 커서 (${fmt(cursor.x)}, ${fmt(cursor.y)}, ${fmt(cursor.z)})m`);
+  }
+
+  commitCmd(pipes, equip) {
+    if (!pipes.length && !equip.length) return;
+    this.pushUndo('명령 실행');
+    if (pipes.length) this.state.pipes.push(...pipes);
+    if (equip.length) this.state.equipment.push(...equip);
+    const last = pipes[pipes.length - 1] || equip[equip.length - 1];
+    this.selection = last ? { kind: last.kind, id: last.id } : null;
+    this.rebuild();
+  }
+
+  openCmdHelp() {
+    this.openModal({
+      title: '한 줄 배관 명령 · mm 단위',
+      body: CMD_HELP,
+      actions: [{ label: '확인', cls: 'accent' }],
+    });
   }
 
   // ── 카메라 ─────────────────────────────────────────────
@@ -1334,6 +1536,17 @@ class App {
       });
     });
 
+    // 한 줄 배관 명령 (mm)
+    const cmdForm = $('#cmdForm');
+    cmdForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = $('#cmdInput');
+      this.runCommandLine(input.value);
+      input.value = '';
+      if (window.innerWidth > 860) input.focus(); // 모바일은 키보드를 남기지 않는다
+    });
+    $('#cmdHelp').addEventListener('click', () => this.openCmdHelp());
+
     // 설정 · 모달
     $('#btnSettings').addEventListener('click', () => this.openSettings());
     $('#modalClose').addEventListener('click', () => this.closeModal());
@@ -1424,6 +1637,7 @@ class App {
           <li><b>장비 배치</b> — [장비] 탭에서 열교환기·펌프·탱크·제어반·게이트밸브를 추가하고, 속성 패널에서 위치·크기·회전을 숫자로 다듬습니다.</li>
           <li><b>배관 긋기</b> — [배관] 탭에서 구경·재질을 고르고 <b>3D에서 배관 그리기</b> → 바닥을 터치해 점을 찍습니다. 높이는 HUD의 숫자로 바꿀 수 있어 수직 상승·엘보가 그대로 표현됩니다.</li>
           <li><b>보기</b> — 한 손가락(마우스 왼쪽) 회전, 두 손가락(휠) 확대, 두 손가락 이동. 상단·하단의 등각/위에서/정면/리셋 버튼.</li>
+          <li><b>한 줄 명령</b> — 화면 아래 입력창에 <code>50a 오른쪽으로 1000 위로 1500</code>처럼 쓰고 <b>실행</b>을 누르면 mm 단위로 배관이 이어집니다. 부속·장비 이름(<code>플렌지</code>, <code>버터</code>, <code>엘보</code> 등)을 함께 쓰면 그 자리에 배치됩니다.</li>
           <li><b>내보내기</b> — [파일] 탭에서 JSON 저장·불러오기, <b>Fusion 360 .py</b>, <b>.obj</b>.</li>
         </ol>
         <p class="hint">작업은 이 브라우저에 자동 저장됩니다. 되돌리기는 오른쪽 위 알림의 “되돌리기” 또는 <code>Ctrl+Z</code>.</p>`,
