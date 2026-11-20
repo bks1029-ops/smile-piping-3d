@@ -5,12 +5,12 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength,
-} from './store.js?v=14';
-import { buildScene } from './builders.js?v=14';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=14';
-import { buildOBJ } from './obj.js?v=14';
-import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=14';
-import { parseCommand, CMD_HELP } from './cmd.js?v=14';
+} from './store.js?v=15';
+import { buildScene } from './builders.js?v=15';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=15';
+import { buildOBJ } from './obj.js?v=15';
+import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=15';
+import { parseCommand, CMD_HELP } from './cmd.js?v=15';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -784,8 +784,8 @@ class App {
     this.pushUndo('명령 실행');
     if (pipes.length) this.state.pipes.push(...pipes);
     if (equip.length) this.state.equipment.push(...equip);
-    const last = pipes[pipes.length - 1] || equip[equip.length - 1];
-    this.selection = last ? { kind: last.kind, id: last.id } : null;
+    // 연속으로 명령을 칠 수 있게 선택은 비워 둔다 (모바일에서 속성 패널이 명령창을 가리는 것 방지)
+    this.selection = null;
     this.rebuild();
   }
 

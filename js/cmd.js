@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=14';
+import { BORES, MATERIALS } from './store.js?v=15';
 
 // 방향 — 긴 표현을 먼저 본다. (긴 것부터 매칭)
 const DIRS = [
