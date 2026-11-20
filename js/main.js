@@ -5,11 +5,11 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength,
-} from './store.js?v=12';
-import { buildScene } from './builders.js?v=12';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=12';
-import { buildOBJ } from './obj.js?v=12';
-import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=12';
+} from './store.js?v=13';
+import { buildScene } from './builders.js?v=13';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=13';
+import { buildOBJ } from './obj.js?v=13';
+import { analyzeImage, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=13';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -51,6 +51,8 @@ class App {
     this.planSrc = null;
     this.planTexture = null;
     this.pendingAi = false;
+    this.aiRunning = false;
+    this.wakeLock = null;
   }
 
   // ── 초기화 ───────────────────────────────────────────────
@@ -75,6 +77,10 @@ class App {
       this.ro.observe($('#viewport'));
     }
     window.addEventListener('keydown', (e) => this.onKey(e));
+    // 화면이 꺼지거나 다른 앱으로 갔다 오면 wake lock이 풀리므로, 분석 중이면 다시 잡는다.
+    document.addEventListener('visibilitychange', () => {
+      if (this.aiRunning && document.visibilityState === 'visible') this.acquireWakeLock();
+    });
   }
 
   restore() {
@@ -936,6 +942,51 @@ class App {
   }
 
   // ── AI ─────────────────────────────────────────────────
+  // 분석하는 동안 폰 화면이 자동으로 꺼지지 않게 잡아 둔다.
+  // Wake Lock은 부가 기능이라, 지원하지 않거나 막힌 브라우저에서는 조용히 넘어간다.
+  async acquireWakeLock() {
+    try {
+      const wl = navigator.wakeLock;
+      if (!wl || typeof wl.request !== 'function') return;
+      if (this.wakeLock && !this.wakeLock.released) return;
+      const sentinel = await wl.request('screen');
+      if (!this.aiRunning) {
+        // 요청이 늦게 끝났는데 이미 분석이 끝난 경우 — 잡은 화면을 바로 풀어둔다.
+        try { if (sentinel && !sentinel.released && typeof sentinel.release === 'function') sentinel.release(); } catch (e) { /* ignore */ }
+        return;
+      }
+      this.wakeLock = sentinel;
+      if (sentinel && typeof sentinel.addEventListener === 'function') {
+        sentinel.addEventListener('release', () => {
+          if (this.wakeLock === sentinel) this.wakeLock = null;
+        });
+      }
+    } catch (e) {
+      this.wakeLock = null;
+    }
+  }
+
+  releaseWakeLock() {
+    const sentinel = this.wakeLock;
+    this.wakeLock = null;
+    try {
+      if (sentinel && !sentinel.released && typeof sentinel.release === 'function') {
+        const p = sentinel.release();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+    } catch (e) { /* 이미 풀렸거나 지원하지 않는 경우 */ }
+  }
+
+  showAiProgress() {
+    const el = $('#aiProgress');
+    if (el) el.hidden = false;
+  }
+
+  hideAiProgress() {
+    const el = $('#aiProgress');
+    if (el) el.hidden = true;
+  }
+
   apiKey() { return localStorage.getItem(KEY_API) || ''; }
 
   // 예전 기본값(gemini-2.5-flash 등)이 남아 있으면 신규 키에서 거절되므로 한 번만 새 기본값으로 옮긴다.
@@ -954,6 +1005,10 @@ class App {
   }
 
   async startAI() {
+    if (this.aiRunning) {
+      this.toast('AI 분석이 아직 진행 중입니다. 끝나면 결과를 알려 드립니다.');
+      return;
+    }
     const key = this.apiKey();
     if (!key) {
       this.openSettings('AI 자동 분석을 쓰려면 Google Gemini API 키를 먼저 입력하세요. 키가 없어도 수동 편집과 도면 깔기는 그대로 쓸 수 있습니다.');
@@ -968,9 +1023,14 @@ class App {
   }
 
   async runAI(dataUrl) {
+    if (this.aiRunning) return; // 한 번에 하나만 — 진행 중인 분석을 다른 창으로 덮어쓰지 않는다.
+    this.aiRunning = true;
+    this.acquireWakeLock(); // 분석하는 동안 폰 화면이 꺼지지 않게 (지원하지 않으면 조용히 무시)
+    this.showAiProgress();
     this.openModal({
       title: 'AI 자동 분석',
-      body: `<p><span class="loader"></span>사진에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>`,
+      body: `<p><span class="loader"></span>사진에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>
+             <p class="hint">분석은 화면을 닫아도 계속됩니다. 결과가 나오면 다시 알려 드립니다.</p>`,
       actions: [],
     });
     try {
@@ -1009,6 +1069,10 @@ class App {
           { label: '닫기', cls: 'accent' },
         ],
       });
+    } finally {
+      this.aiRunning = false;
+      this.releaseWakeLock();
+      this.hideAiProgress();
     }
   }
 
@@ -1274,7 +1338,10 @@ class App {
     $('#btnSettings').addEventListener('click', () => this.openSettings());
     $('#modalClose').addEventListener('click', () => this.closeModal());
     $('#modalRoot').addEventListener('click', (e) => {
-      if (e.target.dataset.close) this.closeModal();
+      if (!e.target || !e.target.dataset || !e.target.dataset.close) return;
+      // AI 분석 중에는 바깥(배경)을 터치해도 창이 닫히지 않게 막는다.
+      if (this.aiRunning) return;
+      this.closeModal();
     });
 
     // 모바일 도구함

@@ -447,6 +447,32 @@ input[type="color"] {
 .ai-result b { color: var(--txt); }
 .err-text { color: #ffb3ae; font-size: 12px; }
 
+/* ── AI 분석 진행 표시 ──────────────────────────────────── */
+/* 분석 중에 사용자가 창을 닫아도 상단에 남아, 분석이 계속되는 중임을 알린다. */
+.ai-progress {
+  position: fixed;
+  z-index: 90;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--txt);
+  background: rgba(17, 22, 28, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: toastIn 0.2s ease-out;
+}
+.ai-progress[hidden] { display: none; }
+.ai-progress .loader { flex: 0 0 auto; margin-right: 8px; }
+
 /* ── 모바일 ─────────────────────────────────────────────── */
 @media (max-width: 860px) {
   #topbar { height: 52px; gap: 8px; padding: 0 10px; }
