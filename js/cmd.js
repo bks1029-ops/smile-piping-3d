@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=27';
+import { BORES, MATERIALS } from './store.js?v=28';
 
 // ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
 // 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
@@ -194,10 +194,13 @@ function parseAngle(token) {
   return m ? Number(m[1]) : 0;
 }
 
-const BORE_RE = /^(50|80|100|150|200)a$/;
+const BORE_RE = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300)a$/;
 
-// 관경 순서 (작은 것부터)
-const BORE_ORDER = ['50A', '80A', '100A', '150A', '200A'];
+// 관경 순서 (작은 것부터) — KS 표준 15A~300A
+const BORE_ORDER = [
+  '15A', '20A', '25A', '32A', '40A', '50A', '65A', '80A',
+  '100A', '125A', '150A', '200A', '250A', '300A',
+];
 
 function nextSmallerBore(bore) {
   const i = BORE_ORDER.indexOf(bore);
@@ -220,7 +223,7 @@ export function parseCommand(text) {
     const t = norm(raw);
     if (BORE_RE.test(t)) return { raw, t, kind: 'bore', bore: t.toUpperCase() };
     // "50미리", "100파이" 같은 현장 말투
-    const mmBore = /^(50|80|100|150|200)(미리|미리미터|밀리|밀리미터|파이|빠이|mm)$/i.exec(t);
+    const mmBore = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300)(미리|미리미터|밀리|밀리미터|파이|빠이|mm)$/i.exec(t);
     if (mmBore) return { raw, t, kind: 'bore', bore: mmBore[1] + 'A' };
     if (DELETE_WORDS.has(t)) return { raw, t, kind: 'delete' };
     if (CONNECT_WORDS.has(t) || CONNECT_WORDS.has(String(raw).toLowerCase())) {
@@ -385,9 +388,10 @@ export function parseCommand(text) {
 }
 
 export const CMD_HELP = `
-  <p class="hint">한 줄로 배관과 부속을 이어서 그립니다. <b>숫자는 mm</b>이고, <code>1.5m</code>처럼 단위를 붙이면 미터입니다.</p>
+  <p class="hint">한 줄로 배관과 부속을 이어서 그립니다. <b>숫자는 mm</b>이고, <code>1.5m</code>처럼 단위를 붙이면 미터입니다. 관경은 KS 표준 <b>15A~300A</b>(15·20·25·32·40·50·65·80·100·125·150·200·250·300A)를 알아듣습니다.</p>
   <ul>
     <li><code>50a 오른쪽으로 1000 위로 1500</code> — 50A 배관, 오른쪽 1m → 위로 1.5m</li>
+    <li><code>20a 오른쪽으로 1000</code> · <code>250a 앞으로 2000</code> — 작은 관경부터 큰 관경까지 그대로</li>
     <li><code>100a sus 앞으로 800</code> — 100A 스테인리스, 앞으로 0.8m</li>
     <li><code>80a 왼쪽 600 아래로 300 뒤로 400</code> — 쉼표·공백 모두 구분자로 씁니다</li>
     <li><code>오른쪽 45도 위 1000</code> · <code>45도 위 1000</code> — 45° 경사 상승 1m (수직 0.71m · 수평 0.71m)</li>
@@ -399,7 +403,7 @@ export const CMD_HELP = `
     <li><code>되돌리기</code> — 직전 명령 취소 · <code>새도면</code>·<code>전체삭제</code>·<code>다지워</code>·<code>처음부터</code> — 전부 지우고 원점으로</li>
   </ul>
   <p class="hint">
-  <b>🎤 말로</b> — 명령창의 🎤을 누르고 말하면 받아쓰기해 바로 실행합니다. <code>오십에이 오른쪽 천</code>, <code>천오백</code>처럼 구어체 숫자도 <code>50a</code>·<code>1000</code>·<code>1500</code>으로 알아듣습니다.<br>
+  <b>🎤 말로</b> — 명령창의 🎤을 누르고 말하면 받아쓰기해 바로 실행합니다. <code>오십에이 오른쪽 천</code>, <code>삼백에이 앞으로 이천</code>, <code>천오백</code>처럼 구어체 숫자도 <code>50a</code>·<code>300a</code>·<code>1000</code>·<code>1500</code>으로 알아듣습니다.<br>
   <b>🧭 조이스틱</b> — 방향을 고르고 길이만 치고 실행하면 그 방향으로 그려집니다. 같은 방향을 한 번 더 누르면 바로 그립니다.<br>
   <b>자동 엘보</b> — 방향이 꺾이면 90°·45° 엘보가 꼭짓점에 자동으로 들어가고, 배관은 접합면에서 끝나 배관을 뚫지 않습니다.<br>
   방향: <code>[내 시점 기준]</code>은 화면에서 보는 좌·우·앞·뒤, <code>[도면 축 기준]</code>은 고정 X·Z 축. 위/아래는 항상 높이(Y)입니다.

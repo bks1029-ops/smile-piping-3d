@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis } from './store.js?v=27';
+import { elbowBasis, dirBasis } from './store.js?v=28';
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기
@@ -184,8 +184,9 @@ def local_to_world(e, local):
 
 
 BORES = {
-    '50A': 0.0605, '80A': 0.0891, '100A': 0.1143,
-    '150A': 0.1652, '200A': 0.2163,
+    '15A': 0.0217, '20A': 0.0272, '25A': 0.0340, '32A': 0.0427, '40A': 0.0486,
+    '50A': 0.0605, '65A': 0.0763, '80A': 0.0891, '100A': 0.1143, '125A': 0.1398,
+    '150A': 0.1652, '200A': 0.2163, '250A': 0.2674, '300A': 0.3185,
 }
 JACKET = {'insulated': 0.035}
 
