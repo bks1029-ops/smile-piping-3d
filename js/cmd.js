@@ -26,11 +26,17 @@ function koNumeralToInt(tok) {
   return total > 0 && total <= 100000 ? total : null;
 }
 
+// 고유어 수사 — "스물다섯에이", "서른둘에이", "쉰에이"처럼 십 단위까지 현장에서 쓴다.
+const KO_NATIVE_TENS = { 열: 10, 스물: 20, 스무: 20, 서른: 30, 마흔: 40, 쉰: 50, 예순: 60, 일흔: 70, 여든: 80, 아흔: 90 };
+const KO_NATIVE_UNIT = { 한: 1, 두: 2, 둘: 2, 세: 3, 셋: 3, 네: 4, 넷: 4, 다섯: 5, 여섯: 6, 일곱: 7, 여덟: 8, 아홉: 9 };
+
 export function normalizeSpoken(text) {
   let s = String(text == null ? '' : text);
   // 1) 1,000 처럼 숫자 사이에 찍힌 쉼표
   s = s.replace(/(\d),(?=\d{3}(?:\D|$))/g, '$1');
-  // 2) '50에이' · '오십에이' → '50a' (관경)
+  // 2) '50에이' · '오십에이' · '스물다섯에이' → '50a' (관경)
+  s = s.replace(/(열|스물|스무|서른|마흔|쉰|예순|일흔|여든|아흔)(한|두|둘|세|셋|네|넷|다섯|여섯|일곱|여덟|아홉)?\s*(?:에이형|에이급|에이에|에이)(?![가-힣])/g,
+    (m, ten, unit) => `${KO_NATIVE_TENS[ten] + (unit ? KO_NATIVE_UNIT[unit] : 0)}a`);
   s = s.replace(/(\d+|[영일이삼사오육칠팔구십백천만]+)\s*(?:에이형|에이급|에이에|에이)(?![가-힣])/g, (m, num) => {
     const n = /^\d+$/.test(num) ? num : koNumeralToInt(num);
     return n == null ? m : `${n}a`;
