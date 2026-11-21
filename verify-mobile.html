@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="wrap">
-  <iframe id="f" src="./index.html?r=33a" title="앱"></iframe>
+  <iframe id="f" src="./index.html?r=34a" title="앱"></iframe>
   <div id="report">측정 중...</div>
 </div>
 <script>
@@ -97,6 +97,11 @@ async function run() {
   const w = f.contentWindow;
   const d = w.document;
   lines.length = 0;
+  if (location.search.indexOf('shot=1') >= 0) {
+    log(fmt(snap('스크린샷용 — 기본 위치')));
+    window.__done = true;
+    return;
+  }
   if (location.search.indexOf('drag=1') >= 0) {
     // 스크린샷용: 헤더를 끌어 오른쪽 위로 옮긴 상태만 남긴다
     pointerDrag('#padHead', 176, -300);

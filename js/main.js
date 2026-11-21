@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=33';
-import { buildScene } from './builders.js?v=33';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=33';
-import { buildOBJ } from './obj.js?v=33';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=33';
-import { parseCommand, CMD_HELP } from './cmd.js?v=33';
-import { buildDimItems } from './dims.js?v=33';
+} from './store.js?v=34';
+import { buildScene } from './builders.js?v=34';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=34';
+import { buildOBJ } from './obj.js?v=34';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=34';
+import { parseCommand, CMD_HELP } from './cmd.js?v=34';
+import { buildDimItems } from './dims.js?v=34';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -1773,6 +1773,14 @@ class App {
     return { left: l, top: t };
   }
 
+  // 모바일(≤860px)과 넓은 화면은 하단 기본 자리가 달라서 위치를 따로 기억한다
+  padPosKeys() {
+    return ['smilePiping3D.padPos', 'smilePiping3D.padPos.wide'];
+  }
+  padPosKey() {
+    return window.innerWidth <= 860 ? 'smilePiping3D.padPos' : 'smilePiping3D.padPos.wide';
+  }
+
   // left/top 은 #viewport 기준 px. save=true 면 다음에 열 때도 같은 자리에 둔다.
   setPadPos(left, top, save) {
     const pad = $('#dirPad');
@@ -1784,14 +1792,14 @@ class App {
     pad.style.bottom = 'auto';
     if (save) {
       try {
-        localStorage.setItem('smilePiping3D.padPos', JSON.stringify({ left: Math.round(p.left), top: Math.round(p.top) }));
+        localStorage.setItem(this.padPosKey(), JSON.stringify({ left: Math.round(p.left), top: Math.round(p.top) }));
       } catch (e) { /* ignore */ }
     }
   }
 
   restorePadPos() {
     let pos = null;
-    try { pos = JSON.parse(localStorage.getItem('smilePiping3D.padPos') || 'null'); } catch (e) { pos = null; }
+    try { pos = JSON.parse(localStorage.getItem(this.padPosKey()) || 'null'); } catch (e) { pos = null; }
     if (!pos || !isFinite(pos.left) || !isFinite(pos.top)) return;
     // 레이아웃(모바일/데스크톱)이 잡힌 뒤에 적용하고, 화면 밖 좌표는 clamp 한다
     requestAnimationFrame(() => this.setPadPos(Number(pos.left), Number(pos.top), false));
@@ -1805,7 +1813,7 @@ class App {
       pad.style.right = '';
       pad.style.bottom = '';
     }
-    try { localStorage.removeItem('smilePiping3D.padPos'); } catch (e) { /* ignore */ }
+    try { this.padPosKeys().forEach((k) => localStorage.removeItem(k)); } catch (e) { /* ignore */ }
     if (!quiet) this.toast('조이스틱을 기본 위치(왼쪽 아래)로 되돌렸습니다.');
   }
 
