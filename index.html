@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=39">
+<link rel="stylesheet" href="./css/style.css?v=40">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -56,8 +56,18 @@
         <b>✏️ 손 그리기</b>
         <span>드래그하거나 두 점을 눌러 그리세요</span>
         <span class="hb-sub">· 두 손가락은 확대·이동</span>
+        <span class="hb-45" id="handBadge45" hidden>45°</span>
       </div>
       <div id="handTip" class="hand-tip" hidden></div>
+
+      <!-- 방금 그은 구간의 치수(mm) — 배관 위에 작게 떠서 숫자만 고쳐 바로 넣는다.
+           캔버스를 톡 누르면 조용이 닫히고 다음 선 긋기가 이어진다. -->
+      <form id="handDim" class="hand-dim" autocomplete="off" hidden>
+        <input id="handDimInput" class="hand-dim-input" type="number" inputmode="numeric"
+               step="10" min="50" max="100000" aria-label="방금 그은 배관 길이(mm)">
+        <span class="hand-dim-unit">mm</span>
+        <button type="submit" class="hand-dim-ok">확인</button>
+      </form>
 
       <div id="viewHud" class="overlay-note">
         <span id="sceneName">샘플 현장</span>
@@ -254,6 +264,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=39"></script>
+<script type="module" src="./js/main.js?v=40"></script>
 </body>
 </html>

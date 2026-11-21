@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=39';
-import { buildScene } from './builders.js?v=39';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=39';
-import { buildOBJ } from './obj.js?v=39';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=39';
-import { parseCommand, CMD_HELP } from './cmd.js?v=39';
-import { buildDimItems } from './dims.js?v=39';
+} from './store.js?v=40';
+import { buildScene } from './builders.js?v=40';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=40';
+import { buildOBJ } from './obj.js?v=40';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=40';
+import { parseCommand, CMD_HELP } from './cmd.js?v=40';
+import { buildDimItems } from './dims.js?v=40';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -43,6 +43,27 @@ const AXES6 = [
   { axis: 'y', sign: 1, v: { x: 0, y: 1, z: 0 }, label: 'Y+' },
   { axis: 'y', sign: -1, v: { x: 0, y: -1, z: 0 }, label: 'Y−' },
 ];
+
+// 45° 대각선 12방향 — XY·XZ·YZ 세 평면에 각각 네 방향씩.
+// 45° 모드(조이스틱 `45°`)에서는 6직각과 함께 이 방향들도 화면 투영으로 견주어 고른다.
+const AXES45 = (() => {
+  const s = Math.SQRT1_2;
+  const out = [];
+  [['x', 'y'], ['x', 'z'], ['y', 'z']].forEach((pair) => {
+    [-1, 1].forEach((p) => {
+      [-1, 1].forEach((q) => {
+        const v = { x: 0, y: 0, z: 0 };
+        v[pair[0]] = p * s;
+        v[pair[1]] = q * s;
+        // 이어 그리기·커서에 넘길 대표 축은 두 성분 중 큰 쪽(같으면 앞선 축)
+        const axis = Math.abs(v[pair[0]]) >= Math.abs(v[pair[1]]) ? pair[0] : pair[1];
+        out.push({ axis, sign: v[axis] < 0 ? -1 : 1, v, label: '45°', diag: true });
+      });
+    });
+  });
+  return out;
+})();
+const AXES_ALL = AXES6.concat(AXES45);   // 45° 모드에서 고를 수 있는 모든 방향
 const HAND_UP = { x: 0, y: 1, z: 0 };   // 원기둥 미리보기의 기본 축
 const HAND_MIN_MM = 300;                // 최소 구간 길이
 const HAND_STEP_MM = 100;               // 100mm 단위 반올림
@@ -111,6 +132,8 @@ class App {
     this.handContinued = false;  // 이번 시작점이 기존 배관 끝에서 이어진 것인지
     this.handDirV = null;        // 이어 그릴 때 그 자리로 들어오는 진행 방향
     this.handTouches = new Set();// 지금 화면에 닿아 있는 손가락(포인터) 번호
+    this.handDimItem = null;     // 방금 그은 구간의 치수 창이 가리키는 구간 { pipeId, index }
+    this.lastPointerType = null; // 마지막으로 캔버스를 누른 입력 종류('touch'·'mouse'·'pen')
   }
 
   // ── 초기화 ───────────────────────────────────────────────
@@ -122,6 +145,7 @@ class App {
     this.setupCmdCursor();
     this.setupDims();
     this.setupHand();
+    this.setupHandDim();
     this.setupVoice();
     this.bindUI();
     this.bindPad();
@@ -353,6 +377,7 @@ class App {
     this.scene.add(this.handAnchorDot);
 
     this.handUp = new THREE.Vector3(HAND_UP.x, HAND_UP.y, HAND_UP.z);
+    this.handAxisVec = new THREE.Vector3();
     this.handFrom = new THREE.Vector3();
     this.handTo = new THREE.Vector3();
 
@@ -363,9 +388,24 @@ class App {
     canvas.addEventListener('pointercancel', (e) => this.handPointerCancel(e));
   }
 
+  // 방금 그은 구간의 치수(mm) 입력 창 — 캔버스 위 작은 팝업.
+  // 바깥(3D 캔버스)을 톡 누르면 그대로 닫혀 다음 선 긋기가 이어진다.
+  setupHandDim() {
+    const form = $('#handDim');
+    const input = $('#handDimInput');
+    if (!form || !input) return;
+    form.addEventListener('submit', (ev) => { ev.preventDefault(); this.applyHandDim(); });
+    // 누르면 기존 숫자가 통째로 선택돼 바로 숫자만 칠 수 있다.
+    input.addEventListener('focus', () => { try { input.select(); } catch (e) { /* ignore */ } });
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); this.closeHandDim(); }
+    });
+  }
+
   setHandMode(on, quiet) {
     const next = !!on;
     this.handMode = next;
+    this.closeHandDim();
     this.handDown = null;
     this.handTap = null;
     this.handTouches.clear();
@@ -379,6 +419,7 @@ class App {
     }
     const badge = $('#handBadge');
     if (badge) badge.hidden = !next;
+    this.updateHandBadge();
     if (next) {
       if (this.drawMode) this.setDrawMode(false);
       this.clearSelection();
@@ -400,6 +441,12 @@ class App {
       this.showHandAnchor();
       if (!quiet) this.toast('손 그리기를 껐습니다 — 한 손가락으로 화면을 돌릴 수 있습니다.');
     }
+  }
+
+  // 손 그리기 배지에 지금 방향 모드(90° / 45°)를 함께 보여 준다.
+  updateHandBadge() {
+    const chip = $('#handBadge45');
+    if (chip) chip.hidden = !this.diag45;
   }
 
   // 시작점 표시구 — 손 그리기 중에만 보인다.
@@ -441,11 +488,17 @@ class App {
     const dy = (cy - rect.top) - s0.y;
     const dl = Math.hypot(dx, dy);
     let best = null;
-    AXES6.forEach((t) => {
+    // 45° 모드면 6직각에 12개 대각선까지 후보에 넣고, 화면에서 끄는 방향과 가장 가까운 것을 고른다.
+    const cands = this.diag45 ? AXES_ALL : AXES6;
+    cands.forEach((t) => {
+      // 바닥에 붙은 시작점에서 아래로 가는 대각선은 바닥에 눌려 45°가 되지 못한다 — 후보에서 뺀다.
+      if (t.diag && t.v.y < 0 && a.y < 0.2) return;
       const pr = this.axisScreen(a, t, rect);
       if (!pr) return;
       const dot = dl > 0.5 ? (dx / dl) * pr.ux + (dy / dl) * pr.uy : -1;
-      if (!best || dot > best.dot) best = { axis: t.axis, sign: t.sign, label: t.label, ...pr, dot };
+      if (!best || dot > best.dot) {
+        best = { axis: t.axis, sign: t.sign, label: t.label, diag: !!t.diag, v: t.v, ...pr, dot };
+      }
     });
     if (!best || dl < 8 || best.dot < 0.25) return { s0, pick: null, mm: 0 };
     const along = dx * best.ux + dy * best.uy;
@@ -461,10 +514,11 @@ class App {
     const len = m.mm / 1000;
     const d = m.pick;
     const from = this.handFrom.set(a.x, a.y, a.z);
+    // 방향 벡터 그대로 길이를 뻗는다 — 90° 축이든 45° 대각선이든 같은 식이다.
     const to = this.handTo.set(
-      a.x + (d.axis === 'x' ? d.sign * len : 0),
-      Math.max(0, a.y + (d.axis === 'y' ? d.sign * len : 0)),
-      a.z + (d.axis === 'z' ? d.sign * len : 0),
+      a.x + d.v.x * len,
+      Math.max(0, a.y + d.v.y * len),
+      a.z + d.v.z * len,
     );
     // 미리보기는 지금 관경의 바깥지름으로 굵게 그린다.
     const od = (BORES[this.cmdBore] || BORES['50A']).od;
@@ -472,12 +526,12 @@ class App {
     this.handMesh.scale.set(Math.max(0.02, od / 2), Math.max(0.001, len), Math.max(0.02, od / 2));
     this.handMesh.quaternion.setFromUnitVectors(
       this.handUp,
-      new THREE.Vector3(d.axis === 'x' ? d.sign : 0, d.axis === 'y' ? d.sign : 0, d.axis === 'z' ? d.sign : 0),
+      this.handAxisVec.set(d.v.x, d.v.y, d.v.z).normalize(),
     );
     this.handEnd.position.copy(to);
     this.handPreviewGroup.visible = true;
     this.handPreview = {
-      axis: d.axis, sign: d.sign, mm: m.mm,
+      axis: d.axis, sign: d.sign, diag: !!d.diag, dir: { x: d.v.x, y: d.v.y, z: d.v.z }, mm: m.mm,
       from: { x: from.x, y: from.y, z: from.z },
       to: { x: to.x, y: to.y, z: to.z },
     };
@@ -552,6 +606,9 @@ class App {
     if (!this.handMode) return;
     // 데스크톱 오른쪽·가운데 버튼은 카메라 조작(이동·확대)에 남겨 둔다.
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    this.lastPointerType = e.pointerType || null;
+    // 방금 그은 구간의 치수 창이 떠 있으면, 캔버스를 톡 누르는 순간 조용힣 닫고 그대로 다음 선을 긋는다.
+    if (this.handDimItem) this.closeHandDim();
     this.handTouches.add(e.pointerId);
     if (this.handTouches.size > 1) {
       // 두 손가락 = 확대·이동 — 그리기를 접고 카메라(OrbitControls)에 맡긴다.
@@ -644,8 +701,11 @@ class App {
     this.setCmdCursor({ x: a.x, y: Math.max(0, a.y), z: a.z }, true);
     // 새로 시작한 자리면 직전 방향을 지워, 엉뚱한 엘보가 붙지 않게 한다.
     this.lastDirV = this.handContinued && this.handDirV ? { ...this.handDirV } : null;
-    const res = this.execOps([{ op: 'seg', axis: pick.axis, sign: pick.sign, meters, world: true }], { source: 'hand' });
-    const dirV = { x: pick.axis === 'x' ? pick.sign : 0, y: pick.axis === 'y' ? pick.sign : 0, z: pick.axis === 'z' ? pick.sign : 0 };
+    // 축이든 45° 대각선이든 고른 방향 벡터를 그대로 넘긴다 (execOps가 3D 방향으로 받는다).
+    const dirV = pick.v
+      ? { x: pick.v.x, y: pick.v.y, z: pick.v.z }
+      : { x: pick.axis === 'x' ? pick.sign : 0, y: pick.axis === 'y' ? pick.sign : 0, z: pick.axis === 'z' ? pick.sign : 0 };
+    const res = this.execOps([{ op: 'seg', dir: dirV, meters, world: true }], { source: 'hand' });
     if (res && res.cursor) {
       this.handAnchor = { ...res.cursor };
       this.handContinued = true;
@@ -655,7 +715,109 @@ class App {
       this.handDirV = null;
     }
     this.showHandAnchor();
+    // 그은 직후 — 바로 그 배관 위에 치수(mm) 창을 띄워 숫자만 고쳐 바로 넣을 수 있게 한다.
+    if (res && res.cursor) this.openHandDimAfterCommit();
     return res;
+  }
+
+  // ── 방금 그은 구간의 치수 창 ────────────────────────────
+  openHandDimAfterCommit() {
+    const added = this.lastAdded;
+    let pipe = added && added.kind === 'pipe' ? this.state.pipes.find((p) => p.id === added.id) : null;
+    if (!pipe) pipe = this.state.pipes[this.state.pipes.length - 1];
+    if (!pipe || !pipe.points || pipe.points.length < 2) return;
+    const index = pipe.points.length - 1;
+    const a = pipe.points[index - 1];
+    const b = pipe.points[index];
+    if (!a || !b) return;
+    const mm = Math.round(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) * 1000);
+    this.showHandDim({ pipeId: pipe.id, index }, mm);
+  }
+
+  showHandDim(item, mm) {
+    const form = $('#handDim');
+    const input = $('#handDimInput');
+    if (!form || !input) return;
+    this.handDimItem = item;
+    input.value = String(mm);
+    form.hidden = false;
+    this.positionHandDim();
+    // 마우스·팬으로 그렸을 때는 바로 숫자를 칠 수 있게 입력칸에 초점을 준다.
+    // 터치에서는 키보드가 올라와 다음 선 긋기를 막으므로 초점을 주지 않는다 — 칸을 누르면 전체가 선택된다.
+    if (this.lastPointerType && this.lastPointerType !== 'touch') {
+      try { input.focus(); input.select(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  closeHandDim() {
+    this.handDimItem = null;
+    const form = $('#handDim');
+    if (form) form.hidden = true;
+  }
+
+  // 치수 창을 그 구간 중점(살짝 위)에 붙인다 — 화면을 돌리거나 크기가 바뀌어도 따라간다.
+  // 조이스틱·명령창·보기 바가 있는 쪽은 피해서 위/아래 중 빈 쪽에 붙는다.
+  positionHandDim() {
+    const form = $('#handDim');
+    const it = this.handDimItem;
+    if (!form || form.hidden || !it) return;
+    const pipe = this.state.pipes.find((p) => p.id === it.pipeId);
+    if (!pipe) { this.closeHandDim(); return; }
+    const a = pipe.points[it.index - 1];
+    const b = pipe.points[it.index];
+    if (!a || !b) { this.closeHandDim(); return; }
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const s = this.projectToScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 }, rect);
+    if (!s) return;
+    const w = form.offsetWidth || 150;
+    const h = form.offsetHeight || 34;
+    const x = Math.max(w / 2 + 6, Math.min(rect.width - w / 2 - 6, s.x));
+    const x0 = x - w / 2;
+    const x1 = x + w / 2;
+    // 조이스틱·명령창·보기 바와 겹치는지 — 겹치는 자리는 피한다.
+    const hits = (top) => ['#dirPad', '#cmdForm', '#viewbar'].some((sel) => {
+      const el = $(sel);
+      if (!el || el.hidden) return false;
+      const br = el.getBoundingClientRect();
+      if (!br.width || !br.height) return false;
+      const l = br.left - rect.left;
+      const t = br.top - rect.top;
+      return x0 < l + br.width && x1 > l && top < t + br.height && top + h > t;
+    });
+    const above = s.y - 14 - h;   // 배관 위 (상자 아래변이 배관에서 14px 위)
+    const below = s.y + 24;       // 배관 아래
+    let top = above;
+    if (above < 6 || hits(above)) {
+      if (below + h < rect.height - 6 && !hits(below)) top = below;
+      else top = Math.max(6, Math.min(rect.height - h - 6, above));
+    }
+    form.style.left = `${Math.round(x)}px`;
+    form.style.top = `${Math.round(top + h)}px`;   // CSS가 translate(-50%, -100%)라 아래변 기준
+    form.classList.toggle('below', top === below);   // 배관 아래에 붙었으면 꼬리 방향을 뒤집는다
+  }
+
+  // 치수 창에 넣은 mm를 적용 — 배관 길이와 시작점(초록 마커)이 함께 움직인다.
+  applyHandDim() {
+    const it = this.handDimItem;
+    const input = $('#handDimInput');
+    if (!it || !input) { this.closeHandDim(); return; }
+    const r = this.resizeSegment(it.pipeId, it.index, parseFloat(input.value));
+    if (!r.ok) {
+      this.toast(r.reason === 'range'
+        ? '길이는 50 ~ 100000mm 사이 숫자로 넣어 주세요.'
+        : '길이를 잴 수 없는 구간입니다.', { type: 'err' });
+      return;
+    }
+    if (r.changed && r.end) {
+      // 다음 선이 어긋나지 않게 시작점도 새 끝점으로 옮긴다.
+      this.handAnchor = { x: r.end.x, y: r.end.y, z: r.end.z };
+      this.handContinued = true;
+      this.setCmdCursor(this.handAnchor, true);
+      this.showHandAnchor();
+    }
+    this.closeHandDim();
+    if (r.changed) this.toast(`치수 ${r.oldMm} → ${r.newMm}mm`);
   }
 
   // ── 씬 갱신 ──────────────────────────────────────────────
@@ -814,27 +976,43 @@ class App {
   }
 
   applyDimLength(item) {
-    const pipe = this.state.pipes.find((p) => p.id === item.pipeId);
     const input = $('#dimMm');
-    if (!pipe || !input) return;
-    const i = Number(item.index);
-    const a = pipe.points[i - 1];
-    const b = pipe.points[i];
-    if (!a || !b) return;
-    const mm = parseFloat(input.value);
-    if (!Number.isFinite(mm) || mm < 50 || mm > 100000) {
-      this.toast('길이는 50 ~ 100000mm 사이 숫자로 넣어 주세요.', { type: 'err' });
-      input.focus();
+    if (!input) return;
+    const r = this.resizeSegment(item.pipeId, item.index, parseFloat(input.value));
+    if (!r.ok) {
+      this.toast(r.reason === 'range'
+        ? '길이는 50 ~ 100000mm 사이 숫자로 넣어 주세요.'
+        : '길이를 잴 수 없는 구간입니다.', { type: 'err' });
+      if (r.reason === 'range') input.focus();
       return;
     }
+    this.closeModal();
+    if (r.changed) this.toast(`치수 수정 · ${r.oldMm} → ${r.newMm}mm`);
+  }
+
+  // 배관 한 구간의 길이(mm)를 바꿈다 — 그 구간 끝과 뒤로 이어진 배관·장비까지 연쇄로 함께 옮긴다.
+  // 치수 라벨 수정 창과 손 그리기 치수 창이 같이 쓴다.
+  // 돌려주는 값: { ok, changed, oldMm, newMm, end } — end는 구간 끝(꼭짓점)의 새 좌표.
+  resizeSegment(pipeId, index, mm) {
+    const pipe = this.state.pipes.find((p) => p.id === pipeId);
+    if (!pipe) return { ok: false, reason: 'no-pipe' };
+    const i = Number(index);
+    const a = pipe.points[i - 1];
+    const b = pipe.points[i];
+    if (!a || !b) return { ok: false, reason: 'no-seg' };
+    if (!Number.isFinite(mm) || mm < 50 || mm > 100000) return { ok: false, reason: 'range' };
     const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z;
     const len = Math.hypot(vx, vy, vz);
-    if (len < 1e-4) { this.toast('길이를 잴 수 없는 구간입니다.', { type: 'err' }); return; }
+    if (len < 1e-4) return { ok: false, reason: 'zero' };
+    const oldMm = Math.round(len * 1000);
+    const newMm = Math.round(mm);
     const delta = mm / 1000 - len;
-    if (Math.abs(delta) < 0.0005) { this.closeModal(); return; }
+    if (Math.abs(delta) < 0.0005) {
+      return { ok: true, changed: false, oldMm, newMm, end: { x: b.x, y: b.y, z: b.z } };
+    }
     const u = { x: vx / len, y: vy / len, z: vz / len };
 
-    this.pushUndo(`치수 수정 ${Math.round(len * 1000)}→${Math.round(mm)}mm`);
+    this.pushUndo(`치수 수정 ${oldMm}→${newMm}mm`);
     // 옮겨야 할 것들의 '원래 좌표 → 새 좌표' 쌍. 이어진 배관·부속은 여기 붙여 연쇄로 따라 옮긴다.
     const step = (p) => ({ x: r3(p.x + u.x * delta), y: Math.max(0, r3(p.y + u.y * delta)), z: r3(p.z + u.z * delta) });
     const pairOf = (p) => ({ from: { x: p.x, y: p.y, z: p.z }, to: step(p) });
@@ -873,8 +1051,11 @@ class App {
     }
 
     this.rebuild();
-    this.closeModal();
-    this.toast(`치수 수정 · ${Math.round(len * 1000)} → ${Math.round(mm)}mm`);
+    const end = pipe.points[i];
+    return {
+      ok: true, changed: true, oldMm, newMm,
+      end: end ? { x: end.x, y: end.y, z: end.z } : null,
+    };
   }
 
   refreshScene() {
@@ -1334,6 +1515,7 @@ class App {
   undo() {
     const u = this.undoStack.pop();
     if (!u) { this.toast('되돌릴 작업이 없습니다.'); return; }
+    this.closeHandDim();   // 치수 창이 가리키던 구간이 사라질 수 있다
     this.state = normalizeState(JSON.parse(u.snap));
     this.selection = null;
     if (u.cur) {
@@ -1437,6 +1619,7 @@ class App {
   // 🗑️ 새 도면 — 장비·배관을 모두 비우고 커서를 원점 (0, 0.5, 0)으로. 실행취소 한 번이면 되돌아온다.
   clearAll(opts) {
     const o = opts || {};
+    this.closeHandDim();
     this.pushUndo(o.label || '새 도면');
     this.state.equipment = [];
     this.state.pipes = [];
@@ -1927,13 +2110,26 @@ class App {
       if (op.op === 'newpipe') { flush(); this.lastDirV = null; prevDir = null; continue; }
       if (op.op === 'seg') {
         // world: 손 그리기가 고른 축은 화면 기준이 아니라 실제 3D 축이다.
-        const m = op.world
-          ? { axis: op.axis || axis, sign: (op.sign || 1) < 0 ? -1 : 1 }
-          : (op.axis ? this.dirToWorld(op.axis, op.sign) : { axis, sign });
-        axis = m.axis;
-        sign = m.sign < 0 ? -1 : 1;
-        rot = this.cmdRotFor(axis, sign);
-        drawSegment({ x: axis === 'x' ? sign : 0, y: axis === 'y' ? sign : 0, z: axis === 'z' ? sign : 0 }, op.meters);
+        // dir: 45° 대각선처럼 축 하나로 말할 수 없는 방향은 3D 단위 벡터로 그대로 받는다.
+        let v;
+        if (op.world && op.dir) {
+          const l = Math.hypot(op.dir.x || 0, op.dir.y || 0, op.dir.z || 0) || 1;
+          v = { x: (op.dir.x || 0) / l, y: (op.dir.y || 0) / l, z: (op.dir.z || 0) / l };
+          // 다음 명령·커서가 이어 쓸 대표 축은 가장 큰 성분으로 남긴다.
+          axis = Math.abs(v.y) > Math.max(Math.abs(v.x), Math.abs(v.z)) ? 'y'
+            : (Math.abs(v.x) >= Math.abs(v.z) ? 'x' : 'z');
+          sign = v[axis] < 0 ? -1 : 1;
+          rot = this.cmdRotFor(axis, sign);
+        } else {
+          const m = op.world
+            ? { axis: op.axis || axis, sign: (op.sign || 1) < 0 ? -1 : 1 }
+            : (op.axis ? this.dirToWorld(op.axis, op.sign) : { axis, sign });
+          axis = m.axis;
+          sign = m.sign < 0 ? -1 : 1;
+          rot = this.cmdRotFor(axis, sign);
+          v = { x: axis === 'x' ? sign : 0, y: axis === 'y' ? sign : 0, z: axis === 'z' ? sign : 0 };
+        }
+        drawSegment(v, op.meters);
         continue;
       }
       if (op.op === 'diag') {
@@ -2413,7 +2609,13 @@ class App {
     $('#pad45').addEventListener('click', () => {
       this.diag45 = !this.diag45;
       this.highlightPad();
-      this.toast(this.diag45 ? '45° 경사 모드 — 방향을 고르면 45°로 오르내립니다.' : '90° 방향 모드로 돌아왔습니다.');
+      this.updateHandBadge();
+      const msg = this.diag45
+        ? (this.handMode
+          ? '45° 모드 — 손으로 끌면 45° 대각선으로도 그려집니다.'
+          : '45° 경사 모드 — 방향을 고르면 45°로 오르내립니다.')
+        : '90° 방향 모드로 돌아왔습니다.';
+      this.toast(msg);
     });
     $('#padUndo').addEventListener('click', () => this.undo());
     $$('#dirPad [data-dir]').forEach((b) => {
@@ -2680,6 +2882,8 @@ class App {
       this.updateCamAnim();
       this.controls.update();
       this.updateDims();
+      // 방금 그은 구간의 치수 창은 배관을 따라간다 — 화면을 돌려도 자리를 잃지 않는다.
+      if (this.handDimItem) this.positionHandDim();
       this.renderer.render(this.scene, this.camera);
     });
   }

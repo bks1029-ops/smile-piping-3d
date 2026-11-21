@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>손 그리기 45°·치수 창 자체 검증</title>
+<style>
+  html, body { margin: 0; background: #1b1f24; color: #ddd; font: 13px/1.45 -apple-system, sans-serif; }
+  #wrap { padding: 10px; }
+  iframe { border: 2px solid #555; background: #000; display: block; }
+  #f { width: 1180px; max-width: 100%; height: 760px; }
+  #m { width: 390px; height: 844px; margin-top: 24px; }
+  #report { margin-top: 8px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; max-height: 420px; overflow: auto; }
+  #report b { color: #f5a623; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <iframe id="f" src="./index.html?view=iso" title="앱"></iframe>
+  <div id="report">준비 중...</div>
+  <iframe id="m" src="./index.html?view=iso" title="모바일 앱"></iframe>
+</div>
+<script>
+// 손 그리기 45° 스냅과 '그은 직후 치수 창'을 실제 PointerEvent로 구동해 확인하는 임시 검증 페이지.
+const log = [];
+const out = document.getElementById('report');
+const f = document.getElementById('f');
+const mf = document.getElementById('m');
+let loaded = 0;
+const both = () => { loaded += 1; if (loaded === 2) setTimeout(run, 1700); };
+f.addEventListener('load', both);
+mf.addEventListener('load', both);
+
+const S = Math.SQRT1_2;
+
+function harness(frameEl) {
+  const w = frameEl.contentWindow;
+  const app = w.__app;
+  const c = w.document.querySelector('#scene');
+  const frame = () => new Promise((r) => w.requestAnimationFrame(() => r()));
+  const ev = (type, x, y) => c.dispatchEvent(new w.PointerEvent(type, {
+    pointerId: 21, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true,
+    clientX: x, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1,
+  }));
+  const rect = () => c.getBoundingClientRect();
+  // 화면 위 시작점을 눌러 실제 시작점(handAnchor)을 만든다.
+  const press = async (world) => {
+    const r = rect();
+    const s = app.projectToScreen(world, r);
+    ev('pointerdown', r.left + s.x, r.top + s.y);
+    await frame();
+    return app.handAnchor ? { x: app.handAnchor.x, y: app.handAnchor.y, z: app.handAnchor.z } : null;
+  };
+  // 시작점에서 dir 방향으로 px만큼 끌고, 손을 떼기 전 상태를 돌려준다.
+  const dragFrom = async (a, dir, px, release) => {
+    const r = rect();
+    const s0 = app.projectToScreen(a, r);
+    const p1 = app.projectToScreen({ x: a.x + dir.x, y: a.y + dir.y, z: a.z + dir.z }, r);
+    let ux = p1.x - s0.x, uy = p1.y - s0.y;
+    const L = Math.hypot(ux, uy) || 1;
+    ux /= L; uy /= L;
+    const st = { x: r.left + s0.x, y: r.top + s0.y };
+    let last = st;
+    for (let i = 1; i <= 8; i += 1) {
+      last = { x: st.x + (ux * px * i) / 8, y: st.y + (uy * px * i) / 8 };
+      ev('pointermove', last.x, last.y);
+      await frame();
+    }
+    const tip = w.document.querySelector('#handTip');
+    const mid = {
+      tipText: tip.hidden ? null : tip.textContent,
+      preview: app.handPreview ? {
+        axis: app.handPreview.axis, diag: app.handPreview.diag,
+        dir: [round(app.handPreview.dir.x), round(app.handPreview.dir.y), round(app.handPreview.dir.z)],
+        mm: app.handPreview.mm,
+      } : null,
+    };
+    if (release !== false) {
+      ev('pointerup', last.x, last.y);
+      await frame(); await frame();
+    }
+    return mid;
+  };
+  return { w, d: w.document, app, frame, ev, rect, press, dragFrom };
+}
+
+const round = (v) => Math.round(v * 1000) / 1000;
+const pts = (p) => p.points.map((q) => [round(q.x), round(q.y), round(q.z)]);
+const segLen = (pipe, i) => {
+  const a = pipe.points[i - 1], b = pipe.points[i];
+  return Math.round(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) * 1000);
+};
+function overlap(a, b) {
+  if (!a || !b) return { area: 0 };
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return { area: +(Math.max(0, w) * Math.max(0, h)).toFixed(1) };
+}
+
+async function run() {
+  try { await desktop(); } catch (e) { log.push({ step: 'desktop ERR', message: e.message, stack: e.stack }); }
+  try { await mobile(); } catch (e) { log.push({ step: 'mobile ERR', message: e.message, stack: e.stack }); }
+  window.__test = log;
+  out.textContent = JSON.stringify(log, null, 1);
+}
+
+async function desktop() {
+  const H = harness(f);
+  const { w, d, app, frame } = H;
+
+  // ── A. 90° 모드(45° 꺼짐)는 지금처럼 6직각으로만 스냅 ──
+  d.querySelector('#cmdClear').click();
+  await frame(); await frame();
+  d.querySelector('#btnHand').click();
+  await frame(); await frame();
+  const a0 = await H.press({ x: 0, y: 0.5, z: 0 });
+  const a90 = await H.dragFrom(a0, { x: S, y: S, z: 0 }, 130);
+  log.push({
+    step: 'A) 45° 꺼짐 · 대각선으로 끌기',
+    diag45: app.diag45,
+    preview: a90.preview,
+    tip: a90.tipText,
+    axisOnly: a90.preview ? (a90.preview.dir.filter((v) => v !== 0).length === 1) : null,
+    pipes: app.state.pipes.length,
+    lastPoints: app.state.pipes.length ? pts(app.state.pipes[app.state.pipes.length - 1]) : null,
+    handDimOpen: !d.querySelector('#handDim').hidden,
+  });
+
+  // ── B. 45° 켜고 대각선 배관 ──
+  d.querySelector('#pad45').click();
+  await frame();
+  d.querySelector('#cmdClear').click();
+  await frame(); await frame();
+  log.push({ step: 'B-0) 45° 켜기', diag45: app.diag45, badge45: !d.querySelector('#handBadge45').hidden });
+
+  // B-1) 가로 배관 하나
+  const a1 = await H.press({ x: 0, y: 0.5, z: 0 });
+  const b1 = await H.dragFrom(a1, { x: 1, y: 0, z: 0 }, 130);
+  log.push({
+    step: 'B-1) 45° 켜고 X+ 로 끌기',
+    preview: b1.preview, tip: b1.tipText,
+    pipes: app.state.pipes.length,
+    equip: app.state.equipment.map((e) => e.type),
+    anchor: app.handAnchor ? [round(app.handAnchor.x), round(app.handAnchor.y), round(app.handAnchor.z)] : null,
+    lastPoints: pts(app.state.pipes[app.state.pipes.length - 1]),
+    handDimOpen: !d.querySelector('#handDim').hidden,
+    handDimValue: d.querySelector('#handDimInput').value,
+    handDimRect: rectOf(d.querySelector('#handDim')),
+  });
+
+  // B-2) 45° 위로 — 미리보기에 45° 표시가 뜨는지
+  const anchor2 = { ...app.handAnchor };
+  const a2 = await H.press(anchor2);
+  const b2 = await H.dragFrom(a2, { x: S, y: S, z: 0 }, 120);
+  const last2 = app.state.pipes[app.state.pipes.length - 1];
+  const p2 = last2.points;
+  const run2 = p2[p2.length - 1].x - p2[0].x;
+  const rise2 = p2[p2.length - 1].y - p2[0].y;
+  log.push({
+    step: 'B-2) 45° 위로 끌기',
+    preview: b2.preview, tip: b2.tipText,
+    slope: round(rise2 / run2),          // 45°면 1 이어야 한다
+    dz: round(p2[p2.length - 1].z - p2[0].z),
+    equip: app.state.equipment.map((e) => e.type),
+    pipes: app.state.pipes.length,
+    lastPoints: pts(last2),
+    handDimOpen: !d.querySelector('#handDim').hidden,
+    handDimValue: d.querySelector('#handDimInput').value,
+    handDimAbove: popupAbove(d, app, last2, H.rect()),
+    errors: (w.__errors || []).slice(),
+  });
+
+  // B-3) 치수 창에 숫자를 넣고 적용 → 길이·시작점이 함께 바뀌는지
+  const box = d.querySelector('#handDim');
+  const inp = d.querySelector('#handDimInput');
+  const beforeAnchor = { ...app.handAnchor };
+  const beforeMm = segLen(last2, last2.points.length - 1);
+  const target = beforeMm + 700;
+  inp.value = String(target);
+  box.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await frame(); await frame();
+  const afterMm = segLen(last2, last2.points.length - 1);
+  log.push({
+    step: 'B-3) 치수 창 적용',
+    beforeMm, target, afterMm,
+    appliedExactly: afterMm === target,
+  });
+  log[log.length - 1].anchorMoved = beforeAnchor.x !== app.handAnchor.x || beforeAnchor.y !== app.handAnchor.y || beforeAnchor.z !== app.handAnchor.z;
+  log[log.length - 1].anchorMatchesEnd = Math.hypot(
+    app.handAnchor.x - last2.points[last2.points.length - 1].x,
+    app.handAnchor.y - last2.points[last2.points.length - 1].y,
+    app.handAnchor.z - last2.points[last2.points.length - 1].z,
+  ) < 0.002;
+  log[log.length - 1].anchor = [round(app.handAnchor.x), round(app.handAnchor.y), round(app.handAnchor.z)];
+  log[log.length - 1].dimClosed = box.hidden;
+  log[log.length - 1].dimLabel = (() => {
+    const el = Array.from(d.querySelectorAll('.dim-label')).find((e) => e.style.display !== 'none');
+    return el ? el.textContent : null;
+  })();
+
+  // B-4) 치수 창을 안 고치고 바로 다음 선을 이어 그리기
+  const anchor3 = { ...app.handAnchor };
+  const r = H.rect();
+  const s3 = app.projectToScreen(anchor3, r);
+  H.ev('pointerdown', r.left + s3.x, r.top + s3.y);
+  await frame();
+  const closedAtDown = d.querySelector('#handDim').hidden;
+  const b4 = await H.dragFrom({ ...app.handAnchor }, { x: 0, y: 0, z: 1 }, 120);
+  log.push({
+    step: 'B-4) 치수 창 안 고치고 다음 선',
+    closedAtDown,
+    preview: b4.preview,
+    pipes: app.state.pipes.length,
+    equip: app.state.equipment.map((e) => e.type),
+    handDimOpenAfter: !d.querySelector('#handDim').hidden,
+    errors: (w.__errors || []).slice(),
+  });
+
+  // ── C. 스크린샷용 마무리: 45° 배관 + 치수 창이 떠 있는 상태 ──
+  await frame();
+  window.__ready = true;
+}
+
+function rectOf(el) {
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+}
+
+// 치수 창이 그 배관 중점보다 위(배관을 덮지 않게)에 있는지
+function popupAbove(d, app, pipe, r) {
+  const n = pipe.points.length;
+  const a = pipe.points[n - 2], b = pipe.points[n - 1];
+  const s = app.projectToScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 }, r);
+  const el = d.querySelector('#handDim');
+  const br = el.getBoundingClientRect();
+  const cx = br.x + br.width / 2 - r.left;
+  return {
+    dx: Math.round(cx - s.x),
+    boxBottomToPipe: Math.round(s.y - (br.y + br.height - r.top)),
+    below: el.classList.contains('below'),
+  };
+}
+
+async function mobile() {
+  const H = harness(mf);
+  const { w, d, app, frame } = H;
+  d.querySelector('#cmdClear').click();
+  await frame(); await frame();
+  d.querySelector('#btnHand').click();
+  await frame();
+  if (!app.diag45) { d.querySelector('#pad45').click(); await frame(); }
+  const a = await H.press({ x: 0, y: 0.5, z: 0 });
+  await H.dragFrom(a, { x: 1, y: 0, z: 0 }, 90);
+  const a2 = await H.press({ ...app.handAnchor });
+  await H.dragFrom(a2, { x: S, y: S, z: 0 }, 90);
+  const rectOf2 = (sel) => {
+    const el = d.querySelector(sel);
+    if (!el || el.hidden) return null;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  };
+  const pad = rectOf2('#dirPad');
+  const cmd = rectOf2('#cmdForm');
+  const bar = rectOf2('#viewbar');
+  const badge = rectOf2('#handBadge');
+  const dim = rectOf2('#handDim');
+  log.push({
+    step: 'M) 390×844 겹침',
+    viewport: [w.innerWidth, w.innerHeight],
+    handDimOpen: !!dim,
+    handDimRect: rectOf('#handDim'),
+    padCmd: overlap(pad, cmd).area,
+    padBar: overlap(pad, bar).area,
+    badgeBar: overlap(badge, bar).area,
+    badgePad: overlap(badge, pad).area,
+    badgeCmd: overlap(badge, cmd).area,
+    dimPad: overlap(dim, pad).area,
+    dimCmd: overlap(dim, cmd).area,
+    dimBar: overlap(dim, bar).area,
+    pipes: app.state.pipes.length,
+    equip: app.state.equipment.map((e) => e.type),
+    errors: (w.__errors || []).slice(),
+  });
+  window.__mready = true;
+}
+</script>
+</body>
+</html>
