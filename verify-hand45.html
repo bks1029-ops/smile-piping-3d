@@ -31,6 +31,7 @@ f.addEventListener('load', both);
 mf.addEventListener('load', both);
 
 const S = Math.SQRT1_2;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function harness(frameEl) {
   const w = frameEl.contentWindow;
@@ -52,22 +53,31 @@ function harness(frameEl) {
     clientX: x, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1,
   }));
   const rect = () => c.getBoundingClientRect();
-  // 화면 위 시작점을 눌러 실제 시작점(handAnchor)을 만든다.
-  const press = async (world) => {
+  const mid = () => { const r = rect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+  // 월드 점 → 화면 점(캔버스 좌표). 화면 밖이면 캔버스 가운데로 떨어뜨린다.
+  const screenOf = (p) => {
+    const s = p ? app.projectToScreen(p, rect()) : null;
+    return s || { x: rect().width / 2, y: rect().height / 2 };
+  };
+  // 화면의 한 점을 눌러 실제 시작점(handAnchor)을 만든다.
+  const pressAt = async (pt) => {
     const r = rect();
-    const s = app.projectToScreen(world, r);
-    ev('pointerdown', r.left + s.x, r.top + s.y);
+    ev('pointerdown', pt.x, pt.y);
     await frame();
     return app.handAnchor ? { x: app.handAnchor.x, y: app.handAnchor.y, z: app.handAnchor.z } : null;
   };
+  const pressWorld = (world) => { const r = rect(); const s = screenOf(world); return pressAt({ x: r.left + s.x, y: r.top + s.y }); };
   // 시작점에서 dir 방향으로 px만큼 끌고, 손을 떼기 전 상태를 돌려준다.
   const dragFrom = async (a, dir, px, release) => {
     const r = rect();
-    const s0 = app.projectToScreen(a, r);
+    const s0 = screenOf(a);
     const p1 = app.projectToScreen({ x: a.x + dir.x, y: a.y + dir.y, z: a.z + dir.z }, r);
-    let ux = p1.x - s0.x, uy = p1.y - s0.y;
-    const L = Math.hypot(ux, uy) || 1;
-    ux /= L; uy /= L;
+    let ux = 0.7, uy = -0.7;
+    if (p1) {
+      ux = p1.x - s0.x; uy = p1.y - s0.y;
+      const L = Math.hypot(ux, uy) || 1;
+      ux /= L; uy /= L;
+    }
     const st = { x: r.left + s0.x, y: r.top + s0.y };
     let last = st;
     for (let i = 1; i <= 8; i += 1) {
@@ -76,7 +86,7 @@ function harness(frameEl) {
       await frame();
     }
     const tip = w.document.querySelector('#handTip');
-    const mid = {
+    const snap = {
       tipText: tip.hidden ? null : tip.textContent,
       preview: app.handPreview ? {
         axis: app.handPreview.axis, diag: app.handPreview.diag,
@@ -88,9 +98,23 @@ function harness(frameEl) {
       ev('pointerup', last.x, last.y);
       await frame(); await frame();
     }
-    return mid;
+    return snap;
   };
-  return { w, d: w.document, app, frame, ev, rect, press, dragFrom };
+  const setDim = async (mm) => {
+    const inp = w.document.querySelector('#handDimInput');
+    inp.value = String(mm);
+    w.document.querySelector('#handDim').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    await frame(); await frame();
+  };
+  // 장면을 비우고 등각으로 맞춰 화면 위치를 일정하게 만든다.
+  const resetView = async () => {
+    w.document.querySelector('#cmdClear').click();
+    await frame(); await frame();
+    w.document.querySelector('#btnViewIso').click();
+    await wait(800);
+    await frame();
+  };
+  return { w, d: w.document, app, frame, ev, rect, mid, screenOf, pressAt, pressWorld, dragFrom, setDim, resetView };
 }
 
 const round = (v) => Math.round(v * 1000) / 1000;
@@ -105,10 +129,30 @@ function overlap(a, b) {
   const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
   return { area: +(Math.max(0, w) * Math.max(0, h)).toFixed(1) };
 }
+function rectOf(el) {
+  if (!el || !el.getBoundingClientRect) return null;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+}
+// 치수 창이 그 배관 중점보다 위(배관을 덮지 않게)에 있는지
+function popupAbove(d, app, pipe, r) {
+  const n = pipe.points.length;
+  const a = pipe.points[n - 2], b = pipe.points[n - 1];
+  const s = app.projectToScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 }, r);
+  const el = d.querySelector('#handDim');
+  const br = el.getBoundingClientRect();
+  if (!s) return { dx: null, boxBottomToPipe: null, below: el.classList.contains('below') };
+  return {
+    dx: Math.round(br.x + br.width / 2 - r.left - s.x),
+    boxBottomToPipe: Math.round(s.y - (br.y + br.height - r.top)),
+    below: el.classList.contains('below'),
+  };
+}
 
 async function run() {
-  try { await desktop(); } catch (e) { log.push({ step: 'desktop ERR', message: e.message, stack: e.stack }); }
-  try { await mobile(); } catch (e) { log.push({ step: 'mobile ERR', message: e.message, stack: e.stack }); }
+  try { await desktop(); } catch (e) { log.push({ step: 'desktop ERR', message: e.message, stack: String(e.stack).split('\n').slice(0, 3).join(' | ') }); }
+  try { await mobile(); } catch (e) { log.push({ step: 'mobile ERR', message: e.message, stack: String(e.stack).split('\n').slice(0, 3).join(' | ') }); }
   window.__test = log;
   out.textContent = JSON.stringify(log, null, 1);
 }
@@ -116,14 +160,13 @@ async function run() {
 async function desktop() {
   const H = harness(f);
   const { w, d, app, frame } = H;
-
-  // ── A. 90° 모드(45° 꺼짐)는 지금처럼 6직각으로만 스냅 ──
-  d.querySelector('#cmdClear').click();
-  await frame(); await frame();
   d.querySelector('#btnHand').click();
   await frame(); await frame();
-  const a0 = await H.press({ x: 0, y: 0.5, z: 0 });
-  const a90 = await H.dragFrom(a0, { x: S, y: S, z: 0 }, 130);
+
+  // ── A. 90° 모드(45° 꺼짐)는 지금처럼 6직각으로만 스냅 ──
+  await H.resetView();
+  await H.pressWorld({ x: 0, y: 0.5, z: 0 });
+  const a90 = await H.dragFrom({ ...(app.handAnchor || { x: 0, y: 0, z: 0 }) }, { x: S, y: S, z: 0 }, 130);
   log.push({
     step: 'A) 45° 꺼짐 · 대각선으로 끌기',
     diag45: app.diag45,
@@ -136,15 +179,14 @@ async function desktop() {
   });
 
   // ── B. 45° 켜고 대각선 배관 ──
+  await H.resetView();
   d.querySelector('#pad45').click();
   await frame();
-  d.querySelector('#cmdClear').click();
-  await frame(); await frame();
   log.push({ step: 'B-0) 45° 켜기', diag45: app.diag45, badge45: !d.querySelector('#handBadge45').hidden });
 
   // B-1) 가로 배관 하나
-  const a1 = await H.press({ x: 0, y: 0.5, z: 0 });
-  const b1 = await H.dragFrom(a1, { x: 1, y: 0, z: 0 }, 130);
+  await H.pressWorld({ x: 0, y: 0.5, z: 0 });
+  const b1 = await H.dragFrom({ ...app.handAnchor }, { x: 1, y: 0, z: 0 }, 120);
   log.push({
     step: 'B-1) 45° 켜고 X+ 로 끌기',
     preview: b1.preview, tip: b1.tipText,
@@ -159,8 +201,8 @@ async function desktop() {
 
   // B-2) 45° 위로 — 미리보기에 45° 표시가 뜨는지
   const anchor2 = { ...app.handAnchor };
-  const a2 = await H.press(anchor2);
-  const b2 = await H.dragFrom(a2, { x: S, y: S, z: 0 }, 120);
+  await H.pressWorld(anchor2);
+  const b2 = await H.dragFrom({ ...(app.handAnchor || anchor2) }, { x: S, y: S, z: 0 }, 130);
   const last2 = app.state.pipes[app.state.pipes.length - 1];
   const p2 = last2.points;
   const run2 = p2[p2.length - 1].x - p2[0].x;
@@ -180,37 +222,28 @@ async function desktop() {
   });
 
   // B-3) 치수 창에 숫자를 넣고 적용 → 길이·시작점이 함께 바뀌는지
-  const box = d.querySelector('#handDim');
-  const inp = d.querySelector('#handDimInput');
-  const beforeAnchor = { ...app.handAnchor };
+  const beforeAnchor = { ...(app.handAnchor || { x: 0, y: 0, z: 0 }) };
   const beforeMm = segLen(last2, last2.points.length - 1);
   const target = beforeMm + 700;
-  inp.value = String(target);
-  box.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
-  await frame(); await frame();
+  await H.setDim(target);
   const afterMm = segLen(last2, last2.points.length - 1);
   log.push({
     step: 'B-3) 치수 창 적용',
     beforeMm, target, afterMm,
     appliedExactly: afterMm === target,
+    anchorMoved: beforeAnchor.x !== app.handAnchor.x || beforeAnchor.y !== app.handAnchor.y || beforeAnchor.z !== app.handAnchor.z,
+    anchorMatchesEnd: Math.hypot(
+      app.handAnchor.x - last2.points[last2.points.length - 1].x,
+      app.handAnchor.y - last2.points[last2.points.length - 1].y,
+      app.handAnchor.z - last2.points[last2.points.length - 1].z,
+    ) < 0.002,
+    anchor: [round(app.handAnchor.x), round(app.handAnchor.y), round(app.handAnchor.z)],
+    dimClosed: d.querySelector('#handDim').hidden,
   });
-  log[log.length - 1].anchorMoved = beforeAnchor.x !== app.handAnchor.x || beforeAnchor.y !== app.handAnchor.y || beforeAnchor.z !== app.handAnchor.z;
-  log[log.length - 1].anchorMatchesEnd = Math.hypot(
-    app.handAnchor.x - last2.points[last2.points.length - 1].x,
-    app.handAnchor.y - last2.points[last2.points.length - 1].y,
-    app.handAnchor.z - last2.points[last2.points.length - 1].z,
-  ) < 0.002;
-  log[log.length - 1].anchor = [round(app.handAnchor.x), round(app.handAnchor.y), round(app.handAnchor.z)];
-  log[log.length - 1].dimClosed = box.hidden;
-  log[log.length - 1].dimLabel = (() => {
-    const el = Array.from(d.querySelectorAll('.dim-label')).find((e) => e.style.display !== 'none');
-    return el ? el.textContent : null;
-  })();
 
   // B-4) 치수 창을 안 고치고 바로 다음 선을 이어 그리기
-  const anchor3 = { ...app.handAnchor };
   const r = H.rect();
-  const s3 = app.projectToScreen(anchor3, r);
+  const s3 = H.screenOf(app.handAnchor);
   H.ev('pointerdown', r.left + s3.x, r.top + s3.y);
   await frame();
   const closedAtDown = d.querySelector('#handDim').hidden;
@@ -225,28 +258,27 @@ async function desktop() {
     errors: (w.__errors || []).slice(),
   });
 
-  // ── C. 스크린샷용 마무리: 치수 창으로 3m·2.5m 구간을 넣어 넉넉한 45° 루트를 만들고 치수 창을 띄운 뒤 등각으로 맞춤 ──
-  const setDim = async (mm) => {
-    const inp = d.querySelector('#handDimInput');
-    inp.value = String(mm);
-    d.querySelector('#handDim').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
-    await frame(); await frame();
-  };
+  // ── C. 스크린샷용 장면: 치수 창으로 3m·2.5m 구간을 넣어 넉넉한 45° 루트 + 마지막 구간 치수 창 ──
   d.querySelector('#cmdClear').click();
   await frame(); await frame();
-  await H.press({ x: 0, y: 0.5, z: 0 });
-  await H.dragFrom({ ...app.handAnchor }, { x: 1, y: 0, z: 0 }, 180);
-  await setDim(3000);
-  await H.press({ ...app.handAnchor });
-  await H.dragFrom({ ...app.handAnchor }, { x: S, y: S, z: 0 }, 175);
-  await setDim(2500);
-  await H.press({ ...app.handAnchor });
-  await H.dragFrom({ ...app.handAnchor }, { x: 0, y: 0, z: 1 }, 175);
-  await setDim(2500);
-  await H.press({ ...app.handAnchor });
-  await H.dragFrom({ ...app.handAnchor }, { x: S, y: -S, z: 0 }, 150);
   d.querySelector('#btnViewIso').click();
-  await new Promise((r) => setTimeout(r, 1100));
+  await wait(800);
+  await H.pressWorld({ x: 0, y: 0.5, z: 0 });
+  await H.dragFrom({ ...app.handAnchor }, { x: 1, y: 0, z: 0 }, 150);
+  await H.setDim(3000);
+  const c2 = { ...app.handAnchor };
+  await H.pressWorld(c2);
+  await H.dragFrom({ ...(app.handAnchor || c2) }, { x: S, y: S, z: 0 }, 150);
+  await H.setDim(2500);
+  const c3 = { ...app.handAnchor };
+  await H.pressWorld(c3);
+  await H.dragFrom({ ...(app.handAnchor || c3) }, { x: 0, y: 0, z: 1 }, 150);
+  await H.setDim(2500);
+  const c4 = { ...app.handAnchor };
+  await H.pressWorld(c4);
+  await H.dragFrom({ ...(app.handAnchor || c4) }, { x: S, y: -S, z: 0 }, 140);
+  d.querySelector('#btnViewIso').click();
+  await wait(1100);
   log.push({
     step: 'C) 스크린샷 장면',
     pipes: app.state.pipes.length,
@@ -259,40 +291,18 @@ async function desktop() {
   window.__ready = true;
 }
 
-function rectOf(el) {
-  if (!el || !el.getBoundingClientRect) return null;
-  const r = el.getBoundingClientRect();
-  if (!r.width || !r.height) return null;
-  return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
-}
-
-// 치수 창이 그 배관 중점보다 위(배관을 덮지 않게)에 있는지
-function popupAbove(d, app, pipe, r) {
-  const n = pipe.points.length;
-  const a = pipe.points[n - 2], b = pipe.points[n - 1];
-  const s = app.projectToScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 }, r);
-  const el = d.querySelector('#handDim');
-  const br = el.getBoundingClientRect();
-  const cx = br.x + br.width / 2 - r.left;
-  return {
-    dx: Math.round(cx - s.x),
-    boxBottomToPipe: Math.round(s.y - (br.y + br.height - r.top)),
-    below: el.classList.contains('below'),
-  };
-}
-
 async function mobile() {
   const H = harness(mf);
   const { w, d, app, frame } = H;
-  d.querySelector('#cmdClear').click();
-  await frame(); await frame();
   d.querySelector('#btnHand').click();
   await frame();
   if (!app.diag45) { d.querySelector('#pad45').click(); await frame(); }
-  const a = await H.press({ x: 0, y: 0.5, z: 0 });
-  await H.dragFrom(a, { x: 1, y: 0, z: 0 }, 90);
-  const a2 = await H.press({ ...app.handAnchor });
-  await H.dragFrom(a2, { x: S, y: S, z: 0 }, 90);
+  await H.resetView();
+  await H.pressWorld({ x: 0, y: 0.5, z: 0 });
+  await H.dragFrom({ ...app.handAnchor }, { x: 1, y: 0, z: 0 }, 90);
+  const a2 = { ...app.handAnchor };
+  await H.pressWorld(a2);
+  await H.dragFrom({ ...(app.handAnchor || a2) }, { x: S, y: S, z: 0 }, 90);
   const rectOf2 = (sel) => {
     const el = d.querySelector(sel);
     if (!el || el.hidden) return null;
@@ -300,8 +310,6 @@ async function mobile() {
     if (!r.width || !r.height) return null;
     return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
   };
-  const errs = (w.__errors || []).map((e) => String(e));
-  const detail = (w.__errorDetail || []).slice();
   const pad = rectOf2('#dirPad');
   const cmd = rectOf2('#cmdForm');
   const bar = rectOf2('#viewbar');
@@ -322,8 +330,8 @@ async function mobile() {
     dimBar: overlap(dim, bar).area,
     pipes: app.state.pipes.length,
     equip: app.state.equipment.map((e) => e.type),
-    errors: errs,
-    errorDetail: detail,
+    errors: (w.__errors || []).slice(),
+    errorDetail: (w.__errorDetail || []).slice(),
   });
   window.__mready = true;
 }
