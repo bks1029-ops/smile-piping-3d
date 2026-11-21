@@ -225,17 +225,28 @@ async function desktop() {
     errors: (w.__errors || []).slice(),
   });
 
-  // ── C. 스크린샷용 마무리: 넉넉한 45° 루트를 새로 그리고 치수 창을 띄운 뒤 등각으로 맞춤 ──
+  // ── C. 스크린샷용 마무리: 치수 창으로 3m·2.5m 구간을 넣어 넉넉한 45° 루트를 만들고 치수 창을 띄운 뒤 등각으로 맞춤 ──
+  const setDim = async (mm) => {
+    const inp = d.querySelector('#handDimInput');
+    inp.value = String(mm);
+    d.querySelector('#handDim').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+    await frame(); await frame();
+  };
   d.querySelector('#cmdClear').click();
   await frame(); await frame();
-  const s1 = await H.press({ x: 0, y: 0.5, z: 0 });
-  await H.dragFrom(s1, { x: 1, y: 0, z: 0 }, 230);
+  await H.press({ x: 0, y: 0.5, z: 0 });
+  await H.dragFrom({ ...app.handAnchor }, { x: 1, y: 0, z: 0 }, 180);
+  await setDim(3000);
   await H.press({ ...app.handAnchor });
-  await H.dragFrom({ ...app.handAnchor }, { x: S, y: S, z: 0 }, 200);
+  await H.dragFrom({ ...app.handAnchor }, { x: S, y: S, z: 0 }, 175);
+  await setDim(2500);
   await H.press({ ...app.handAnchor });
-  await H.dragFrom({ ...app.handAnchor }, { x: 0, y: 0, z: 1 }, 200);
+  await H.dragFrom({ ...app.handAnchor }, { x: 0, y: 0, z: 1 }, 175);
+  await setDim(2500);
+  await H.press({ ...app.handAnchor });
+  await H.dragFrom({ ...app.handAnchor }, { x: S, y: -S, z: 0 }, 150);
   d.querySelector('#btnViewIso').click();
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 1100));
   log.push({
     step: 'C) 스크린샷 장면',
     pipes: app.state.pipes.length,
