@@ -88,9 +88,9 @@ function run() {
         lastPipePoints: pipes.length ? pipes[pipes.length - 1].points.map((p) => [p.x, p.y, p.z]) : null,
       });
     };
-    await drag([1, 0, 0], 110, 1);
-    await drag([0, 0, 1], 110, 2);
-    await drag([0, 1, 0], 110, 3);
+    await drag([1, 0, 0], 190, 1);
+    await drag([0, 0, 1], 190, 2);
+    await drag([0, 1, 0], 150, 3);
 
     log.push({ step: '3) 결과', errors: (w.__errors || []).slice() });
     window.__handTest = log;
