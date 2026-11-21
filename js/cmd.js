@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=30';
+import { BORES, MATERIALS } from './store.js?v=31';
 
 // ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
 // 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
@@ -271,6 +271,17 @@ export function parseCommand(text) {
     }
     return { raw, t, kind: 'unknown' };
   });
+
+  // 1-b) 음성에서 "단조 모드"·"플랜지 타입"처럼 띄어 말한 경우 — 한 낱말로 보고 방식 전환으로 읽는다.
+  for (let i = 0; i < items.length - 1; i += 1) {
+    const a = items[i];
+    const b = items[i + 1];
+    if (!['모드', '타입', '형', '식'].includes(b.t)) continue;
+    if (!['단조', '포지드', '소켓', '나사', '플랜지', '플렌지'].includes(a.t)) continue;
+    const isFlange = a.t === '플랜지' || a.t === '플렌지';
+    items[i] = { raw: `${a.raw} ${b.raw}`, t: a.t, kind: 'conn', conn: isFlange ? 'flange' : 'forged' };
+    items[i + 1] = { raw: b.raw, t: b.t, kind: 'cmd', cmd: 'noop' };
+  }
 
   // 2) 이경 부속(레듀샤·티) 앞뒤 관경 모으기 — "100a에서 50a 레듀샤", "100x50 레듀샤", "100a 티 50a 분기"
   const sized = new Map();
