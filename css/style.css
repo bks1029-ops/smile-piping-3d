@@ -766,15 +766,15 @@ input[type="color"] {
     transition: transform 0.18s ease;
   }
   .viewbar.open .vcaret { transform: rotate(180deg); }
-  /* 접힌 상태 = 등각 1개만. 나머지는 누르기 전까지 자리를 차지하지 않는다 */
-  .viewbar:not(.open) > .vbtn[data-view]:not([data-view="iso"]) { display: none; }
+  /* 접힌 상태 = '등각' 1개만(치수 토글 포함 나머지 전부 숨김). 누르기 전까지 자리를 차지하지 않는다 */
+  .viewbar:not(.open) > .vbtn:not([data-view="iso"]) { display: none; }
   .viewbar > .vbtn[data-view="iso"] { min-width: 74px; font-weight: 600; }
   .viewbar:not(.open) > .vbtn[data-view="iso"] {
     border: 1px solid #3a4655;
     background: #18202a;
     box-shadow: var(--shadow);
   }
-  .viewbar.open > .vbtn[data-view]:not([data-view="iso"]) {
+  .viewbar.open > .vbtn:not([data-view="iso"]) {
     animation: vbSlideUp 0.16s ease-out;
   }
   @keyframes vbSlideUp {

@@ -1791,9 +1791,9 @@ class App {
     let maxT = Math.max(m, hr.height - pr.height - m);
     const l = Math.min(Math.max(left, m), maxL);
     // 명령창·보기 바가 있는 아래 띠 위로만 놓는다 — 조이스틱을 끌어도 이들은 가릴 수 없다.
-    // 띠와의 여유는 기본 자리(조이스틱 bottom 58px · 명령창 윗변 52px = 6px)와 같은 6px로 맞춘다.
+    // 띠와의 여유는 기본 자리(조이스틱 bottom 58px · 명령창 윗변 790px = 4px)와 같은 4px로 맞춘다.
     // 보기 바는 모바일에서 오른쪽 '등각' 1개로 줄어 있어 왼쪽 아래(기본 자리)와는 겹치지 않는다.
-    const barGap = 6;
+    const barGap = 4;
     ['#cmdForm', '#viewbar'].forEach((sel) => {
       const b = $(sel);
       if (!b || b.hidden) return;
