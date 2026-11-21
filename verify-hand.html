@@ -23,10 +23,15 @@ const out = document.getElementById('report');
 const log = [];
 
 f.addEventListener('load', () => setTimeout(run, 1600));
+// iframe이 이미 다 올라온 뒤에 이 스크립트가 실행되면 load 이벤트를 놓친다.
+if (f.contentDocument && f.contentDocument.readyState === 'complete') setTimeout(run, 1600);
 
 function run() {
+  if (window.__ran) return;
+  window.__ran = true;
   const w = f.contentWindow;
   const app = w.__app;
+  if (!app) { window.__ran = false; setTimeout(run, 500); return; }
   const c = w.document.querySelector('#scene');
   const frame = () => new Promise((r) => w.requestAnimationFrame(() => r()));
   const ev = (type, x, y) => c.dispatchEvent(new w.PointerEvent(type, {
