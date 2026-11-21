@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>모바일 390×844 확인</title>
+<style>
+  html, body { margin: 0; background: #222; color: #ddd; font: 14px/1.5 -apple-system, sans-serif; }
+  #wrap { display: flex; gap: 16px; padding: 12px; align-items: flex-start; }
+  iframe { width: 390px; height: 844px; border: 2px solid #555; background: #000; }
+  #report { max-width: 520px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  #report b { color: #f5a623; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <iframe id="f" src="./index.html?r=check" title="앱"></iframe>
+  <div id="report">측정 중...</div>
+</div>
+<script>
+const f = document.getElementById('f');
+const out = document.getElementById('report');
+
+function rect(w, sel) {
+  const el = w.document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+           top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1), left: +r.left.toFixed(1), right: +r.right.toFixed(1) };
+}
+function overlap(a, b) {
+  if (!a || !b) return null;
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return { overlapX: +Math.max(0, w).toFixed(1), overlapY: +Math.max(0, h).toFixed(1),
+           area: +(Math.max(0, w) * Math.max(0, h)).toFixed(1) };
+}
+
+function measure() {
+  const w = f.contentWindow;
+  const d = w.document;
+  const vw = w.innerWidth, vh = w.innerHeight;
+  const pad = rect(w, '#dirPad');
+  const cmd = rect(w, '#cmdBar');
+  const bar = rect(w, '#viewbar');
+  const hud = rect(w, '#drawHud');
+  const frames = rect(w, '#dirPad .pad-frames');
+  const frameBtn = rect(w, '#btnFrame');
+  const connBtn = rect(w, '#btnConn');
+  const gap = (pad && cmd) ? +(pad.top - cmd.bottom).toFixed(1) : null;
+  const ov = overlap(pad, cmd);
+  const ovBar = overlap(pad, bar);
+  const hidden = {
+    pad: d.querySelector('#dirPad').hidden, cmd: d.querySelector('#cmdForm').hidden,
+  };
+  const m = {
+    viewport: { w: vw, h: vh, dpr: w.devicePixelRatio },
+    pad, cmd, viewbar: bar, padFrames: frames, btnFrame: frameBtn, btnConn: connBtn,
+    gapPadTopMinusCmdBottom: gap, overlapPadCmd: ov, overlapPadViewbar: ovBar,
+    hidden,
+    padVisiblePct: pad ? +(((vh - pad.top) / vh) * 100).toFixed(1) : null,
+    threeDFreePct: cmd ? +((cmd.top / vh) * 100).toFixed(1) : null,
+    errors: (w.__errors || []).slice(),
+    version: (d.querySelector('link[rel=stylesheet]') || {}).getAttribute
+      ? d.querySelector('link[rel=stylesheet]').getAttribute('href') : null,
+    padText: d.querySelector('#padInfo') ? d.querySelector('#padInfo').textContent : null,
+    frameText: d.querySelector('#btnFrame') ? d.querySelector('#btnFrame').textContent : null,
+    connText: d.querySelector('#btnConn') ? d.querySelector('#btnConn').textContent : null,
+  };
+  window.__m = m;
+  out.innerHTML = '<b>viewport</b> ' + vw + '×' + vh + ' (dpr ' + m.viewport.dpr + ')\n'
+    + '<b>#dirPad</b> ' + JSON.stringify(pad) + '\n'
+    + '<b>#cmdBar</b> ' + JSON.stringify(cmd) + '\n'
+    + '<b>#viewbar</b> ' + JSON.stringify(bar) + '\n'
+    + '<b>pad top - cmd bottom</b> ' + gap + 'px\n'
+    + '<b>pad∩cmd</b> ' + JSON.stringify(ov) + '\n'
+    + '<b>pad∩viewbar</b> ' + JSON.stringify(ovBar) + '\n'
+    + '<b>3D 자유 높이</b> ' + m.threeDFreePct + '%\n'
+    + '<b>errors</b> ' + JSON.stringify(m.errors) + '\n'
+    + '<b>labels</b> ' + m.frameText + ' / ' + m.connText;
+  return m;
+}
+
+f.addEventListener('load', () => {
+  // 앱 초기화(샘플 씬·조이스틱 열림)까지 조금 기다린다
+  let tries = 0;
+  const t = setInterval(() => {
+    tries++;
+    const w = f.contentWindow;
+    const pad = w.document.querySelector('#dirPad');
+    const cmd = w.document.querySelector('#cmdForm');
+    if ((pad && cmd && pad.getBoundingClientRect().height > 0 && w.innerWidth === 390) || tries > 40) {
+      clearInterval(t);
+      setTimeout(() => { try { measure(); } catch (e) { out.textContent = 'ERR ' + e.message; } }, 900);
+    }
+  }, 150);
+});
+</script>
+</body>
+</html>
