@@ -835,43 +835,42 @@ class App {
     const u = { x: vx / len, y: vy / len, z: vz / len };
 
     this.pushUndo(`치수 수정 ${Math.round(len * 1000)}→${Math.round(mm)}mm`);
-    // 움직이기 전 좌표를 기억 — 여기에 붙은 장비·배관도 함께 옮긴다.
+    // 옮겨야 할 것들의 '원래 좌표 → 새 좌표' 쌍. 이어진 배관·부속은 여기 붙여 연쇄로 따라 옮긴다.
     const step = (p) => ({ x: r3(p.x + u.x * delta), y: Math.max(0, r3(p.y + u.y * delta)), z: r3(p.z + u.z * delta) });
-    const pairs = pipe.points.slice(i).map((p) => ({ from: { x: p.x, y: p.y, z: p.z }, to: step(p) }));
+    const pairOf = (p) => ({ from: { x: p.x, y: p.y, z: p.z }, to: step(p) });
+    const pairs = pipe.points.slice(i).map(pairOf);
     for (let j = i; j < pipe.points.length; j += 1) pipe.points[j] = step(pipe.points[j]);
 
-    // 이 자리에서 이어지는 다른 배관은 통째로 옮긴다 (그 배관에 또 이어진 것까지 연쇄).
-    const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) < 0.008;
-    const done = new Set([pipe.id]);
-    for (let k = 0; k < pairs.length && k < 500; k += 1) {
+    // 이 자리에서 이어지는 다른 배관은 통째로 옮기고, 그 자리에 앉은 부속도 같이 옮긴다.
+    // 엘보는 접합면(관경에 따라 50A 0.107m ~ 200A 0.38m)만큼 떨어져 앉으므로 그만큼을 같은 자리로 본다.
+    const TOL = Math.max(0.13, Math.round(elbowDims('elbow', pipe.bore).face * 1250) / 1000);
+    const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) < TOL;
+    const movedPipes = new Set([pipe.id]);
+    const movedEq = new Set();
+    for (let k = 0; k < pairs.length && k < 400; k += 1) {
       const pr = pairs[k];
       const dx = pr.to.x - pr.from.x;
       const dy = pr.to.y - pr.from.y;
       const dz = pr.to.z - pr.from.z;
+      if (!dx && !dy && !dz) continue;
       this.state.pipes.forEach((q) => {
-        if (done.has(q.id)) return;
+        if (movedPipes.has(q.id)) return;
         if (!q.points.some((p) => near(p, pr.from))) return;
-        done.add(q.id);
-        pairs.push(...q.points.map((p) => ({
-          from: { x: p.x, y: p.y, z: p.z },
-          to: { x: r3(p.x + dx), y: Math.max(0, r3(p.y + dy)), z: r3(p.z + dz) },
-        })));
+        movedPipes.add(q.id);
         q.points.forEach((p) => {
-          p.x = r3(p.x + dx);
-          p.y = Math.max(0, r3(p.y + dy));
-          p.z = r3(p.z + dz);
+          const to = { x: r3(p.x + dx), y: Math.max(0, r3(p.y + dy)), z: r3(p.z + dz) };
+          pairs.push({ from: { x: p.x, y: p.y, z: p.z }, to });
+          p.x = to.x; p.y = to.y; p.z = to.z;
         });
       });
+      this.state.equipment.forEach((e) => {
+        if (movedEq.has(e.id) || !near(e, pr.from)) return;
+        movedEq.add(e.id);
+        const to = { x: r3(e.x + dx), y: Math.max(0, r3(e.y + dy)), z: r3(e.z + dz) };
+        pairs.push({ from: { x: e.x, y: e.y, z: e.z }, to });
+        e.x = to.x; e.y = to.y; e.z = to.z;
+      });
     }
-
-    // 그 자리에 앉아 있던 장비(엘보·밸브·설비)도 같은 만큼 따라 움직인다.
-    this.state.equipment.forEach((e) => {
-      const pr = pairs.find((q) => near(e, q.from));
-      if (!pr) return;
-      e.x = r3(e.x + (pr.to.x - pr.from.x));
-      e.y = Math.max(0, r3(e.y + (pr.to.y - pr.from.y)));
-      e.z = r3(e.z + (pr.to.z - pr.from.z));
-    });
 
     this.rebuild();
     this.closeModal();
