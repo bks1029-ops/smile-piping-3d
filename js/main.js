@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=38';
-import { buildScene } from './builders.js?v=38';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=38';
-import { buildOBJ } from './obj.js?v=38';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=38';
-import { parseCommand, CMD_HELP } from './cmd.js?v=38';
-import { buildDimItems } from './dims.js?v=38';
+} from './store.js?v=39';
+import { buildScene } from './builders.js?v=39';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=39';
+import { buildOBJ } from './obj.js?v=39';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=39';
+import { parseCommand, CMD_HELP } from './cmd.js?v=39';
+import { buildDimItems } from './dims.js?v=39';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -2336,6 +2336,9 @@ class App {
     const start = (e, handle) => {
       if (e.button != null && e.button !== 0) return;
       if (e.target && e.target.closest && e.target.closest('#padReset')) return; // 리셋 버튼은 그냥 클릭
+      // 머리 줄의 '내 시점 기준'·'연결' 버튼은 끌기가 아니라 클릭으로 동작해야 한다.
+      // (포인터 캡처가 걸리면 mouseup·click이 머리로 바뀌어 버튼이 먹통이 됨)
+      if (e.target && e.target.closest && e.target.closest('#btnFrame, #btnConn')) return;
       const r = pad.getBoundingClientRect();
       drag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: r.left, top: r.top, moved: false, handle };
       try { handle.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
