@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>모바일 390×844 확인 (손 그리기)</title>
+<style>
+  html, body { margin: 0; background: #222; color: #ddd; font: 14px/1.5 -apple-system, sans-serif; }
+  #wrap { display: flex; gap: 16px; padding: 12px; align-items: flex-start; }
+  iframe { width: 390px; height: 844px; border: 2px solid #555; background: #000; }
+  #report { max-width: 560px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  #report b { color: #f5a623; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <iframe id="f" src="./index.html?view=iso" title="앱"></iframe>
+  <div id="report">측정 중...</div>
+</div>
+<script>
+const f = document.getElementById('f');
+const out = document.getElementById('report');
+
+function rect(w, sel) {
+  const el = w.document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+           top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1), left: +r.left.toFixed(1), right: +r.right.toFixed(1) };
+}
+function overlap(a, b) {
+  if (!a || !b) return null;
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return { overlapX: +Math.max(0, w).toFixed(1), overlapY: +Math.max(0, h).toFixed(1),
+           area: +(Math.max(0, w) * Math.max(0, h)).toFixed(1) };
+}
+function visible(el) {
+  if (!el) return false;
+  const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+  const r = el.getBoundingClientRect();
+  return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+}
+
+function measure() {
+  const w = f.contentWindow;
+  const d = w.document;
+  const vw = w.innerWidth, vh = w.innerHeight;
+  const app = w.__app || null;
+  const pad = rect(w, '#dirPad');
+  const cmd = rect(w, '#cmdForm');
+  const bar = rect(w, '#viewbar');
+  const handBtn = rect(w, '#btnHand');
+  const handBadge = rect(w, '#handBadge');
+  const hud = rect(w, '#viewHud');
+  const m = {
+    viewport: { w: vw, h: vh, dpr: w.devicePixelRatio },
+    pad, cmd, viewbar: bar, btnHand: handBtn, handBadge, viewHud: hud,
+    viewbarOpen: d.querySelector('#viewbar').classList.contains('open'),
+    handBtnVisible: visible(d.querySelector('#btnHand')),
+    handBtnText: d.querySelector('#btnHand') ? d.querySelector('#btnHand').textContent : null,
+    overlapPadCmd: overlap(pad, cmd),
+    overlapPadBar: overlap(pad, bar),
+    overlapBadgeBar: overlap(handBadge, bar),
+    overlapBadgePad: overlap(handBadge, pad),
+    overlapBadgeCmd: overlap(handBadge, cmd),
+    handMode: app ? app.handMode : null,
+    enableRotate: app ? app.controls.enableRotate : null,
+    errors: (w.__errors || []).slice(),
+    pipes: app ? app.state.pipes.length : null,
+    equipment: app ? app.state.equipment.length : null,
+    css: (d.querySelector('link[rel=stylesheet]') || {}).getAttribute
+      ? d.querySelector('link[rel=stylesheet]').getAttribute('href') : null,
+  };
+  window.__m = m;
+  out.innerHTML = '<b>viewport</b> ' + vw + '×' + vh + ' (dpr ' + m.viewport.dpr + ')\n'
+    + '<b>#dirPad</b> ' + JSON.stringify(pad) + '\n'
+    + '<b>#cmdForm</b> ' + JSON.stringify(cmd) + '\n'
+    + '<b>#viewbar</b> ' + JSON.stringify(bar) + '\n'
+    + '<b>#btnHand</b> ' + JSON.stringify(handBtn) + ' visible=' + m.handBtnVisible + '\n'
+    + '<b>#handBadge</b> ' + JSON.stringify(handBadge) + '\n'
+    + '<b>pad∩cmd</b> ' + JSON.stringify(m.overlapPadCmd) + '\n'
+    + '<b>pad∩viewbar</b> ' + JSON.stringify(m.overlapPadBar) + '\n'
+    + '<b>badge∩viewbar</b> ' + JSON.stringify(m.overlapBadgeBar) + '\n'
+    + '<b>badge∩pad</b> ' + JSON.stringify(m.overlapBadgePad) + '\n'
+    + '<b>badge∩cmd</b> ' + JSON.stringify(m.overlapBadgeCmd) + '\n'
+    + '<b>css</b> ' + m.css + '\n'
+    + '<b>handMode</b> ' + m.handMode + ' · enableRotate ' + m.enableRotate + '\n'
+    + '<b>pipes</b> ' + m.pipes + ' · equipment ' + m.equipment + '\n'
+    + '<b>errors</b> ' + JSON.stringify(m.errors);
+  return m;
+}
+
+f.addEventListener('load', () => {
+  let tries = 0;
+  const t = setInterval(() => {
+    tries++;
+    const w = f.contentWindow;
+    const pad = w.document.querySelector('#dirPad');
+    const cmd = w.document.querySelector('#cmdForm');
+    if ((pad && cmd && pad.getBoundingClientRect().height > 0 && w.innerWidth === 390) || tries > 40) {
+      clearInterval(t);
+      setTimeout(() => { try { measure(); } catch (e) { out.textContent = 'ERR ' + e.message; } }, 1200);
+    }
+  }, 150);
+});
+</script>
+</body>
+</html>

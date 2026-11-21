@@ -90,6 +90,14 @@ html, body {
   background: rgba(245, 166, 35, 0.16);
   box-shadow: inset 0 0 0 1px rgba(245, 166, 35, 0.45);
 }
+/* ✏️ 손 그리기 토글 — 켜지면 초록으로 켜진 상태를 보여 준다 */
+.vbtn.hand { color: var(--dim); white-space: nowrap; }
+.vbtn.hand.active {
+  color: #06251b;
+  font-weight: 700;
+  background: linear-gradient(180deg, #4ce4a4, #1fa97a);
+  box-shadow: 0 3px 10px rgba(31, 169, 122, 0.35);
+}
 
 .top-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
@@ -163,7 +171,59 @@ html, body {
   white-space: nowrap;
   will-change: transform;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  /* 라벨을 누르면 길이(mm)를 정확한 숫자로 고칠 수 있다 */
+  pointer-events: auto;
+  cursor: pointer;
 }
+.dim-label:hover { background: rgba(38, 29, 12, 0.92); border-color: rgba(245, 166, 35, 0.7); }
+/* 손가락으로도 누르기 쉽게 라벨 둘레에 투명한 탭 영역을 둔다 */
+.dim-label::after { content: ''; position: absolute; inset: -7px; }
+.dim-label:active { background: rgba(245, 166, 35, 0.9); color: #1f1503; border-color: #f5a623; }
+
+/* ── ✏️ 손 그리기 안내 · 미리보기 치수 ─────────────────── */
+.hand-badge {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 16px);
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: #c8ffe6;
+  background: rgba(9, 27, 21, 0.92);
+  border: 1px solid rgba(61, 220, 151, 0.45);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.hand-badge[hidden] { display: none; }
+.hand-badge b { color: #5ff0b0; font-weight: 700; }
+.hand-badge .hb-sub { color: #7ba596; }
+.hand-tip {
+  position: absolute;
+  z-index: 13;
+  transform: translate(-50%, -50%);
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #06251b;
+  background: rgba(92, 225, 162, 0.96);
+  border-radius: 7px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.hand-tip[hidden] { display: none; }
+/* 손 그리기 중에는 끌기 쉽게 크로스헤어, 라벨은 통과시켜 그리기를 막지 않는다 */
+#viewport.hand-mode #scene { cursor: crosshair; }
+#viewport.hand-mode .dim-label { pointer-events: none; cursor: crosshair; }
 
 .overlay-note {
   position: absolute;
@@ -782,6 +842,20 @@ input[type="color"] {
     to { opacity: 1; transform: translateY(0); }
   }
   .dim-label { font-size: 9.5px; padding: 1px 4px; border-radius: 5px; }
+  /* 손 그리기 토글은 보기 바를 접어도 항상 보인다 — 오른쪽 '등각' 바로 위에 쌓인다 */
+  .viewbar:not(.open) > #btnHand { display: block; }
+  #btnHand { padding: 7px 10px; }
+  .hand-badge {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    transform: none;
+    justify-content: center;
+    font-size: 10.5px;
+    padding: 5px 10px;
+    gap: 5px;
+  }
+  .hand-badge .hb-sub { display: none; }
   .top-actions .btn.ghost { display: none; }
   .only-mobile { display: inline-flex; }
   /* 모바일에서도 ⚙ 설정은 항상 상단에 노출 */
@@ -856,6 +930,11 @@ input[type="color"] {
   .pad-btn { font-size: 13px; padding: 8px 0; }
   .pad-btn.pad45 { font-size: 9.5px; }
   .pad-info { font-size: 8.5px; line-height: 1.1; }
+}
+
+@media (max-width: 1100px) and (min-width: 861px) {
+  /* 좁은 넓은 화면 — 보기 바가 넘치지 않게 손 그리기는 ✏️만 */
+  .vbtn.hand .hand-txt { display: none; }
 }
 
 @media (max-width: 860px) {

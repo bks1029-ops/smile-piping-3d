@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=36">
+<link rel="stylesheet" href="./css/style.css?v=37">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -33,6 +33,9 @@
       <button class="vbtn ghost" data-view="reset">리셋</button>
       <button class="vbtn dims active" id="btnDims" type="button" aria-pressed="true"
               title="배관 치수(mm·관경) 표시 켜기/끄기">📏 치수</button>
+      <!-- 손 그리기 — 켜면 한 손가락 드래그가 카메라 회전 대신 배관 그리기가 된다 (두 손가락은 확대·이동) -->
+      <button class="vbtn hand" id="btnHand" type="button" aria-pressed="false"
+              title="손 그리기 — 화면을 끌어 배관을 그립니다. 켜면 한 손가락 드래그가 그리기, 두 손가락은 확대·이동">✏️<span class="hand-txt"> 손 그리기</span></button>
     </div>
 
     <div class="top-actions">
@@ -47,6 +50,14 @@
     <div id="viewport">
       <canvas id="scene"></canvas>
       <div id="dimLayer" class="dim-layer" aria-hidden="true"></div>
+
+      <!-- 손 그리기 안내 배지 · 미리보기 치수 -->
+      <div id="handBadge" class="hand-badge" hidden>
+        <b>✏️ 손 그리기</b>
+        <span>드래그하거나 두 점을 눌러 그리세요</span>
+        <span class="hb-sub">· 두 손가락은 확대·이동</span>
+      </div>
+      <div id="handTip" class="hand-tip" hidden></div>
 
       <div id="viewHud" class="overlay-note">
         <span id="sceneName">샘플 현장</span>
@@ -243,6 +254,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=36"></script>
+<script type="module" src="./js/main.js?v=37"></script>
 </body>
 </html>

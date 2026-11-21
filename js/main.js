@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=36';
-import { buildScene } from './builders.js?v=36';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=36';
-import { buildOBJ } from './obj.js?v=36';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=36';
-import { parseCommand, CMD_HELP } from './cmd.js?v=36';
-import { buildDimItems } from './dims.js?v=36';
+} from './store.js?v=37';
+import { buildScene } from './builders.js?v=37';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=37';
+import { buildOBJ } from './obj.js?v=37';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=37';
+import { parseCommand, CMD_HELP } from './cmd.js?v=37';
+import { buildDimItems } from './dims.js?v=37';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -33,6 +33,20 @@ const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const VIEW_NAMES = ['iso', 'top', 'front', 'reset'];
+
+// 손 그리기가 고를 수 있는 6개 3D 축 — 화면에 투영한 방향이 끄는 방향과 가장 가까운 것을 쓴다.
+const AXES6 = [
+  { axis: 'x', sign: 1, v: { x: 1, y: 0, z: 0 }, label: 'X+' },
+  { axis: 'x', sign: -1, v: { x: -1, y: 0, z: 0 }, label: 'X−' },
+  { axis: 'z', sign: 1, v: { x: 0, y: 0, z: 1 }, label: 'Z+' },
+  { axis: 'z', sign: -1, v: { x: 0, y: 0, z: -1 }, label: 'Z−' },
+  { axis: 'y', sign: 1, v: { x: 0, y: 1, z: 0 }, label: 'Y+' },
+  { axis: 'y', sign: -1, v: { x: 0, y: -1, z: 0 }, label: 'Y−' },
+];
+const HAND_UP = { x: 0, y: 1, z: 0 };   // 원기둥 미리보기의 기본 축
+const HAND_MIN_MM = 300;                // 최소 구간 길이
+const HAND_STEP_MM = 100;               // 100mm 단위 반올림
+const HAND_SNAP_PX = 56;                // 기존 배관 끝·커서에 붙는 화면 거리
 
 // 배관을 끊고 그 자리에 앉는 부속(인라인) — 실제 길이(spec.w)만큼 커서가 전진한다.
 const INLINE_TYPES = new Set([
@@ -88,6 +102,15 @@ class App {
     this.overlayEntry = false;
     this.suppressPop = 0;
     this.inPopState = false;
+    // ✏️ 손 그리기 — 한 손가락 드래그가 카메라 회전 대신 배관 그리기가 된다.
+    this.handMode = false;
+    this.handAnchor = null;      // 이번 구간을 시작하는 점 {x,y,z}
+    this.handDown = null;        // 지금 누르고 있는 손가락
+    this.handTap = null;         // 두 점 찍기 — 첫 점을 찍어 둔 상태 ({ point })
+    this.handPreview = null;     // 화면에 보이는 미리보기 { axis, sign, mm, from, to }
+    this.handContinued = false;  // 이번 시작점이 기존 배관 끝에서 이어진 것인지
+    this.handDirV = null;        // 이어 그릴 때 그 자리로 들어오는 진행 방향
+    this.handTouches = new Set();// 지금 화면에 닿아 있는 손가락(포인터) 번호
   }
 
   // ── 초기화 ───────────────────────────────────────────────
@@ -98,6 +121,7 @@ class App {
     this.setupDraft();
     this.setupCmdCursor();
     this.setupDims();
+    this.setupHand();
     this.setupVoice();
     this.bindUI();
     this.bindPad();
@@ -298,6 +322,342 @@ class App {
     this.draftLineMat = new THREE.LineBasicMaterial({ color: 0xffc23d, transparent: true, opacity: 0.9 });
   }
 
+  // ── ✏️ 손 그리기 ────────────────────────────────────────
+  // 화면을 끌면 그 방향에 가장 가까운 3D 축(6개)으로 스냅해 배관을 바로 긋는다.
+  // 시작점은 기존 배관 끝·커서 근처를 누르면 거기서 이어지고, 아니면 누른 바닥 자리다.
+  setupHand() {
+    this.handPreviewGroup = new THREE.Group();
+    this.handPreviewGroup.visible = false;
+    this.scene.add(this.handPreviewGroup);
+
+    const dot = (color) => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.075, 14, 10),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false }),
+      );
+      m.renderOrder = 997;
+      return m;
+    };
+    this.handMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(1, 1, 1, 20, 1, false),
+      new THREE.MeshBasicMaterial({ color: 0x5ce1a2, transparent: true, opacity: 0.5, depthWrite: false }),
+    );
+    this.handMesh.renderOrder = 900;
+    this.handPreviewGroup.add(this.handMesh);
+    this.handEnd = dot(0x5ce1a2);
+    this.handPreviewGroup.add(this.handEnd);
+
+    // 이어 그릴 시작점 표시 — 손 그리기 중에 지금 어디서 이어지는지 보여 준다.
+    this.handAnchorDot = dot(0x9dffd0);
+    this.handAnchorDot.visible = false;
+    this.scene.add(this.handAnchorDot);
+
+    this.handUp = new THREE.Vector3(HAND_UP.x, HAND_UP.y, HAND_UP.z);
+    this.handFrom = new THREE.Vector3();
+    this.handTo = new THREE.Vector3();
+
+    const canvas = this.renderer.domElement;
+    canvas.addEventListener('pointerdown', (e) => this.handPointerDown(e));
+    canvas.addEventListener('pointermove', (e) => this.handPointerMove(e));
+    canvas.addEventListener('pointerup', (e) => this.handPointerUp(e));
+    canvas.addEventListener('pointercancel', (e) => this.handPointerCancel(e));
+  }
+
+  setHandMode(on, quiet) {
+    const next = !!on;
+    this.handMode = next;
+    this.handDown = null;
+    this.handTap = null;
+    this.handTouches.clear();
+    this.clearHandPreview();
+    const vp = $('#viewport');
+    if (vp) vp.classList.toggle('hand-mode', next);
+    const btn = $('#btnHand');
+    if (btn) {
+      btn.classList.toggle('active', next);
+      btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+    }
+    const badge = $('#handBadge');
+    if (badge) badge.hidden = !next;
+    if (next) {
+      if (this.drawMode) this.setDrawMode(false);
+      this.clearSelection();
+      this.setDrawerOpen(false);
+      // 한 손가락 드래그는 그리기 — 카메라 회전만 잠시 끄고, 두 손가락 확대·이동과 오른쪽 버튼 팬은 그대로 둔다.
+      this.controls.enableRotate = false;
+      this.handAnchor = this.cmdMarked ? { ...this.cmdCursor } : null;
+      this.handContinued = !!this.handAnchor;
+      this.handDirV = this.handContinued && this.lastDirV ? { ...this.lastDirV } : null;
+      this.showHandAnchor();
+      if (!quiet) {
+        this.toast('✏️ 손 그리기 — 화면을 끌면 그 방향으로 배관이 그려집니다. 두 점을 톡톡 눌러도 됩니다.');
+      }
+    } else {
+      this.controls.enableRotate = true;
+      this.handAnchor = null;
+      this.handContinued = false;
+      this.handDirV = null;
+      this.showHandAnchor();
+      if (!quiet) this.toast('손 그리기를 껐습니다 — 한 손가락으로 화면을 돌릴 수 있습니다.');
+    }
+  }
+
+  // 시작점 표시구 — 손 그리기 중에만 보인다.
+  showHandAnchor() {
+    if (!this.handAnchorDot) return;
+    const a = this.handAnchor;
+    this.handAnchorDot.visible = !!(this.handMode && a);
+    if (a) this.handAnchorDot.position.set(a.x, a.y, a.z);
+  }
+
+  // canvas 안 좌표(px)로 옮긴다.
+  projectToScreen(p, rect) {
+    const v = this.handFrom.set(p.x, p.y, p.z).project(this.camera);
+    if (v.z > 1 || v.z < -1) return null;
+    return { x: (v.x * 0.5 + 0.5) * rect.width, y: (-v.y * 0.5 + 0.5) * rect.height };
+  }
+
+  // 시작점에서 월드 1m만큼 간 축이 화면에서 향하는 방향과 길이(px).
+  axisScreen(a, t, rect) {
+    const p0 = this.projectToScreen(a, rect);
+    const p1 = this.projectToScreen({ x: a.x + t.v.x, y: a.y + t.v.y, z: a.z + t.v.z }, rect);
+    if (!p0 || !p1) return null;
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const len = Math.hypot(dx, dy);
+    // 화면에서 거의 점으로 보이는 축(정면에서 본 Y 등)은 고르지 않는다.
+    if (len < 14) return null;
+    return { ux: dx / len, uy: dy / len, pxPerM: len };
+  }
+
+  // 손가락 자리(px) → { 축, 방향, 길이(mm) }. 방향을 아직 못 고르면 pick: null.
+  handMeasure(cx, cy) {
+    const a = this.handAnchor;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!a || !rect.width || !rect.height) return null;
+    const s0 = this.projectToScreen(a, rect);
+    if (!s0) return null;
+    const dx = (cx - rect.left) - s0.x;
+    const dy = (cy - rect.top) - s0.y;
+    const dl = Math.hypot(dx, dy);
+    let best = null;
+    AXES6.forEach((t) => {
+      const pr = this.axisScreen(a, t, rect);
+      if (!pr) return;
+      const dot = dl > 0.5 ? (dx / dl) * pr.ux + (dy / dl) * pr.uy : -1;
+      if (!best || dot > best.dot) best = { axis: t.axis, sign: t.sign, label: t.label, ...pr, dot };
+    });
+    if (!best || dl < 8 || best.dot < 0.25) return { s0, pick: null, mm: 0 };
+    const along = dx * best.ux + dy * best.uy;
+    let mm = Math.round((along / best.pxPerM) * 1000 / HAND_STEP_MM) * HAND_STEP_MM;
+    mm = Math.max(HAND_MIN_MM, Math.min(60000, mm));
+    return { s0, pick: best, mm };
+  }
+
+  updateHandPreview(cx, cy) {
+    const a = this.handAnchor;
+    const m = a ? this.handMeasure(cx, cy) : null;
+    if (!m || !m.pick) { this.clearHandPreview(); return; }
+    const len = m.mm / 1000;
+    const d = m.pick;
+    const from = this.handFrom.set(a.x, a.y, a.z);
+    const to = this.handTo.set(
+      a.x + (d.axis === 'x' ? d.sign * len : 0),
+      Math.max(0, a.y + (d.axis === 'y' ? d.sign * len : 0)),
+      a.z + (d.axis === 'z' ? d.sign * len : 0),
+    );
+    // 미리보기는 지금 관경의 바깥지름으로 굵게 그린다.
+    const od = (BORES[this.cmdBore] || BORES['50A']).od;
+    this.handMesh.position.set((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2);
+    this.handMesh.scale.set(Math.max(0.02, od / 2), Math.max(0.001, len), Math.max(0.02, od / 2));
+    this.handMesh.quaternion.setFromUnitVectors(
+      this.handUp,
+      new THREE.Vector3(d.axis === 'x' ? d.sign : 0, d.axis === 'y' ? d.sign : 0, d.axis === 'z' ? d.sign : 0),
+    );
+    this.handEnd.position.copy(to);
+    this.handPreviewGroup.visible = true;
+    this.handPreview = {
+      axis: d.axis, sign: d.sign, mm: m.mm,
+      from: { x: from.x, y: from.y, z: from.z },
+      to: { x: to.x, y: to.y, z: to.z },
+    };
+
+    // 끌고 있는 손가락 옆에 축·길이(mm)를 보여 준다.
+    const el = $('#handTip');
+    if (el) {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      const glyph = Math.abs(d.ux) >= Math.abs(d.uy) ? (d.ux > 0 ? '→' : '←') : (d.uy < 0 ? '↑' : '↓');
+      el.textContent = `${d.label} ${glyph} ${m.mm.toLocaleString('ko-KR')}mm`;
+      const vw = rect.width || 1;
+      el.style.left = Math.max(38, Math.min(vw - 38, Math.round(cx - rect.left))) + 'px';
+      el.style.top = Math.max(18, Math.round(cy - rect.top - 30)) + 'px';
+      el.hidden = false;
+    }
+  }
+
+  clearHandPreview() {
+    this.handPreview = null;
+    if (this.handPreviewGroup) this.handPreviewGroup.visible = false;
+    const el = $('#handTip');
+    if (el) el.hidden = true;
+  }
+
+  // 누른 자리 근처에 기존 배관 끝(또는 커서)이 있으면 그 점에서 이어 긋는다.
+  // dir은 그 점으로 들어오는 진행 방향 — 이어 그을 때 엘보 방향을 맞추는 데 쓴다.
+  nearestEndpointScreen(ev, radiusPx) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const v = new THREE.Vector3();
+    let best = null;
+    let bestD = radiusPx;
+    const test = (p, dir) => {
+      v.set(p.x, p.y, p.z).project(this.camera);
+      if (v.z > 1 || v.z < -1) return;
+      const sx = (v.x * 0.5 + 0.5) * rect.width;
+      const sy = (-v.y * 0.5 + 0.5) * rect.height;
+      const d = Math.hypot(sx - px, sy - py);
+      if (d < bestD) {
+        bestD = d;
+        best = { x: r3(p.x), y: r3(p.y), z: r3(p.z), dir: dir || null };
+      }
+    };
+    this.state.pipes.forEach((p) => {
+      const pts = p.points || [];
+      if (pts.length < 2) return;
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      const q = pts[1];
+      const r = pts[pts.length - 2];
+      const l0 = Math.hypot(q.x - a.x, q.y - a.y, q.z - a.z) || 1;
+      const l1 = Math.hypot(b.x - r.x, b.y - r.y, b.z - r.z) || 1;
+      // 시작점은 그 배관에서 나가는 방향, 끝점은 그 배관으로 들어오는 방향이다.
+      test(a, { x: -(q.x - a.x) / l0, y: -(q.y - a.y) / l0, z: -(q.z - a.z) / l0 });
+      test(b, { x: (b.x - r.x) / l1, y: (b.y - r.y) / l1, z: (b.z - r.z) / l1 });
+    });
+    if (this.cmdMarked) test(this.cmdCursor, this.lastDirV ? { ...this.lastDirV } : null);
+    return best;
+  }
+
+  // 손 모드에서 누른 자리 → 바닥 위의 점
+  handGroundPoint(ev) {
+    const ray = this.raycastAt(ev);
+    const hits = ray.intersectObject(this.ground, false);
+    if (!hits.length) return null;
+    return hits[0].point;
+  }
+
+  handPointerDown(e) {
+    if (!this.handMode) return;
+    // 데스크톱 오른쪽·가운데 버튼은 카메라 조작(이동·확대)에 남겨 둔다.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    this.handTouches.add(e.pointerId);
+    if (this.handTouches.size > 1) {
+      // 두 손가락 = 확대·이동 — 그리기를 접고 카메라(OrbitControls)에 맡긴다.
+      this.handDown = null;
+      this.clearHandPreview();
+      return;
+    }
+    const p = this.handGroundPoint(e);
+    if (!p) return;
+    if (this.handTap && this.handTap.point) {
+      // 두 점 찍기의 둘째 점 — 찍어 둔 시작점에서 잰다.
+      this.handAnchor = { ...this.handTap.point };
+      this.handContinued = true;
+    } else {
+      const near = this.nearestEndpointScreen(e, HAND_SNAP_PX);
+      if (near) {
+        this.handAnchor = { x: near.x, y: near.y, z: near.z };
+        this.handDirV = near.dir ? { ...near.dir } : null;
+        this.handContinued = true;
+        this.setCmdCursor(this.handAnchor, true);
+      } else {
+        this.handAnchor = { x: r3(p.x), y: Math.max(0, r3(p.y)), z: r3(p.z) };
+        this.handDirV = null;
+        this.handContinued = false;
+      }
+    }
+    this.handDown = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+    try { this.renderer.domElement.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    this.showHandAnchor();
+  }
+
+  handPointerMove(e) {
+    if (!this.handMode) return;
+    const d = this.handDown;
+    if (!d || e.pointerId !== d.id) return;
+    if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) d.moved = true;
+    if (d.moved) this.updateHandPreview(e.clientX, e.clientY);
+  }
+
+  handPointerUp(e) {
+    this.handTouches.delete(e.pointerId);
+    if (!this.handMode) return;
+    const d = this.handDown;
+    if (!d || e.pointerId !== d.id) return;
+    this.handDown = null;
+    try { this.renderer.domElement.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    if (d.moved) {
+      // 끌어서 그리기 — 손을 뗀 자리에서 확정한다.
+      const m = this.handMeasure(e.clientX, e.clientY);
+      if (!m || !m.pick) {
+        this.clearHandPreview();
+        this.toast('방향을 잡지 못했습니다. 조금 더 길게 끌어 주세요.', { type: 'err' });
+        return;
+      }
+      this.commitHand(m.pick, m.mm);
+      return;
+    }
+    // 두 점 찍기
+    if (this.handTap && this.handTap.point) {
+      const m = this.handMeasure(e.clientX, e.clientY);
+      if (m && m.pick) {
+        this.commitHand(m.pick, m.mm);
+        return;
+      }
+      this.clearHandPreview();
+      this.toast('끝점을 시작점에서 조금 더 멀리 찍어 주세요.', { type: 'err' });
+      return;
+    }
+    if (!this.handAnchor) return;
+    this.handTap = { point: { ...this.handAnchor } };
+    this.clearHandPreview();
+    this.showHandAnchor();
+    this.toast('시작점을 찍었습니다. 끝점을 누르거나, 여기서 끌어 그리세요.');
+  }
+
+  handPointerCancel(e) {
+    this.handTouches.delete(e.pointerId);
+    if (this.handDown && e.pointerId === this.handDown.id) this.handDown = null;
+    this.clearHandPreview();
+  }
+
+  // 잰 구간을 실제 배관으로 만든다 — 관경·재질·연결방식은 지금 커서 설정을 그대로 쓰고,
+  // 방향이 꺾이면 execOps가 기존 배관 끝을 당기고 그 자리에 엘보를 앉힌다.
+  commitHand(pick, mm) {
+    const a = this.handAnchor;
+    if (!a || !pick) return null;
+    const meters = Math.max(HAND_MIN_MM, Math.round(mm / HAND_STEP_MM) * HAND_STEP_MM) / 1000;
+    this.handTap = null;
+    this.clearHandPreview();
+    this.setCmdCursor({ x: a.x, y: Math.max(0, a.y), z: a.z }, true);
+    // 새로 시작한 자리면 직전 방향을 지워, 엉뚱한 엘보가 붙지 않게 한다.
+    this.lastDirV = this.handContinued && this.handDirV ? { ...this.handDirV } : null;
+    const res = this.execOps([{ op: 'seg', axis: pick.axis, sign: pick.sign, meters, world: true }], { source: 'hand' });
+    const dirV = { x: pick.axis === 'x' ? pick.sign : 0, y: pick.axis === 'y' ? pick.sign : 0, z: pick.axis === 'z' ? pick.sign : 0 };
+    if (res && res.cursor) {
+      this.handAnchor = { ...res.cursor };
+      this.handContinued = true;
+      this.handDirV = dirV;
+    } else {
+      this.handContinued = false;
+      this.handDirV = null;
+    }
+    this.showHandAnchor();
+    return res;
+  }
+
   // ── 씬 갱신 ──────────────────────────────────────────────
   rebuild() {
     this.refreshScene();
@@ -315,6 +675,13 @@ class App {
     try { saved = localStorage.getItem('smilePiping3D.dims'); } catch (e) { /* ignore */ }
     this.dimsOn = saved !== 'off'; // 기본값 켜짐
     this.applyDimToggle();
+    // 치수 라벨을 탭하면 길이(mm)를 정확한 숫자로 고칠 수 있다.
+    this.dimLayer.addEventListener('click', (ev) => {
+      const el = ev.target && ev.target.closest ? ev.target.closest('.dim-label') : null;
+      if (!el || el.style.display === 'none') return;
+      const item = this.dimItems.find((it) => it.key === el.dataset.key);
+      if (item) this.openDimEditor(item);
+    });
   }
 
   setDims(on) {
@@ -350,7 +717,12 @@ class App {
       this.dimLayer.appendChild(el);
       this.dimNodes.push(el);
     }
-    this.dimItems.forEach((it, i) => { this.dimNodes[i].textContent = it.text; });
+    this.dimItems.forEach((it, i) => {
+      const el = this.dimNodes[i];
+      el.textContent = it.text;
+      el.dataset.key = it.key;
+      el.title = '눌러서 길이(mm) 수정';
+    });
     this.updateDims();
   }
 
@@ -409,6 +781,101 @@ class App {
       if (el.style.display === 'none') el.style.display = '';
       el.style.transform = `translate(-50%, -50%) translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px)`;
     }
+  }
+
+  // ── 치수 라벨 탭 → 길이(mm) 정확히 고치기 ────────────────
+  openDimEditor(item) {
+    const pipe = this.state.pipes.find((p) => p.id === item.pipeId);
+    if (!pipe || !pipe.points[item.index] || !pipe.points[item.index - 1]) return;
+    const a = pipe.points[item.index - 1];
+    const b = pipe.points[item.index];
+    const mm = Math.round(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) * 1000);
+    this.openModal({
+      title: '치수 수정',
+      body: `
+        <p class="hint">${esc(pipe.name)} · ${item.index}번째 구간 · ${esc(pipe.bore)}</p>
+        <label class="field">길이(mm)
+          <input type="number" id="dimMm" step="10" min="50" inputmode="numeric" value="${mm}">
+        </label>
+        <p class="hint">숫자를 바꾸면 그 구간 끝과 뒤로 이어진 배관·장비도 함께 움직입니다.</p>`,
+      actions: [
+        { label: '적용', cls: 'accent', keep: true, onClick: () => this.applyDimLength(item) },
+        { label: '닫기' },
+      ],
+    });
+    const input = $('#dimMm');
+    if (input) {
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); this.applyDimLength(item); }
+      });
+      input.focus();
+      input.select();
+    }
+  }
+
+  applyDimLength(item) {
+    const pipe = this.state.pipes.find((p) => p.id === item.pipeId);
+    const input = $('#dimMm');
+    if (!pipe || !input) return;
+    const i = Number(item.index);
+    const a = pipe.points[i - 1];
+    const b = pipe.points[i];
+    if (!a || !b) return;
+    const mm = parseFloat(input.value);
+    if (!Number.isFinite(mm) || mm < 50 || mm > 100000) {
+      this.toast('길이는 50 ~ 100000mm 사이 숫자로 넣어 주세요.', { type: 'err' });
+      input.focus();
+      return;
+    }
+    const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z;
+    const len = Math.hypot(vx, vy, vz);
+    if (len < 1e-4) { this.toast('길이를 잴 수 없는 구간입니다.', { type: 'err' }); return; }
+    const delta = mm / 1000 - len;
+    if (Math.abs(delta) < 0.0005) { this.closeModal(); return; }
+    const u = { x: vx / len, y: vy / len, z: vz / len };
+
+    this.pushUndo(`치수 수정 ${Math.round(len * 1000)}→${Math.round(mm)}mm`);
+    // 움직이기 전 좌표를 기억 — 여기에 붙은 장비·배관도 함께 옮긴다.
+    const step = (p) => ({ x: r3(p.x + u.x * delta), y: Math.max(0, r3(p.y + u.y * delta)), z: r3(p.z + u.z * delta) });
+    const pairs = pipe.points.slice(i).map((p) => ({ from: { x: p.x, y: p.y, z: p.z }, to: step(p) }));
+    for (let j = i; j < pipe.points.length; j += 1) pipe.points[j] = step(pipe.points[j]);
+
+    // 이 자리에서 이어지는 다른 배관은 통째로 옮긴다 (그 배관에 또 이어진 것까지 연쇄).
+    const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) < 0.008;
+    const done = new Set([pipe.id]);
+    for (let k = 0; k < pairs.length && k < 500; k += 1) {
+      const pr = pairs[k];
+      const dx = pr.to.x - pr.from.x;
+      const dy = pr.to.y - pr.from.y;
+      const dz = pr.to.z - pr.from.z;
+      this.state.pipes.forEach((q) => {
+        if (done.has(q.id)) return;
+        if (!q.points.some((p) => near(p, pr.from))) return;
+        done.add(q.id);
+        pairs.push(...q.points.map((p) => ({
+          from: { x: p.x, y: p.y, z: p.z },
+          to: { x: r3(p.x + dx), y: Math.max(0, r3(p.y + dy)), z: r3(p.z + dz) },
+        })));
+        q.points.forEach((p) => {
+          p.x = r3(p.x + dx);
+          p.y = Math.max(0, r3(p.y + dy));
+          p.z = r3(p.z + dz);
+        });
+      });
+    }
+
+    // 그 자리에 앉아 있던 장비(엘보·밸브·설비)도 같은 만큼 따라 움직인다.
+    this.state.equipment.forEach((e) => {
+      const pr = pairs.find((q) => near(e, q.from));
+      if (!pr) return;
+      e.x = r3(e.x + (pr.to.x - pr.from.x));
+      e.y = Math.max(0, r3(e.y + (pr.to.y - pr.from.y)));
+      e.z = r3(e.z + (pr.to.z - pr.from.z));
+    });
+
+    this.rebuild();
+    this.closeModal();
+    this.toast(`치수 수정 · ${Math.round(len * 1000)} → ${Math.round(mm)}mm`);
   }
 
   refreshScene() {
@@ -1109,7 +1576,8 @@ class App {
     if (!this.cmdMarker) return;
     const c = this.cmdCursor;
     this.cmdMarker.position.set(c.x, c.y, c.z);
-    this.cmdMarker.visible = !!this.cmdMarked;
+    // 손 그리기 중에는 시작점 표시(handAnchorDot)가 그 자리를 보여 주므로 주황 커서는 숨긴다.
+    this.cmdMarker.visible = !!this.cmdMarked && !this.handMode;
   }
 
   setCmdCursor(p, mark) {
@@ -1459,7 +1927,10 @@ class App {
       if (op.op === 'conn') { conn = op.conn === 'forged' ? 'forged' : 'flange'; continue; }
       if (op.op === 'newpipe') { flush(); this.lastDirV = null; prevDir = null; continue; }
       if (op.op === 'seg') {
-        const m = op.axis ? this.dirToWorld(op.axis, op.sign) : { axis, sign };
+        // world: 손 그리기가 고른 축은 화면 기준이 아니라 실제 3D 축이다.
+        const m = op.world
+          ? { axis: op.axis || axis, sign: (op.sign || 1) < 0 ? -1 : 1 }
+          : (op.axis ? this.dirToWorld(op.axis, op.sign) : { axis, sign });
         axis = m.axis;
         sign = m.sign < 0 ? -1 : 1;
         rot = this.cmdRotFor(axis, sign);
@@ -2150,6 +2621,8 @@ class App {
   }
 
   onCanvasClick(ev) {
+    // 손 그리기 중에는 한 손가락 탭이 그리기 시작점이 된다 — 선택으로 새지 않게 한다.
+    if (this.handMode) return;
     const ray = this.raycastAt(ev);
 
     if (this.drawMode) {
@@ -2180,6 +2653,7 @@ class App {
     const typing = /INPUT|SELECT|TEXTAREA/.test(tag);
     if (e.key === 'Escape') {
       if (!$('#modalRoot').hidden) { this.closeModal(); return; }
+      if (this.handMode) { this.setHandMode(false); return; }
       if (this.drawMode) { this.setDrawMode(false); return; }
       if (this.selection) { this.clearSelection(); return; }
     }
@@ -2603,6 +3077,9 @@ class App {
     // 치수 표시 토글 (기본 켜짐 · localStorage에 기억)
     const btnDims = $('#btnDims');
     if (btnDims) btnDims.addEventListener('click', () => this.setDims(!this.dimsOn));
+    // ✏️ 손 그리기 토글 — 모바일에서는 접힌 보기 바에도 항상 보인다.
+    const btnHand = $('#btnHand');
+    if (btnHand) btnHand.addEventListener('click', () => this.setHandMode(!this.handMode));
 
     // 탭
     $$('#tabs .tab').forEach((t) => t.addEventListener('click', () => {
@@ -2990,6 +3467,8 @@ class App {
           <li><b>배관 긋기</b> — [배관] 탭에서 구경·재질을 고르고 <b>3D에서 배관 그리기</b> → 바닥을 터치해 점을 찍습니다. 높이는 HUD의 숫자로 바꿀 수 있어 수직 상승·엘보가 그대로 표현됩니다.</li>
           <li><b>보기</b> — 한 손가락(마우스 왼쪽) 회전, 두 손가락(휠) 확대, 두 손가락 이동. 상단·하단의 등각/위에서/정면/리셋 버튼.</li>
           <li><b>한 줄 명령</b> — 화면 아래 입력창에 <code>50a 오른쪽으로 1000 위로 1500</code>처럼 쓰고 <b>실행</b>을 누르면 mm 단위로 배관이 이어집니다. 부속·장비 이름(<code>플렌지</code>, <code>버터</code>, <code>엘보</code> 등)을 함께 쓰면 그 자리에 배치됩니다.</li>
+          <li><b>✏️ 손 그리기</b> — 보기 바의 <b>✏️ 손 그리기</b>를 켜고 화면을 끌면, 끄는 방향에 가장 가까운 3D 축(+X/−X/+Y/−Y/+Z/−Z)으로 배관이 그려집니다. 길이는 100mm 단위로 반올림되고 미리보기에 표시됩니다. 방향이 꺾이면 엘보가 자동으로 들어가고, 손을 떼면 그 자리에서 다음 구간을 이어 그립니다(두 점을 톡톡 눌러도 됨). 두 손가락은 그대로 확대·이동입니다.</li>
+          <li><b>치수 고치기</b> — 화면의 치수 라벨(<code>1000mm (50A)</code>)을 누르면 그 구간 길이를 mm 숫자로 정확히 고칠 수 있습니다. 뒤로 이어진 배관·장비도 함께 움직입니다.</li>
           <li><b>내보내기</b> — [파일] 탭에서 JSON 저장·불러오기, <b>Fusion 360 .py</b>, <b>.obj</b>.</li>
         </ol>
         <p class="hint">작업은 이 브라우저에 자동 저장됩니다. 되돌리기는 오른쪽 위 알림의 “되돌리기” 또는 <code>Ctrl+Z</code>.</p>`,
