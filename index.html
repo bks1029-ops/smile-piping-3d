@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=31">
+<link rel="stylesheet" href="./css/style.css?v=32">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -88,18 +88,21 @@
         <button class="btn small ghost cmd-clear" id="cmdClear" type="button"
                 title="새 도면 (장비·배관 전체 삭제 · 실행취소 가능)" aria-label="새 도면">🗑️</button>
         <button class="btn small ghost cmd-pad" id="cmdPad" type="button"
-                title="방향 조이스틱 켜기/끄기" aria-label="방향 조이스틱" aria-expanded="true">
+                title="방향 조이스틱 켜기/끄기 (머리 부분을 끌면 위치 이동)" aria-label="방향 조이스틱" aria-expanded="true">
           <span class="pad-ico">🧭</span><span class="pad-txt">방향</span>
         </button>
         <button class="btn small ghost cmd-help" id="cmdHelp" type="button" title="명령 예시" aria-label="명령 예시">?</button>
       </form>
 
-      <!-- 콤팩트 방향 조이스틱 — 방향을 고르고 길이(mm)만 치면 그 방향으로 그려진다 -->
+      <!-- 콤팩트 방향 조이스틱 — 방향을 고르고 길이(mm)만 치면 그 방향으로 그려진다.
+           상단 헤더(내 시점 · 연결)와 아래 정보 줄을 끌면 화면 안 원하는 자리로 옮길 수 있다. -->
       <div id="dirPad" class="dir-pad">
-        <button type="button" class="pad-frame" id="btnFrame" data-frame="me" aria-pressed="true"
-                title="방향 기준: 내 시점(지금 보는 화면) ↔ 도면 축(X·Z 고정)">내 시점 기준</button>
-        <button type="button" class="pad-frame pad-conn" id="btnConn" data-conn="flange" aria-pressed="false"
-                title="연결 방식: 플랜지 ↔ 단조(소켓웰드·나사식) — 이후 배관·부속에 적용">연결 · 플랜지</button>
+        <div class="pad-head" id="padHead" title="끌어서 조이스틱 위치 옮기기">
+          <button type="button" class="pad-frame" id="btnFrame" data-frame="me" aria-pressed="true"
+                  title="방향 기준: 내 시점(지금 보는 화면) ↔ 도면 축(X·Z 고정)">내 시점 기준</button>
+          <button type="button" class="pad-frame pad-conn" id="btnConn" data-conn="flange" aria-pressed="false"
+                  title="연결 방식: 플랜지 ↔ 단조(소켓웰드·나사식) — 이후 배관·부속에 적용">연결 · 플랜지</button>
+        </div>
         <div class="pad-grid">
           <button type="button" class="pad-btn" data-dir="x:-1" title="왼쪽" aria-label="왼쪽">←</button>
           <button type="button" class="pad-btn" data-dir="y:1" title="위" aria-label="위">↑</button>
@@ -110,7 +113,12 @@
           <button type="button" class="pad-btn" data-dir="z:-1" title="뒤" aria-label="뒤">뒤</button>
           <button type="button" class="pad-btn pad-ico" id="padUndo" title="실행취소" aria-label="실행취소">↩</button>
         </div>
-        <div class="pad-info" id="padInfo">50A · 흑관·카본스틸 · 0, 0.5, 0m</div>
+        <div class="pad-info" id="padInfoRow" title="끌어서 조이스틱 위치 옮기기 · ⟲ 기본 위치">
+          <span class="pad-grip" aria-hidden="true">⠿</span>
+          <span class="pad-info-text" id="padInfo">50A · 흑관·카본스틸 · 0, 0.5, 0m</span>
+          <button type="button" class="pad-reset" id="padReset" title="조이스틱 위치 초기화(왼쪽 아래)"
+                  aria-label="조이스틱 위치 초기화">⟲</button>
+        </div>
       </div>
     </div>
 
@@ -234,6 +242,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=31"></script>
+<script type="module" src="./js/main.js?v=32"></script>
 </body>
 </html>

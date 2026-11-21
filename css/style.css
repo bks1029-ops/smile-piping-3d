@@ -569,8 +569,8 @@ input[type="color"] {
   position: absolute;
   z-index: 26;
   left: 328px;               /* 도구 서랍(302px) 오른쪽 */
-  bottom: 46px;
-  width: 148px;
+  bottom: 100px;             /* 명령창(bottom 46px) 위 — 겹치지 않게 */
+  width: 168px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -582,6 +582,21 @@ input[type="color"] {
   backdrop-filter: blur(10px);
 }
 .dir-pad[hidden] { display: none; }
+/* 끌어서 옮기는 동안은 위쪽 패널류보다 앞에 보이게 */
+.dir-pad.dragging { z-index: 34; }
+
+/* 상단 헤더: '내 시점 / 연결' 을 2열 1줄로 나란히 — 세로 높이를 늘리지 않는다.
+   이 줄 전체가 조이스틱을 끌어 옮기는 손잡이다(4px 넘게 움직이면 버튼 클릭은 취소). */
+.pad-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.dir-pad.dragging .pad-head { cursor: grabbing; }
 
 .pad-frame {
   appearance: none;
@@ -598,6 +613,7 @@ input[type="color"] {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .pad-frame[data-frame="plan"] { color: #9fc2e8; border-color: #33486a; }
 .pad-frame.pad-conn { color: #b9c2cc; }
@@ -634,14 +650,47 @@ input[type="color"] {
 .pad-btn.pad45.active { color: var(--accent-ink); background: var(--accent); border-color: #c9820a; }
 .pad-btn.pad-ico { font-size: 12px; color: var(--dim); }
 .pad-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 9.5px;
   color: var(--dim2);
-  text-align: center;
+  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.dir-pad.dragging .pad-info { cursor: grabbing; }
+.pad-grip { flex: 0 0 auto; font-size: 10px; line-height: 1; color: #5d6b7b; letter-spacing: -1px; }
+.pad-info-text {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
+/* 위치 초기화 — 정보 줄 오른쪽 끝의 작은 ⟲ */
+.pad-reset {
+  flex: 0 0 auto;
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 16px; height: 15px;
+  padding: 0;
+  border: 1px solid #33404e;
+  border-radius: 4px;
+  background: #131a22;
+  color: var(--dim);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.pad-reset:hover { color: var(--accent); border-color: #6b5327; }
+.pad-reset:active { transform: translateY(1px); }
 
 /* 명령창의 🎤·🗑️ */
 .cmd-bar .cmd-mic, .cmd-bar .cmd-clear { flex: 0 0 auto; padding: 6px 7px; position: relative; }
@@ -685,7 +734,8 @@ input[type="color"] {
   .viewbar {
     position: fixed;
     left: 50%;
-    bottom: calc(14px + env(safe-area-inset-bottom));
+    /* 하단은 이제 명령창이 차지한다 — 보기 바는 명령창 바로 위 */
+    bottom: calc(58px + env(safe-area-inset-bottom));
     transform: translateX(-50%);
     margin: 0;
     /* left:50%만 주면 shrink-to-fit 이 화면 절반 폭으로 잡혀 버튼 글자가 세로로 쪼개진다. */
@@ -740,12 +790,15 @@ input[type="color"] {
   .overlay-note { top: 58px; bottom: auto; left: 8px; transform: none; font-size: 10.5px; }
   .hud { bottom: calc(70px + env(safe-area-inset-bottom)); }
   .modal-card { width: calc(100% - 20px); max-height: 82dvh; }
-  /* 명령창은 화면 맨 아래 띠 안에 — 위쪽 80%는 3D 화면 그대로 보인다 */
+  /* 명령창은 모바일 화면 맨 아래 띠 — 3D 화면은 그 위를 그대로 쓴다 */
   .cmd-bar {
-    left: 50%;
-    width: calc(100% - 16px);
-    bottom: calc(118px + env(safe-area-inset-bottom));
+    left: 8px;
+    right: 8px;
+    width: auto;
+    transform: none;
+    bottom: calc(8px + env(safe-area-inset-bottom));
     padding: 5px 5px 5px 9px;
+    z-index: 32;
   }
   .cmd-input { height: 34px; font-size: 16px; }
   .cmd-bar .cmd-help { display: none; }
@@ -755,12 +808,14 @@ input[type="color"] {
   .cmd-bar .cmd-undo, .cmd-bar .cmd-pad { width: 32px; padding: 0; justify-content: center; }
   .cmd-bar .undo-ico, .cmd-bar .pad-ico { font-size: 15px; }
 
-  /* 콤팩트 조이스틱은 왼쪽 아래 본테 — 보기 바는 오른쪽으로 비킨다 */
+  /* 콤팩트 조이스틱은 왼쪽 아래 — 명령창(8~52px)·보기 바(58~94px) 위에 둔다.
+     pad bottom 102px 이면 두 띠와 8px 이상 떨어져 절대 겸치지 않는다. */
   .dir-pad {
     left: 6px;
     right: auto;
-    bottom: calc(8px + env(safe-area-inset-bottom));
-    width: 140px;
+    top: auto;
+    bottom: calc(102px + env(safe-area-inset-bottom));
+    width: 152px;
     padding: 5px;
     gap: 3px;
   }

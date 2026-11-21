@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=31';
-import { buildScene } from './builders.js?v=31';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=31';
-import { buildOBJ } from './obj.js?v=31';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=31';
-import { parseCommand, CMD_HELP } from './cmd.js?v=31';
-import { buildDimItems } from './dims.js?v=31';
+} from './store.js?v=32';
+import { buildScene } from './builders.js?v=32';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=32';
+import { buildOBJ } from './obj.js?v=32';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=32';
+import { parseCommand, CMD_HELP } from './cmd.js?v=32';
+import { buildDimItems } from './dims.js?v=32';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -1744,6 +1744,135 @@ class App {
     return res;
   }
 
+  // ── 조이스틱 위치 이동(드래그) ──────────────────────────────
+  // 상단 헤더(내 시점 · 연결)나 정보 줄을 끌면 화면 안 원하는 곳으로 옮겨진다.
+  // 화면 밖으로는 나가지 않고, 그냥 톡 누르면(4px 미만) 원래 버튼 클릭으로 동작한다.
+  padPosClamp(left, top) {
+    const pad = $('#dirPad');
+    if (!pad) return { left: 0, top: 0 };
+    const host = pad.parentElement;
+    const r = host.getBoundingClientRect();
+    const pr = pad.getBoundingClientRect();
+    const m = 4;
+    const maxL = Math.max(m, r.width - pr.width - m);
+    const maxT = Math.max(m, r.height - pr.height - m);
+    return { left: Math.min(Math.max(left, m), maxL), top: Math.min(Math.max(top, m), maxT) };
+  }
+
+  // left/top 은 #viewport 기준 px. save=true 면 다음에 열 때도 같은 자리에 둔다.
+  setPadPos(left, top, save) {
+    const pad = $('#dirPad');
+    if (!pad) return;
+    const p = this.padPosClamp(left, top);
+    pad.style.left = Math.round(p.left) + 'px';
+    pad.style.top = Math.round(p.top) + 'px';
+    pad.style.right = 'auto';
+    pad.style.bottom = 'auto';
+    if (save) {
+      try {
+        localStorage.setItem('smilePiping3D.padPos', JSON.stringify({ left: Math.round(p.left), top: Math.round(p.top) }));
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  restorePadPos() {
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem('smilePiping3D.padPos') || 'null'); } catch (e) { pos = null; }
+    if (!pos || !isFinite(pos.left) || !isFinite(pos.top)) return;
+    // 레이아웃(모바일/데스크톱)이 잡힌 뒤에 적용하고, 화면 밖 좌표는 clamp 한다
+    requestAnimationFrame(() => this.setPadPos(Number(pos.left), Number(pos.top), false));
+  }
+
+  resetPadPos(quiet) {
+    const pad = $('#dirPad');
+    if (pad) {
+      pad.style.left = '';
+      pad.style.top = '';
+      pad.style.right = '';
+      pad.style.bottom = '';
+    }
+    try { localStorage.removeItem('smilePiping3D.padPos'); } catch (e) { /* ignore */ }
+    if (!quiet) this.toast('조이스틱을 기본 위치(왼쪽 아래)로 되돌렸습니다.');
+  }
+
+  bindPadDrag() {
+    const pad = $('#dirPad');
+    if (!pad) return;
+    const head = $('#padHead');
+    const infoRow = $('#padInfoRow');
+    const handles = [head, infoRow].filter(Boolean);
+    if (!handles.length) return;
+    let drag = null;
+    let suppressClick = false;
+
+    const start = (e, handle) => {
+      if (e.button != null && e.button !== 0) return;
+      if (e.target && e.target.closest && e.target.closest('#padReset')) return; // 리셋 버튼은 그냥 클릭
+      const r = pad.getBoundingClientRect();
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: r.left, top: r.top, moved: false, handle };
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    };
+
+    const move = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      if (!drag.moved) {
+        if (Math.hypot(dx, dy) < 4) return;      // 손가락이 살짝 흔들린 것은 클릭으로 본다
+        drag.moved = true;
+        pad.classList.add('dragging');
+      }
+      e.preventDefault();
+      const host = pad.parentElement.getBoundingClientRect();
+      this.setPadPos(drag.left + dx - host.left, drag.top + dy - host.top, false);
+    };
+
+    const end = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const moved = drag.moved;
+      const handle = drag.handle;
+      drag = null;
+      try { handle.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      pad.classList.remove('dragging');
+      if (!moved) return;
+      // 드래그가 끝난 뒤 따라오는 click 은 버튼 동작으로 넘기지 않는다
+      suppressClick = true;
+      setTimeout(() => { suppressClick = false; }, 400);
+      const p = this.padPosClamp(parseFloat(pad.style.left) || 0, parseFloat(pad.style.top) || 0);
+      this.setPadPos(p.left, p.top, true);
+      if (!this.padHintShown) {
+        this.padHintShown = true;
+        this.toast('조이스틱 위치를 옮겼습니다 · ⟲ 을 누르면 기본 위치로 돌아갑니다.');
+      }
+    };
+
+    handles.forEach((h) => {
+      h.addEventListener('pointerdown', (e) => start(e, h));
+      h.addEventListener('pointermove', move);
+      h.addEventListener('pointerup', end);
+      h.addEventListener('pointercancel', end);
+    });
+
+    // 드래그 직후의 click 한 번만 막는다 (버튼이 눌린 것으로 처리되지 않게)
+    pad.addEventListener('click', (e) => {
+      if (!suppressClick) return;
+      e.stopPropagation();
+      e.preventDefault();
+    }, true);
+
+    const reset = $('#padReset');
+    if (reset) reset.addEventListener('click', (e) => { e.stopPropagation(); this.resetPadPos(); });
+
+    // 화면을 돌리거나 창 크기가 바뀌어도 조이스틱이 화면 밖에 남지 않게
+    window.addEventListener('resize', () => {
+      if (!pad.style.left) return;
+      const p = this.padPosClamp(parseFloat(pad.style.left) || 0, parseFloat(pad.style.top) || 0);
+      this.setPadPos(p.left, p.top, false);
+    });
+
+    this.restorePadPos();
+  }
+
   bindPad() {
     const pad = $('#dirPad');
     if (!pad) return;
@@ -1760,6 +1889,7 @@ class App {
       const [axis, s] = b.dataset.dir.split(':');
       b.addEventListener('click', () => this.tapDir(axis, Number(s)));
     });
+    this.bindPadDrag();
   }
 
   // ── 🎤 음성 명령 (Web Speech API) ─────────────────────────
