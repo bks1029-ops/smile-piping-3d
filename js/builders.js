@@ -464,7 +464,7 @@ function buildYValve(spec) {
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) {
-      socketBoss(g, [sx * 0.11, 0, 0], [sx, 0, 0], 0.085, bodyMat, darkMat);
+      socketBoss(g, [sx * 0.11, 0, 0], [sx, 0, 0], 0.085, bodyMat, dark);
       return;
     }
     add(g, cyl(0.135, 0.03, 26), bodyMat, sx * 0.12, 0, 0, 0, 0, Math.PI / 2);
