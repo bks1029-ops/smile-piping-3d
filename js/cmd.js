@@ -194,12 +194,12 @@ function parseAngle(token) {
   return m ? Number(m[1]) : 0;
 }
 
-const BORE_RE = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300)a$/;
+const BORE_RE = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300|350|400|450|500|550|600)a$/;
 
-// 관경 순서 (작은 것부터) — KS 표준 15A~300A
+// 관경 순서 (작은 것부터) — KS 표준 15A~600A
 const BORE_ORDER = [
-  '15A', '20A', '25A', '32A', '40A', '50A', '65A', '80A',
-  '100A', '125A', '150A', '200A', '250A', '300A',
+  '15A', '20A', '25A', '32A', '40A', '50A', '65A', '80A', '100A', '125A',
+  '150A', '200A', '250A', '300A', '350A', '400A', '450A', '500A', '550A', '600A',
 ];
 
 function nextSmallerBore(bore) {
@@ -223,7 +223,7 @@ export function parseCommand(text) {
     const t = norm(raw);
     if (BORE_RE.test(t)) return { raw, t, kind: 'bore', bore: t.toUpperCase() };
     // "50미리", "100파이" 같은 현장 말투
-    const mmBore = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300)(미리|미리미터|밀리|밀리미터|파이|빠이|mm)$/i.exec(t);
+    const mmBore = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300|350|400|450|500|550|600)(미리|미리미터|밀리|밀리미터|파이|빠이|mm)$/i.exec(t);
     if (mmBore) return { raw, t, kind: 'bore', bore: mmBore[1] + 'A' };
     if (DELETE_WORDS.has(t)) return { raw, t, kind: 'delete' };
     if (CONNECT_WORDS.has(t) || CONNECT_WORDS.has(String(raw).toLowerCase())) {
