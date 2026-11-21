@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=40';
-import { buildScene } from './builders.js?v=40';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=40';
-import { buildOBJ } from './obj.js?v=40';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=40';
-import { parseCommand, CMD_HELP } from './cmd.js?v=40';
-import { buildDimItems } from './dims.js?v=40';
+} from './store.js?v=41';
+import { buildScene } from './builders.js?v=41';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=41';
+import { buildOBJ } from './obj.js?v=41';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=41';
+import { parseCommand, CMD_HELP } from './cmd.js?v=41';
+import { buildDimItems } from './dims.js?v=41';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -913,6 +913,12 @@ class App {
       const i = order[n];
       const it = this.dimItems[i];
       const el = this.dimNodes[i];
+      // 방금 그은 구간의 치수 창이 떠 있으면 그 라벨은 숨긴다 — 같은 자리에 겹친다.
+      const hd = this.handDimItem;
+      if (hd && hd.pipeId === it.pipeId && hd.index === it.index) {
+        if (el.style.display !== 'none') el.style.display = 'none';
+        continue;
+      }
       v.set(it.x, it.y, it.z).project(this.camera);
       const behind = v.z > 1;
       if (behind || v.x < -1.2 || v.x > 1.2 || v.y < -1.2 || v.y > 1.2) {
