@@ -15,9 +15,9 @@
 </head>
 <body>
 <div id="wrap">
-  <iframe id="f" src="./index.html?view=iso" title="앱"></iframe>
+  <iframe id="f" title="앱"></iframe>
   <div id="report">준비 중...</div>
-  <iframe id="m" src="./index.html?view=iso" title="모바일 앱"></iframe>
+  <iframe id="m" title="모바일 앱"></iframe>
 </div>
 <script>
 // 손 그리기 45° 스냅과 '그은 직후 치수 창'을 실제 PointerEvent로 구동해 확인하는 임시 검증 페이지.
@@ -27,8 +27,12 @@ const f = document.getElementById('f');
 const mf = document.getElementById('m');
 let loaded = 0;
 const both = () => { loaded += 1; if (loaded === 2) setTimeout(run, 1700); };
+// GitHub Pages가 index.html을 캐시해 예전 모듈을 붙들 수 있으니 매번 다른 주소로 연다.
+const stamp = String(Date.now());
 f.addEventListener('load', both);
 mf.addEventListener('load', both);
+f.src = `./index.html?view=iso&r=${stamp}`;
+mf.src = `./index.html?view=iso&r=${stamp}m`;
 
 const S = Math.SQRT1_2;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
