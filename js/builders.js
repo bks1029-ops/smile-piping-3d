@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis } from './store.js?v=28';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis } from './store.js?v=29';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -57,6 +57,44 @@ function addTube(parent, a, b, r, material, seg = 18) {
 }
 
 const D = (deg) => THREE.MathUtils.degToRad(deg || 0);
+
+// ── 단조형(소켓웰드·나사식) 접합 보스 ────────────────────────────────────────
+// conn === 'forged'인 부속·배관 끝은 플랜지 원판 대신 이 보스를 그린다.
+//  · pos  : 접합면 중심 (부속의 로컬 좌표, 배관은 월드 좌표)
+//  · axis : 배관이 빠져나가는 바깥 방향 단위벡터
+//  · r    : 배관·바디 외경 반지름
+// 짧은 원통 칼라(소켓 몸통) + 육각 조임부(단조 육각) + 가는 목 + 용접 비드 링으로
+// 플랜지 볼트 구멍 없이 깔끔한 소켓·나사 이음으로 보이게 한다.
+function socketBoss(parent, pos, axis, r, bodyMat, beadMat, opt) {
+  const o = opt || {};
+  const w = Math.max(0.008, Number(r) || 0.03);
+  const mat = bodyMat || MAT('#c9d0d6', 0.4, 0.8);
+  const bead = beadMat || MAT('#8f979f', 0.45, 0.85);
+  const ax = new THREE.Vector3(Number(axis && axis[0]) || 0, Number(axis && axis[1]) || 0, Number(axis && axis[2]) || 0);
+  if (ax.lengthSq() < 1e-9) ax.set(1, 0, 0);
+  ax.normalize();
+  const base = new THREE.Vector3(Number(pos[0]) || 0, Number(pos[1]) || 0, Number(pos[2]) || 0);
+  const qY = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax);
+  const qZ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax);
+  const put = (mesh, t, q) => {
+    mesh.position.copy(base).addScaledVector(ax, t);
+    mesh.quaternion.copy(q || qY);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    parent.add(mesh);
+    return mesh;
+  };
+  // 소켓 몸통 — 배관을 받는 짧은 원통 칼라 (접합면 안쪽으로 앉는다)
+  put(new THREE.Mesh(cyl(w * (o.collar || 1.5), o.h || 0.05, 22), mat), -(o.h || 0.05) * 0.24);
+  // 단조 육각 조임부 — 나사식·소켓웰드의 육각 칼라 (배관 위를 살짝 물고 나간다)
+  put(new THREE.Mesh(cyl(w * (o.hex || 1.62), 0.026, 6), mat), 0.026);
+  // 목(네크) — 배관과 만나는 자리의 가는 칼라
+  put(new THREE.Mesh(cyl(w * (o.neck || 1.16), 0.03, 18), bead), -(o.h || 0.05) * 0.24 - 0.038);
+  // 용접 비드 링
+  put(new THREE.Mesh(torus(w * (o.neck || 1.16) + 0.004, w * 0.085), bead), -(o.h || 0.05) * 0.24 - 0.03, qZ);
+}
+
+const isForged = (spec) => !!spec && spec.conn === 'forged';
 
 // ── 열교환기 (쉘앤튜브 + 새들 지지대) ─────────────────────────────────────────
 function buildHX(spec) {
@@ -200,8 +238,13 @@ function buildValve(spec) {
   // 몸체 (흐름 방향 X)
   add(g, cyl(0.085, 0.14, 20), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
   add(g, cyl2(0.09, 0.09, 0.1, 20), bodyMat, 0, 0.05, 0, 0, 0, Math.PI / 2);
-  // 양쪽 플랜지
+  // 양쪽 접합부 — 플랜지 원판 또는 단조 소켓 보스
+  const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
+    if (forged) {
+      socketBoss(g, [sx * 0.1, 0, 0], [sx, 0, 0], 0.085, bodyMat, darkMat);
+      return;
+    }
     add(g, cyl(0.13, 0.045, 24), bodyMat, sx * 0.095, 0, 0, 0, 0, Math.PI / 2);
     add(g, torus(0.135, 0.012), darkMat, sx * 0.12, 0, 0, 0, Math.PI / 2, 0);
   });
@@ -379,8 +422,13 @@ function buildButterfly(spec) {
 
   // 웨이퍼 바디 (흐름 X)
   add(g, cyl(0.115, 0.1, 28), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  // 양단 볼트 플랜지 + 볼트
+  // 양단 접합부 — 플랜지면 볼트 원판, 단조형이면 소켓 보스만
+  const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
+    if (forged) {
+      socketBoss(g, [sx * 0.058, 0, 0], [sx, 0, 0], 0.115, bodyMat, steel);
+      return;
+    }
     add(g, cyl(0.165, 0.028, 30), bodyMat, sx * 0.062, 0, 0, 0, 0, Math.PI / 2);
     for (let i = 0; i < 8; i += 1) {
       const a = (Math.PI * 2 * i) / 8;
@@ -412,8 +460,13 @@ function buildYValve(spec) {
 
   // 본체 (흐름 X)
   add(g, cyl(0.085, 0.22, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  // 양단 플랜지
+  // 양단 접합부 — 플랜지면 원판+링, 단조형이면 소켓 보스
+  const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
+    if (forged) {
+      socketBoss(g, [sx * 0.11, 0, 0], [sx, 0, 0], 0.085, bodyMat, darkMat);
+      return;
+    }
     add(g, cyl(0.135, 0.03, 26), bodyMat, sx * 0.12, 0, 0, 0, 0, Math.PI / 2);
     add(g, torus(0.14, 0.011), steel, sx * 0.137, 0, 0, 0, Math.PI / 2, 0);
   });
@@ -440,7 +493,11 @@ function buildBall(spec) {
 
   add(g, sphere(0.075, 20), bodyMat, 0, 0, 0);
   add(g, cyl(0.052, 0.2, 20), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  [-1, 1].forEach((sx) => add(g, cyl(0.085, 0.024, 22), steel, sx * 0.105, 0, 0, 0, 0, Math.PI / 2));
+  const forged = isForged(spec);
+  [-1, 1].forEach((sx) => {
+    if (forged) socketBoss(g, [sx * 0.092, 0, 0], [sx, 0, 0], 0.055, bodyMat, steel);
+    else add(g, cyl(0.085, 0.024, 22), steel, sx * 0.105, 0, 0, 0, 0, Math.PI / 2);
+  });
   add(g, cyl(0.03, 0.04, 14), bodyMat, 0, 0.075, 0);
   add(g, cyl(0.024, 0.06, 12), steel, 0, 0.11, 0);
   add(g, box(0.19, 0.02, 0.024), dark, 0.035, 0.145, 0);
@@ -458,7 +515,11 @@ function buildCheck(spec) {
   const dark = MAT('#2c3238', 0.6, 0.5);
 
   add(g, cyl(0.1, 0.06, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  [-1, 1].forEach((sx) => add(g, cyl(0.115, 0.018, 26), steel, sx * 0.045, 0, 0, 0, 0, Math.PI / 2));
+  const forged = isForged(spec);
+  [-1, 1].forEach((sx) => {
+    if (forged) socketBoss(g, [sx * 0.042, 0, 0], [sx, 0, 0], 0.09, bodyMat, steel);
+    else add(g, cyl(0.115, 0.018, 26), steel, sx * 0.045, 0, 0, 0, 0, Math.PI / 2);
+  });
   add(g, box(0.1, 0.045, 0.06), bodyMat, 0, 0.105, 0);
   add(g, cyl(0.011, 0.05, 8), steel, 0, 0.14, 0);
   add(g, cyl(0.02, 0.014, 10), dark, 0, 0.165, 0);
@@ -483,8 +544,13 @@ function buildBellows(spec) {
   add(g, cyl(0.098, len, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
   add(g, cyl(0.055, len + 0.06, 20), dark, 0, 0, 0, 0, 0, Math.PI / 2);
 
-  // 양단 플랜지
+  // 양단 접합부 — 플랜지 또는 단조 소켓 보스
+  const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
+    if (forged) {
+      socketBoss(g, [sx * len / 2, 0, 0], [sx, 0, 0], 0.098, bodyMat, steel);
+      return;
+    }
     add(g, cyl(0.15, 0.032, 28), steel, sx * (len / 2 + 0.016), 0, 0, 0, 0, Math.PI / 2);
   });
 
@@ -521,9 +587,14 @@ function buildElbow(spec) {
   addTube(g, [R, 0, 0], [R + Ls, 0, 0], r, bodyMat, 22);
   addTube(g, [0, R, 0], [0, R + Ls, 0], r, bodyMat, 22);
 
-  // 접합면 용접 비드
-  add(g, torus(r * 1.02, r * 0.1), beadMat, R + Ls, 0, 0, 0, Math.PI / 2, 0);
-  add(g, torus(r * 1.02, r * 0.1), beadMat, 0, R + Ls, 0, Math.PI / 2, 0, 0);
+  // 접합면 — 플랜지형은 용접 비드, 단조형은 소켓 보스
+  if (isForged(spec)) {
+    socketBoss(g, [R + Ls, 0, 0], [1, 0, 0], r, bodyMat, beadMat);
+    socketBoss(g, [0, R + Ls, 0], [0, 1, 0], r, bodyMat, beadMat);
+  } else {
+    add(g, torus(r * 1.02, r * 0.1), beadMat, R + Ls, 0, 0, 0, Math.PI / 2, 0);
+    add(g, torus(r * 1.02, r * 0.1), beadMat, 0, R + Ls, 0, Math.PI / 2, 0, 0);
+  }
 
   return g;
 }
@@ -545,10 +616,17 @@ function buildTee(spec) {
   add(g, cyl(r1, L, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2); // 주배관 (1차)
   add(g, sphere(r1 * 1.1, 20), bodyMat, 0, 0, 0); // 분기 목
   add(g, cyl(r2, branchH, 22), bodyMat, 0, branchH / 2, 0); // 분기관 (2차)
-  add(g, cyl(r2 * 1.4, 0.022, 22), bodyMat, 0, branchH, 0); // 분기 플랜지
-  add(g, torus(r1 * 1.03, 0.006), beadMat, L / 2, 0, 0, 0, Math.PI / 2, 0);
-  add(g, torus(r1 * 1.03, 0.006), beadMat, -L / 2, 0, 0, 0, Math.PI / 2, 0);
-  add(g, torus(r2 * 1.04, 0.006), beadMat, 0, branchH - 0.014, 0, Math.PI / 2, 0, 0);
+  if (isForged(spec)) {
+    // 단조형 — 분기·양단 모두 소켓 보스 (플랜지 원판 없음)
+    socketBoss(g, [-L / 2, 0, 0], [-1, 0, 0], r1, bodyMat, beadMat);
+    socketBoss(g, [L / 2, 0, 0], [1, 0, 0], r1, bodyMat, beadMat);
+    socketBoss(g, [0, branchH, 0], [0, 1, 0], r2, bodyMat, beadMat);
+  } else {
+    add(g, cyl(r2 * 1.4, 0.022, 22), bodyMat, 0, branchH, 0); // 분기 플랜지
+    add(g, torus(r1 * 1.03, 0.006), beadMat, L / 2, 0, 0, 0, Math.PI / 2, 0);
+    add(g, torus(r1 * 1.03, 0.006), beadMat, -L / 2, 0, 0, 0, Math.PI / 2, 0);
+    add(g, torus(r2 * 1.04, 0.006), beadMat, 0, branchH - 0.014, 0, Math.PI / 2, 0, 0);
+  }
 
   g.scale.set(s, s, s);
   return g;
@@ -570,8 +648,14 @@ function buildReducer(spec) {
   const s = Math.max(0.05, spec.w) / (L + FT * 2);
 
   add(g, cyl2(r1, r2, L, 28), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(r1 * 1.22, FT, 28), steel, -(L / 2 + FT / 2), 0, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(r2 * 1.35, FT, 26), steel, L / 2 + FT / 2, 0, 0, 0, 0, Math.PI / 2);
+  if (isForged(spec)) {
+    // 단조형 — 원뿔 양단에 소켓 보스만 (플랜지 원판 없음)
+    socketBoss(g, [-L / 2, 0, 0], [-1, 0, 0], r1, bodyMat, beadMat, { collar: 1.24, hex: 1.34, neck: 1.06 });
+    socketBoss(g, [L / 2, 0, 0], [1, 0, 0], r2, bodyMat, beadMat, { collar: 1.3, hex: 1.42, neck: 1.08 });
+  } else {
+    add(g, cyl(r1 * 1.22, FT, 28), steel, -(L / 2 + FT / 2), 0, 0, 0, 0, Math.PI / 2);
+    add(g, cyl(r2 * 1.35, FT, 26), steel, L / 2 + FT / 2, 0, 0, 0, 0, Math.PI / 2);
+  }
   add(g, torus(r1 * 1.05, 0.005), beadMat, -(L / 2 - 0.012), 0, 0, 0, Math.PI / 2, 0);
   add(g, torus(r2 * 1.06, 0.005), beadMat, L / 2 - 0.012, 0, 0, 0, Math.PI / 2, 0);
 
@@ -626,6 +710,11 @@ function buildElbow45(spec) {
   addTube(g, [T, 0, 0], [T + Ls, 0, 0], r, bodyMat, 22);
   addTube(g, [T * u[0], T * u[1], 0], [(T + Ls) * u[0], (T + Ls) * u[1], 0], r, bodyMat, 22);
 
+  if (isForged(spec)) {
+    socketBoss(g, [T + Ls, 0, 0], [1, 0, 0], r, bodyMat, beadMat);
+    socketBoss(g, [(T + Ls) * u[0], (T + Ls) * u[1], 0], [u[0], u[1], 0], r, bodyMat, beadMat);
+    return g;
+  }
   add(g, torus(r * 1.02, r * 0.1), beadMat, T + Ls, 0, 0, 0, Math.PI / 2, 0);
   const bead = new THREE.Mesh(torus(r * 1.02, r * 0.1), beadMat);
   bead.position.set((T + Ls) * u[0], (T + Ls) * u[1], 0);
@@ -646,8 +735,12 @@ function buildCap(spec) {
   add(g, cyl(r, 0.075, 26), bodyMat, -0.02, 0, 0, 0, 0, Math.PI / 2);
   const dome = add(g, sphere(r, 20), bodyMat, 0.018, 0, 0);
   dome.scale.set(0.72, 1, 1);
-  add(g, torus(r * 1.06, 0.007), beadMat, -0.055, 0, 0, 0, Math.PI / 2, 0);
-  add(g, cyl(r * 0.7, 0.03, 6), beadMat, -0.075, 0, 0, 0, 0, Math.PI / 2); // 렌치 자리
+  if (isForged(spec)) {
+    socketBoss(g, [-0.058, 0, 0], [-1, 0, 0], r, bodyMat, beadMat, { collar: 1.3, hex: 1.42, neck: 1.06 });
+  } else {
+    add(g, torus(r * 1.06, 0.007), beadMat, -0.055, 0, 0, 0, Math.PI / 2, 0);
+    add(g, cyl(r * 0.7, 0.03, 6), beadMat, -0.075, 0, 0, 0, 0, Math.PI / 2); // 렌치 자리
+  }
 
   g.scale.set(spec.w / 0.148, spec.h / 0.11, spec.d / 0.11);
   return g;
@@ -682,9 +775,14 @@ function buildFlow(spec) {
   const dark = MAT('#2c3238', 0.6, 0.5);
   const face = MAT('#e9f2f7', 0.35, 0.15);
 
-  // 계기 바디 (흐름 X) + 양단 플랜지·볼트
+  // 계기 바디 (흐름 X) + 양단 접합부
   add(g, cyl(0.06, 0.18, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
+  const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
+    if (forged) {
+      socketBoss(g, [sx * 0.1, 0, 0], [sx, 0, 0], 0.06, bodyMat, steel, { collar: 1.3, hex: 1.42, neck: 1.05 });
+      return;
+    }
     add(g, cyl(0.1, 0.032, 28), steel, sx * 0.104, 0, 0, 0, 0, Math.PI / 2);
     for (let i = 0; i < 6; i += 1) {
       const a = (Math.PI * 2 * i) / 6;
@@ -792,6 +890,7 @@ export function buildPipe(spec, equipments) {
   const pts = (spec.points || []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
   const up = new THREE.Vector3(0, 1, 0);
   const unit = G(`ucyl|${r.toFixed(4)}`, () => new THREE.CylinderGeometry(r, r, 1, 18));
+  const forged = isForged(spec);
 
   const joints = equipments || [];
   // 배관 끝이 부속(엘보·밸브·플랜지 등)과 만나는 자리면 플랜지를 그리지 않는다 — 용접 이음으로 보이게.
@@ -811,9 +910,13 @@ export function buildPipe(spec, equipments) {
     pipe.receiveShadow = true;
     g.add(pipe);
 
-    // 구간 끝 플랜지 (부속과 만나는 끝은 생략)
-    if (i === 1 && !jointAt(a)) addFlange(g, a, dir, r, flangeMat);
-    if (i === pts.length - 1 && !jointAt(b)) addFlange(g, b, dir, r, flangeMat);
+    // 구간 끝 접합부 (부속과 만나는 끝은 생략) — 플랜지 원판 또는 단조 소켓 보스
+    const endBoss = (p, out, radius) => {
+      if (forged) socketBoss(g, [p.x, p.y, p.z], [out.x, out.y, out.z], radius, mat, flangeMat, { collar: 1.42, hex: 1.56 });
+      else addFlange(g, p, out, radius, flangeMat);
+    };
+    if (i === 1 && !jointAt(a)) endBoss(a, dir.clone().negate(), r);
+    if (i === pts.length - 1 && !jointAt(b)) endBoss(b, dir, r);
   }
 
   // 엘보 조인트 (구관 — 엘보 부속을 안 놓은 꼭짓점만. 엘보 관 안에 잠기도록 배관과 같은 반지름)

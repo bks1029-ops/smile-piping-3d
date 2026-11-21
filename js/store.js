@@ -34,6 +34,25 @@ export const MATERIALS = {
   insulated: { label: '보온배관', color: '#c9b48d', roughness: 0.92, metalness: 0.05, jacket: 0.035 },
 };
 
+// ── 연결 방식 ────────────────────────────────────────────────────────────────
+// flange : 플랜지 접합(기본값) — 배관 끝·밸브·피팅에 볼트링 원판이 붙는다.
+// forged : 단조형(소켓웰드·나사식) — 플랜지 원판 없이 소켓 보스·육각 칼라만 남는다.
+// 기존 도면(conn 없음)은 모두 플랜지로 읽어 호환을 유지한다.
+export const CONN_MODES = {
+  flange: { label: '플랜지', short: 'FLG' },
+  forged: { label: '단조', short: 'FRG' },
+};
+
+// 배관과 만나는 부속 — 속성 패널에서 연결 방식을 바꿀 수 있는 종류
+export const CONN_TYPES = new Set([
+  'valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'elbow', 'elbow45',
+  'tee', 'reducer', 'nipple', 'cap', 'union', 'flow', 'flange',
+]);
+
+export function connOf(item) {
+  return item && item.conn === 'forged' ? 'forged' : 'flange';
+}
+
 // 관경 외경(m) — 부속(레듀샤·티)을 실제 관경 크기로 그릴 때 쓴다.
 export function boreOd(bore) {
   return (BORES[bore] || BORES['100A']).od;
@@ -261,6 +280,8 @@ export function makeEquipment(type, opts) {
     d: num(o.d, t.defaults.d),
     rot: num(o.rot, 0),
     color: o.color || t.color,
+    // 연결 방식 — 플랜지(기본) / 단조형(소켓웰드·나사식). 기존 호출은 플랜지로 남는다.
+    conn: o.conn === 'forged' ? 'forged' : 'flange',
   };
   // 배관 끝에 붙은 부속은 진행 방향 벡터를 기억한다 — 3D 회전을 이 벡터로 잡아
   // 플랜지 원판·밸브 바디가 어느 방향(수직·좌우·45° 경사)에서도 배관 축에 딱 맞는다.
@@ -296,6 +317,8 @@ export function makePipe(opts) {
     name: o.name || '배관',
     bore: BORES[o.bore] ? o.bore : '100A',
     material: MATERIALS[o.material] ? o.material : 'carbon',
+    // 배관 끝단 연결 방식 — 단조형이면 플랜지 대신 소켓 보스를 그린다.
+    conn: o.conn === 'forged' ? 'forged' : 'flange',
     points: (o.points || []).map((p) => ({ x: num(p.x, 0), y: num(p.y, 0), z: num(p.z, 0) })),
   };
 }
@@ -451,6 +474,7 @@ export function normalizeState(raw) {
         d: Math.max(0.1, num(e.d, t.defaults.d)),
         rot: num(e.rot, 0),
         color: /^#[0-9a-f]{6}$/i.test(e.color || '') ? e.color : t.color,
+        conn: e.conn === 'forged' ? 'forged' : 'flange',
       };
       // 진행 방향 벡터(배관 축)가 저장돼 있으면 그대로 살려 3D 회전을 다시 맞춘다.
       if (Array.isArray(e.dir) && e.dir.length === 3 && e.dir.every((v) => Number.isFinite(Number(v)))) {
@@ -485,6 +509,7 @@ export function normalizeState(raw) {
         name: typeof p.name === 'string' ? p.name : '배관',
         bore: BORES[p.bore] ? p.bore : '100A',
         material: MATERIALS[p.material] ? p.material : 'carbon',
+        conn: p.conn === 'forged' ? 'forged' : 'flange',
         points: p.points.map((pt) => ({ x: num(pt.x, 0), y: Math.max(0, num(pt.y, 0)), z: num(pt.z, 0) })),
       });
     });

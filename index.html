@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=28">
+<link rel="stylesheet" href="./css/style.css?v=29">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -98,6 +98,8 @@
       <div id="dirPad" class="dir-pad">
         <button type="button" class="pad-frame" id="btnFrame" data-frame="me" aria-pressed="true"
                 title="방향 기준: 내 시점(지금 보는 화면) ↔ 도면 축(X·Z 고정)">내 시점 기준</button>
+        <button type="button" class="pad-frame pad-conn" id="btnConn" data-conn="flange" aria-pressed="false"
+                title="연결 방식: 플랜지 ↔ 단조(소켓웰드·나사식) — 이후 배관·부속에 적용">연결 · 플랜지</button>
         <div class="pad-grid">
           <button type="button" class="pad-btn" data-dir="x:-1" title="왼쪽" aria-label="왼쪽">←</button>
           <button type="button" class="pad-btn" data-dir="y:1" title="위" aria-label="위">↑</button>
@@ -232,6 +234,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=28"></script>
+<script type="module" src="./js/main.js?v=29"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=28';
+import { BORES, MATERIALS } from './store.js?v=29';
 
 // ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
 // 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
@@ -110,6 +110,20 @@ const EQUIP_ALIASES = [
   ['유량계', 'flow'], ['플로우미터', 'flow'], ['플로미터', 'flow'], ['유량', 'flow'], ['flowmeter', 'flow'], ['flow', 'flow'],
   ['압력계', 'gauge'], ['온도계', 'gauge'], ['게이지', 'gauge'], ['계기', 'gauge'], ['gauge', 'gauge'],
 ].sort((a, b) => b[0].length - a[0].length);
+
+// ── 연결 방식 명령 ───────────────────────────────────────────────────────────
+// 이후에 놓는 배관·부속의 접합 방식을 바꾼다. (플랜지 = 기본, 단조 = 소켓웰드·나사식)
+const CONN_WORDS = new Map([
+  ['단조', 'forged'], ['단조형', 'forged'], ['단조타입', 'forged'], ['단조모드', 'forged'], ['단조식', 'forged'],
+  ['포지드', 'forged'],
+  ['소켓타입', 'forged'], ['소켓형', 'forged'], ['소켓모드', 'forged'], ['소켓웰드', 'forged'], ['소켓식', 'forged'],
+  ['나사', 'forged'], ['나사식', 'forged'], ['나사타입', 'forged'], ['나사모드', 'forged'], ['나사형', 'forged'],
+  ['플랜지모드', 'flange'], ['플렌지모드', 'flange'], ['플랜지타입', 'flange'], ['플렌지타입', 'flange'],
+  ['플랜지형', 'flange'], ['플렌지형', 'flange'], ['플랜지식', 'flange'], ['플렌지식', 'flange'],
+]);
+
+// 부속 이름 앞에 붙어 그 한 개만 단조형으로 만드는 말 — "단조 볼밸브", "소켓 엘보", "나사 밸브"
+const FORGED_PREFIX = new Set(['단조', '소켓', '나사', '포지드']);
 
 const MATERIAL_ALIASES = [
   ['스테인리스', 'sus'], ['스테인레스', 'sus'], ['스텐', 'sus'], ['sus', 'sus'],
@@ -247,6 +261,7 @@ export function parseCommand(text) {
     for (const [word, id] of MATERIAL_ALIASES) {
       if (t === word) return { raw, t, kind: 'material', material: id };
     }
+    if (CONN_WORDS.has(t)) return { raw, t, kind: 'conn', conn: CONN_WORDS.get(t) };
     const rawLower = String(raw).toLowerCase();
     for (const [word, id] of COMMANDS) {
       if (t === word || rawLower === word) return { raw, t, kind: 'cmd', cmd: id };
@@ -260,6 +275,29 @@ export function parseCommand(text) {
   // 2) 이경 부속(레듀샤·티) 앞뒤 관경 모으기 — "100a에서 50a 레듀샤", "100x50 레듀샤", "100a 티 50a 분기"
   const sized = new Map();
   const consumed = new Set();
+
+  // 2-0) "단조 볼밸브" · "소켓 엘보" · "나사 밸브" — 부속 앞의 단조/소켓/나사는
+  //      모드를 바꾸지 않고 그 한 개 부속만 단조형으로 놓는다.
+  const forgedOnce = new Set();
+  const nextMeaningful = (from) => {
+    for (let j = from + 1; j < items.length; j += 1) {
+      if (items[j].kind === 'cmd') continue;
+      return j;
+    }
+    return -1;
+  };
+  for (let i = 0; i < items.length; i += 1) {
+    const it = items[i];
+    const isPrefix = (it.kind === 'conn' && FORGED_PREFIX.has(it.t))
+      || (it.kind === 'equip' && it.type === 'union' && it.t === '소켓');
+    if (!isPrefix) continue;
+    const j = nextMeaningful(i);
+    if (j < 0 || items[j].kind !== 'equip' || (items[j].type === 'union' && items[j].t === '소켓')) continue;
+    forgedOnce.add(j);
+    consumed.add(i);
+    if (it.kind === 'equip') items[i] = { raw: it.raw, t: it.t, kind: 'conn', conn: 'forged' };
+  }
+
   for (let i = 0; i < items.length; i += 1) {
     const it = items[i];
     if (it.kind !== 'equip' || (it.type !== 'reducer' && it.type !== 'tee')) continue;
@@ -337,13 +375,17 @@ export function parseCommand(text) {
       continue;
     }
     if (it.kind === 'material') { ops.push({ op: 'material', material: it.material }); continue; }
+    if (it.kind === 'conn') { ops.push({ op: 'conn', conn: it.conn }); continue; }
     if (it.kind === 'cmd') {
       if (it.cmd !== 'noop') ops.push({ op: it.cmd });
       continue;
     }
     if (it.kind === 'equip') {
       const s = sized.get(i);
-      ops.push({ op: 'equip', type: it.type, size1: s && s.size1, size2: s && s.size2 });
+      ops.push({
+        op: 'equip', type: it.type, size1: s && s.size1, size2: s && s.size2,
+        ...(forgedOnce.has(i) ? { conn: 'forged' } : {}),
+      });
       continue;
     }
     if (i === verbIdx && connectOp) { ops.push(connectOp); continue; }
@@ -402,6 +444,10 @@ export const CMD_HELP = `
     <li><code>80a 왼쪽 600 아래로 300 뒤로 400</code> — 쉼표·공백 모두 구분자로 씁니다</li>
     <li><code>오른쪽 45도 위 1000</code> · <code>45도 위 1000</code> — 45° 경사 상승 1m (수직 0.71m · 수평 0.71m)</li>
     <li><code>100a에서 50a 레듀샤</code> · <code>100x50 레듀샤</code> — 이경 레듀샤(1차 100A·2차 50A), 다음 배관은 50A로 이어집니다</li>
+    <li><code>단조모드 20a 오른쪽으로 1000 단조 볼밸브 단조 엘보 위로 1000</code> — 이후 부속·배관을 <b>단조형(소켓웰드·나사식)</b>으로: 플랜지 원판 없이 소켓 보스만</li>
+    <li><code>플랜지모드</code> · <code>플렌지모드</code> · <code>플랜지타입</code> · <code>플랜지형</code> — 다시 플랜지 접합으로</li>
+    <li><code>단조모드</code> · <code>단조타입</code> · <code>단조형</code> · <code>소켓타입</code> · <code>나사식</code> — 단조형으로 전환</li>
+    <li><code>단조 볼밸브</code> · <code>소켓 엘보</code> · <code>단조 티</code> · <code>나사 밸브</code> — 앞에 <b>단조·소켓·나사</b>를 붙이면 그 한 개만 단조형</li>
     <li><code>니쁠</code> · <code>45도엘보</code> · <code>캡</code> · <code>유니온</code> · <code>유량계</code> — 지금 위치에 그 부속을 답니다</li>
     <li><code>새배관</code> — 새 배관을 시작합니다 (지금 위치에서)</li>
     <li><code>밸브 하나 달아줘</code> · <code>50미리 위로 좀 올려줘 500</code> — 말하듯 써도 알아듣습니다(군더더기 무시)</li>

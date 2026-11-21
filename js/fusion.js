@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis } from './store.js?v=28';
+import { elbowBasis, dirBasis } from './store.js?v=29';
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기
@@ -16,6 +16,7 @@ export function buildFusionScript(state) {
         type: e.type, name: e.name, x: e.x, y: e.y, z: e.z,
         w: e.w, h: e.h, d: e.d, rot: e.rot,
         bore1: e.bore1 || null, bore2: e.bore2 || null,
+        conn: e.conn === 'forged' ? 'forged' : 'flange',
       };
       // 엘보는 관경과 두 다리 방향을 함께 넘겨야 Fusion에서도 배관과 같은 방향으로 앉는다.
       if (e.type === 'elbow' || e.type === 'elbow45') {
@@ -41,6 +42,7 @@ export function buildFusionScript(state) {
     }),
     pipes: state.pipes.map((p) => ({
       name: p.name, bore: p.bore, material: p.material,
+      conn: p.conn === 'forged' ? 'forged' : 'flange',
       points: p.points.map((pt) => ({ x: pt.x, y: pt.y, z: pt.z })),
     })),
   };
@@ -183,6 +185,33 @@ def local_to_world(e, local):
             e['z'] - lx * s + lz * c)
 
 
+def forged(e):
+    """단조형(소켓웰드·나사식) 접합인가 — 플랜지 원판 대신 소켓 보스를 만든다."""
+    return (e or {}).get('conn') == 'forged'
+
+
+def socket_boss(comp, e, tag, pos, axis, r, sc=(1.0, 1.0, 1.0)):
+    """부속 로컬 접합면(pos)에 소켓 보스 3개 바디를 만든다.
+    axis: 배관이 빠져나가는 바깥 방향(로컬), r: 관·바디 외경 반지름,
+    sc: 부속 배율(가로·높이·폭). 칼라(소켓 몸통) + 육각 조임부 + 가는 목 순서."""
+    made = 0
+    ax = _norm(axis)
+    sxx, syy, szz = sc
+
+    def P(t):
+        return local_to_world(e, ((pos[0] + ax[0] * t) * sxx,
+                                  (pos[1] + ax[1] * t) * syy,
+                                  (pos[2] + ax[2] * t) * szz))
+
+    if add_cylinder(comp, P(-0.024), P(0.026), r * 1.5, tag + '_Socket'):
+        made += 1
+    if add_cylinder(comp, P(0.012), P(0.04), r * 1.62, tag + '_Hex'):
+        made += 1
+    if add_cylinder(comp, P(-0.062), P(-0.032), r * 1.16, tag + '_Neck'):
+        made += 1
+    return made
+
+
 BORES = {
     '15A': 0.0217, '20A': 0.0272, '25A': 0.0340, '32A': 0.0427, '40A': 0.0486,
     '50A': 0.0605, '65A': 0.0763, '80A': 0.0891, '100A': 0.1143, '125A': 0.1398,
@@ -285,9 +314,11 @@ def build_valve(comp, e, tag):
     # 몸체
     if add_cylinder(comp, on_axis(-0.08, 0), on_axis(0.08, 0), 0.085 * rs, tag + '_Body'):
         made += 1
-    # 플랜지 2개
+    # 플랜지 2개 (단조형이면 소켓 보스)
     for sx in (-1, 1):
-        if add_cylinder(comp, on_axis(sx * 0.085, 0), on_axis(sx * 0.125, 0), 0.13 * rs, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (sx * 0.1, 0, 0), (sx, 0, 0), 0.085 * rs)
+        elif add_cylinder(comp, on_axis(sx * 0.085, 0), on_axis(sx * 0.125, 0), 0.13 * rs, tag + '_Flange'):
             made += 1
     # 보닛 + 스템
     if add_cylinder(comp, P(0, 0.04, 0), P(0, 0.32, 0), 0.045 * rs, tag + '_Stem'):
@@ -343,7 +374,9 @@ def build_butterfly(comp, e, tag):
     if add_cylinder(comp, P(-0.05, 0, 0), P(0.05, 0, 0), 0.115 * sx, tag + '_Body'):
         made += 1
     for d in (-1, 1):
-        if add_cylinder(comp, P(d * 0.05, 0, 0), P(d * 0.078, 0, 0), 0.165 * sx, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (d * 0.06, 0, 0), (d, 0, 0), 0.115 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, P(d * 0.05, 0, 0), P(d * 0.078, 0, 0), 0.165 * sx, tag + '_Flange'):
             made += 1
     if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.22, 0), 0.036 * sx, tag + '_Neck'):
         made += 1
@@ -367,7 +400,9 @@ def build_yvalve(comp, e, tag):
     if add_cylinder(comp, P(-0.11, 0, 0), P(0.11, 0, 0), 0.085 * sx, tag + '_Body'):
         made += 1
     for d in (-1, 1):
-        if add_cylinder(comp, P(d * 0.105, 0, 0), P(d * 0.135, 0, 0), 0.135 * sx, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (d * 0.12, 0, 0), (d, 0, 0), 0.085 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, P(d * 0.105, 0, 0), P(d * 0.135, 0, 0), 0.135 * sx, tag + '_Flange'):
             made += 1
     # Y자 경사 분기 (아래·뒤 45도)
     if add_cylinder(comp, P(0, 0, 0), P(-0.02, -0.19, -0.15), 0.062 * sx, tag + '_YBranch'):
@@ -395,7 +430,9 @@ def build_ball(comp, e, tag):
     if add_cylinder(comp, P(-0.075, 0, 0), P(0.075, 0, 0), 0.078 * sx, tag + '_Housing'):
         made += 1
     for d in (-1, 1):
-        if add_cylinder(comp, P(d * 0.09, 0, 0), P(d * 0.115, 0, 0), 0.085 * sx, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (d * 0.1, 0, 0), (d, 0, 0), 0.055 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, P(d * 0.09, 0, 0), P(d * 0.115, 0, 0), 0.085 * sx, tag + '_Flange'):
             made += 1
     if add_cylinder(comp, P(0, 0.06, 0), P(0, 0.13, 0), 0.022 * sx, tag + '_Stem'):
         made += 1
@@ -417,7 +454,9 @@ def build_check(comp, e, tag):
     if add_cylinder(comp, P(-0.03, 0, 0), P(0.03, 0, 0), 0.1 * sx, tag + '_Body'):
         made += 1
     for d in (-1, 1):
-        if add_cylinder(comp, P(d * 0.03, 0, 0), P(d * 0.05, 0, 0), 0.115 * sx, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (d * 0.045, 0, 0), (d, 0, 0), 0.09 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, P(d * 0.03, 0, 0), P(d * 0.05, 0, 0), 0.115 * sx, tag + '_Flange'):
             made += 1
     bs = P(0, 0.09, 0)
     if add_box(comp, bs[0], bs[1], bs[2], 0.1 * sx, 0.05 * sy, 0.06 * sz, rot, tag + '_Boss', e.get('rmat')):
@@ -441,7 +480,9 @@ def build_bellows(comp, e, tag):
         if add_cylinder(comp, P(x - 0.008, 0, 0), P(x + 0.008, 0, 0), 0.118 * sx, tag + '_Convolution'):
             made += 1
     for d in (-1, 1):
-        if add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.032), 0, 0), 0.15 * sx, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (d * L / 2, 0, 0), (d, 0, 0), 0.098 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.032), 0, 0), 0.15 * sx, tag + '_Flange'):
             made += 1
     for dy, dz in ((0.135, 0), (-0.135, 0), (0, 0.135), (0, -0.135)):
         if add_cylinder(comp, P(-L / 2 - 0.02, dy, dz), P(L / 2 + 0.02, dy, dz), 0.011 * sx, tag + '_TieRod'):
@@ -477,6 +518,9 @@ def build_elbow(comp, e, tag):
         made += 1
     if add_cylinder(comp, P(0, R, 0), P(0, R + Ls, 0), r, tag + '_StubY'):
         made += 1
+    if forged(e):
+        made += socket_boss(comp, e, tag, (R + Ls, 0, 0), (1, 0, 0), r)
+        made += socket_boss(comp, e, tag, (0, R + Ls, 0), (0, 1, 0), r)
     return made
 
 
@@ -508,7 +552,11 @@ def build_tee(comp, e, tag):
         made += 1
     if add_cylinder(comp, P(0, 0, 0), P(0, branch, 0), r2, tag + '_Branch'):
         made += 1
-    if add_cylinder(comp, P(0, branch, 0), P(0, branch + 0.03, 0), r2 * 1.4, tag + '_BranchFlange'):
+    if forged(e):
+        made += socket_boss(comp, e, tag, (-L / 2, 0, 0), (-1, 0, 0), r1)
+        made += socket_boss(comp, e, tag, (L / 2, 0, 0), (1, 0, 0), r1)
+        made += socket_boss(comp, e, tag, (0, branch, 0), (0, 1, 0), r2)
+    elif add_cylinder(comp, P(0, branch, 0), P(0, branch + 0.03, 0), r2 * 1.4, tag + '_BranchFlange'):
         made += 1
     return made
 
@@ -539,10 +587,14 @@ def build_reducer(comp, e, tag):
         ra = r1 + (r2 - r1) * (float(i) / steps)
         if add_cylinder(comp, P(xa, 0, 0), P(xb, 0, 0), ra, '%s_Cone%d' % (tag, i + 1)):
             made += 1
-    if add_cylinder(comp, P(-L / 2 - FT, 0, 0), P(-L / 2, 0, 0), r1 * 1.22, tag + '_FlangeBig'):
-        made += 1
-    if add_cylinder(comp, P(L / 2, 0, 0), P(L / 2 + FT, 0, 0), r2 * 1.35, tag + '_FlangeSmall'):
-        made += 1
+    if forged(e):
+        made += socket_boss(comp, e, tag, (-L / 2, 0, 0), (-1, 0, 0), r1)
+        made += socket_boss(comp, e, tag, (L / 2, 0, 0), (1, 0, 0), r2)
+    else:
+        if add_cylinder(comp, P(-L / 2 - FT, 0, 0), P(-L / 2, 0, 0), r1 * 1.22, tag + '_FlangeBig'):
+            made += 1
+        if add_cylinder(comp, P(L / 2, 0, 0), P(L / 2 + FT, 0, 0), r2 * 1.35, tag + '_FlangeSmall'):
+            made += 1
     return made
 
 
@@ -594,6 +646,9 @@ def build_elbow45(comp, e, tag):
         made += 1
     if add_cylinder(comp, P(T * ux, T * uy, 0), P((T + Ls) * ux, (T + Ls) * uy, 0), r, tag + '_Stub45'):
         made += 1
+    if forged(e):
+        made += socket_boss(comp, e, tag, (T + Ls, 0, 0), (1, 0, 0), r)
+        made += socket_boss(comp, e, tag, (T * ux, T * uy, 0), (ux, uy, 0), r)
     return made
 
 
@@ -610,6 +665,8 @@ def build_cap(comp, e, tag):
         made += 1
     if add_cylinder(comp, P(0.018, 0, 0), P(0.05, 0, 0), 0.04 * rs, tag + '_Dome'):
         made += 1
+    if forged(e):
+        made += socket_boss(comp, e, tag, (-0.058, 0, 0), (-1, 0, 0), 0.055 * rs, (sx, sy, sz))
     return made
 
 
@@ -647,7 +704,9 @@ def build_flow(comp, e, tag):
     if add_cylinder(comp, P(-0.09, 0, 0), P(0.09, 0, 0), 0.06 * rs, tag + '_Body'):
         made += 1
     for d in (-1, 1):
-        if add_cylinder(comp, P(d * 0.088, 0, 0), P(d * 0.12, 0, 0), 0.1 * rs, tag + '_Flange'):
+        if forged(e):
+            made += socket_boss(comp, e, tag, (d * 0.1, 0, 0), (d, 0, 0), 0.06 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, P(d * 0.088, 0, 0), P(d * 0.12, 0, 0), 0.1 * rs, tag + '_Flange'):
             made += 1
     if add_cylinder(comp, P(0, 0.04, 0), P(0, 0.16, 0), 0.035 * rs, tag + '_Stem'):
         made += 1
@@ -811,6 +870,18 @@ def build_pipe(comp, p, tag):
         b = (pb['x'] + bis[0] * half, pb['y'] + bis[1] * half, pb['z'] + bis[2] * half)
         if add_cylinder(comp, a, b, radius * 0.98, '%s_Elbow%d' % (tag, i)):
             made += 1
+    # 단조형 배관 — 양 끝단에 플랜지 원판 대신 소켓 보스 바디
+    if p.get('conn') == 'forged':
+        for pt, nb in ((pts[0], pts[1]), (pts[-1], pts[-2])):
+            u = _norm((pt['x'] - nb['x'], pt['y'] - nb['y'], pt['z'] - nb['z']))
+            a = (pt['x'] - u[0] * 0.045, pt['y'] - u[1] * 0.045, pt['z'] - u[2] * 0.045)
+            b = (pt['x'] + u[0] * 0.02, pt['y'] + u[1] * 0.02, pt['z'] + u[2] * 0.02)
+            if add_cylinder(comp, a, b, radius * 1.42, tag + '_Socket'):
+                made += 1
+            a2 = (pt['x'] + u[0] * 0.006, pt['y'] + u[1] * 0.006, pt['z'] + u[2] * 0.006)
+            b2 = (pt['x'] + u[0] * 0.036, pt['y'] + u[1] * 0.036, pt['z'] + u[2] * 0.036)
+            if add_cylinder(comp, a2, b2, radius * 1.56, tag + '_SocketHex'):
+                made += 1
     return made
 
 

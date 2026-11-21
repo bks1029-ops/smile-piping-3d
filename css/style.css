@@ -600,6 +600,12 @@ input[type="color"] {
   text-overflow: ellipsis;
 }
 .pad-frame[data-frame="plan"] { color: #9fc2e8; border-color: #33486a; }
+.pad-frame.pad-conn { color: #b9c2cc; }
+.pad-frame.pad-conn[data-conn="forged"] {
+  color: #ffcf7a;
+  border-color: #6b5327;
+  background: #221c12;
+}
 
 .pad-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
 .pad-btn {

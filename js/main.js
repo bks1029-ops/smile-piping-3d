@@ -5,13 +5,14 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
-} from './store.js?v=28';
-import { buildScene } from './builders.js?v=28';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=28';
-import { buildOBJ } from './obj.js?v=28';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=28';
-import { parseCommand, CMD_HELP } from './cmd.js?v=28';
-import { buildDimItems } from './dims.js?v=28';
+  CONN_MODES, CONN_TYPES, connOf,
+} from './store.js?v=29';
+import { buildScene } from './builders.js?v=29';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=29';
+import { buildOBJ } from './obj.js?v=29';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=29';
+import { parseCommand, CMD_HELP } from './cmd.js?v=29';
+import { buildDimItems } from './dims.js?v=29';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -67,6 +68,8 @@ class App {
     this.cmdCursor = { x: 0, y: 0.5, z: 0 };
     this.cmdBore = '50A';
     this.cmdMaterial = 'carbon';
+    // 연결 방식 — 플랜지(기본) / 단조형(소켓웰드·나사식). 이후 배관·부속에 적용된다.
+    this.cmdConn = 'flange';
     this.cmdRot = 0;
     this.cmdAxis = 'x';
     this.cmdSign = 1;
@@ -107,6 +110,7 @@ class App {
     try { savedFrame = localStorage.getItem('smilePiping3D.dirFrame'); } catch (e) { /* ignore */ }
     this.setDirFrame(savedFrame === 'plan' ? 'plan' : 'me', true);
     this.setPadOpen(true);
+    this.updatePadInfo();
     this.updateMicUi();
 
     const v = new URLSearchParams(location.search).get('view');
@@ -712,6 +716,7 @@ class App {
       body.innerHTML = `
         <label class="field">이름<input type="text" data-f="name" value="${esc(spec.name)}"></label>
         ${this.boreFields(spec)}
+        ${this.connField(spec)}
         <div class="prop-section">위치 (m)</div>
         <div class="prop-grid3">
           <label class="field">X<input type="number" step="0.1" data-f="x" value="${fmt(spec.x)}"></label>
@@ -764,6 +769,7 @@ class App {
             ${Object.keys(MATERIALS).map((m) => `<option value="${m}"${m === spec.material ? ' selected' : ''}>${MATERIALS[m].label}</option>`).join('')}
           </select></label>
         </div>
+        ${this.connField(spec)}
         <div class="pipe-summary">길이 ${fmt(pipeLength(spec.points))} m · 점 ${spec.points.length}개</div>
         <div class="prop-section">포인트 (X / 높이 Y / Z)</div>
         <div class="pt-head"><span>#</span><span>X</span><span>Y</span><span>Z</span><span></span></div>
@@ -802,6 +808,23 @@ class App {
         </div>`;
   }
 
+  // 연결 방식 선택 — 플랜지(기본) ↔ 단조(소켓웰드·나사식).
+  // 몸통이 플랜지로 그려지는 부속과 배관에서만 보여 준다 (플랜지 부속 자체는 항상 플랜지).
+  connField(spec) {
+    if (!spec) return '';
+    const isPipe = spec.kind === 'pipe' || Array.isArray(spec.points);
+    if (!isPipe && (!CONN_TYPES.has(spec.type) || spec.type === 'flange')) return '';
+    const cur = connOf(spec);
+    const opts = Object.keys(CONN_MODES).map((m) =>
+      `<option value="${m}"${m === cur ? ' selected' : ''}>${CONN_MODES[m].label}</option>`).join('');
+    return `
+        <div class="prop-section">연결 방식 (${isPipe ? '배관 끝단' : '접합'})</div>
+        <div class="field-row">
+          <label class="field">연결<select data-f="conn">${opts}</select></label>
+          <label class="field">도면 표시<span class="readonly">${cur === 'forged' ? '단조 · 플랜지 없음' : '플랜지 원판'}</span></label>
+        </div>`;
+  }
+
   updatePipeSummary() {
     const spec = this.getSelectedSpec();
     const el = $('.pipe-summary');
@@ -829,6 +852,7 @@ class App {
         p: { ...this.cmdCursor },
         bore: this.cmdBore,
         material: this.cmdMaterial,
+        conn: this.cmdConn,
         axis: this.cmdAxis,
         sign: this.cmdSign,
         rot: this.cmdRot,
@@ -847,6 +871,7 @@ class App {
     if (u.cur) {
       this.cmdBore = u.cur.bore;
       this.cmdMaterial = u.cur.material;
+      this.cmdConn = u.cur.conn === 'forged' ? 'forged' : 'flange';
       this.cmdAxis = u.cur.axis;
       this.cmdSign = u.cur.sign;
       this.cmdRot = u.cur.rot;
@@ -868,6 +893,7 @@ class App {
       x: Math.round(target.x * 2) / 2,
       y: 0,
       z: Math.round(target.z * 2) / 2,
+      conn: this.cmdConn,
     });
     this.pushUndo(t.label + ' 추가');
     this.state.equipment.push(spec);
@@ -951,6 +977,7 @@ class App {
     this.lastDirV = null;
     this.cmdBore = '50A';
     this.cmdMaterial = 'carbon';
+    this.cmdConn = 'flange';
     this.cmdAxis = 'x';
     this.cmdSign = 1;
     this.cmdRot = 0;
@@ -1141,10 +1168,10 @@ class App {
       material: this.cmdMaterial,
       equipment: this.state.equipment.slice(0, 40).map((e) => ({
         id: e.id, type: e.type, name: e.name, x: e.x, y: e.y, z: e.z, rot: e.rot, w: e.w,
-        bore1: e.bore1 || null, bore2: e.bore2 || null,
+        bore1: e.bore1 || null, bore2: e.bore2 || null, conn: connOf(e),
       })),
       pipes: this.state.pipes.slice(0, 40).map((p) => ({
-        id: p.id, name: p.name, bore: p.bore, material: p.material, points: p.points,
+        id: p.id, name: p.name, bore: p.bore, material: p.material, points: p.points, conn: connOf(p),
       })),
     };
   }
@@ -1176,8 +1203,15 @@ class App {
         if (BORES[o.bore]) OUT.push({ op: 'bore', bore: o.bore });
       } else if (o.op === 'material') {
         if (MATERIALS[o.material]) OUT.push({ op: 'material', material: o.material });
+      } else if (o.op === 'conn') {
+        OUT.push({ op: 'conn', conn: o.conn === 'forged' ? 'forged' : 'flange' });
       } else if (o.op === 'equip') {
-        if (EQUIP_TYPES[o.type]) OUT.push({ op: 'equip', type: o.type, size1: o.bore1, size2: o.bore2 });
+        if (EQUIP_TYPES[o.type]) {
+          OUT.push({
+            op: 'equip', type: o.type, size1: o.bore1, size2: o.bore2,
+            ...(o.conn === 'forged' ? { conn: 'forged' } : {}),
+          });
+        }
       } else if (o.op === 'connect') {
         OUT.push({
           op: 'connect',
@@ -1288,6 +1322,7 @@ class App {
     let cursor = { ...this.cmdCursor };
     let bore = this.cmdBore;
     let material = this.cmdMaterial;
+    let conn = this.cmdConn === 'forged' ? 'forged' : 'flange';
     let rot = this.cmdRot;
     let axis = this.cmdAxis;
     let sign = this.cmdSign;
@@ -1308,7 +1343,7 @@ class App {
         pipeSeq += 1;
         pipes.push(makePipe({
           name: `PL-${String(pipeSeq).padStart(3, '0')} 새 배관`,
-          bore, material, points: pts.slice(),
+          bore, material, conn, points: pts.slice(),
         }));
       }
       pts = null;
@@ -1365,6 +1400,7 @@ class App {
       const spec = makeEquipment(type, {
         name: `${t.short}-${100 + nextEqSeq(type)} ${t.label}`,
         x: cursor.x, y: cursor.y, z: cursor.z, rot,
+        conn,
         ...(dir ? { dir } : {}),
         ...(extra || {}),
       });
@@ -1418,6 +1454,7 @@ class App {
       const op = ops[i];
       if (op.op === 'bore') { bore = op.bore; continue; }
       if (op.op === 'material') { material = op.material; continue; }
+      if (op.op === 'conn') { conn = op.conn === 'forged' ? 'forged' : 'flange'; continue; }
       if (op.op === 'newpipe') { flush(); this.lastDirV = null; prevDir = null; continue; }
       if (op.op === 'seg') {
         const m = op.axis ? this.dirToWorld(op.axis, op.sign) : { axis, sign };
@@ -1478,7 +1515,7 @@ class App {
         pipeSeq += 1;
         pipes.push(makePipe({
           name: `PL-${String(pipeSeq).padStart(3, '0')} 연결`,
-          bore, material, points: path,
+          bore, material, conn, points: path,
         }));
         // 마지막 구간 방향으로 다음 명령을 이어갈 수 있게 방향을 맞춘다.
         const prev = path[path.length - 2] || cursor;
@@ -1507,9 +1544,11 @@ class App {
         }
         const inline = INLINE_TYPES.has(op.type);
         if (inline) flush(); // 부속이 들어가는 자리에서 배관을 끊고, 부속 뒤에서 다시 이어 그린다.
+        // "단조 볼밸브"처럼 부속 앞에 단조/소켓/나사가 붙어 온 부속은 그것만 단조형으로 놓는다.
+        const pieceConn = op.conn === 'forged' ? 'forged' : conn;
         const extra = isElbow
-          ? { bore }
-          : (op.size1 && op.size2 ? { bore1: op.size1, bore2: op.size2 } : {});
+          ? { bore, conn: pieceConn }
+          : (op.size1 && op.size2 ? { bore1: op.size1, bore2: op.size2, conn: pieceConn } : { conn: pieceConn });
         const spec = putEquip(op.type, extra);
         // spec.w = builders.js 메시의 실제 좌우 접합면 폭. 그래서 이 값만큼만 전진시키면 틈이 생기지 않는다.
         const len = inline ? (spec.w || 0) : 0;
@@ -1552,6 +1591,7 @@ class App {
 
     this.cmdBore = bore;
     this.cmdMaterial = material;
+    this.cmdConn = conn;
     this.cmdAxis = axis;
     this.cmdSign = sign;
     this.cmdRot = rot;
@@ -1617,9 +1657,21 @@ class App {
     if (el) {
       const c = this.cmdCursor;
       const mat = (MATERIALS[this.cmdMaterial] || MATERIALS.carbon).label;
-      el.textContent = `${this.cmdBore} · ${mat} · ${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)}m`;
+      const conn = (CONN_MODES[this.cmdConn] || CONN_MODES.flange).label;
+      el.textContent = `${this.cmdBore} · ${conn} · ${mat} · ${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)}m`;
     }
     this.highlightPad();
+  }
+
+  // 연결 방식 전환 — 플랜지(기본) ↔ 단조(소켓웰드·나사식)
+  setCmdConn(mode, quiet) {
+    this.cmdConn = mode === 'forged' ? 'forged' : 'flange';
+    this.updatePadInfo();
+    if (!quiet) {
+      this.toast(this.cmdConn === 'forged'
+        ? '단조형 — 이후 배관·부속을 플랜지 없이 소켓 보스로 그립니다. (단조 볼밸브 · 소켓 엘보)'
+        : '플랜지형 — 이후 배관·부속에 플랜지 원판을 그립니다.');
+    }
   }
 
   // [내 시점 기준] ↔ [도면 축 기준]
@@ -1653,6 +1705,13 @@ class App {
       fr.textContent = this.dirFrame === 'me' ? '내 시점 기준' : '도면 축 기준';
       fr.dataset.frame = this.dirFrame;
       fr.setAttribute('aria-pressed', this.dirFrame === 'me' ? 'true' : 'false');
+    }
+    const cn = $('#btnConn');
+    if (cn) {
+      const forged = this.cmdConn === 'forged';
+      cn.textContent = `연결 · ${forged ? '단조' : '플랜지'}`;
+      cn.dataset.conn = forged ? 'forged' : 'flange';
+      cn.setAttribute('aria-pressed', forged ? 'true' : 'false');
     }
   }
 
@@ -1690,6 +1749,7 @@ class App {
     if (!pad) return;
     $('#cmdPad').addEventListener('click', () => this.setPadOpen(!this.padOpen));
     $('#btnFrame').addEventListener('click', () => this.setDirFrame(this.dirFrame === 'me' ? 'plan' : 'me'));
+    $('#btnConn').addEventListener('click', () => this.setCmdConn(this.cmdConn === 'flange' ? 'forged' : 'flange'));
     $('#pad45').addEventListener('click', () => {
       this.diag45 = !this.diag45;
       this.highlightPad();
