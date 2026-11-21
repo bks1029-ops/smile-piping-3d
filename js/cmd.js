@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=34';
+import { BORES, MATERIALS } from './store.js?v=35';
 
 // ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
 // 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
@@ -89,11 +89,14 @@ const EQUIP_ALIASES = [
   ['제어반', 'panel'], ['mcc', 'panel'], ['panel', 'panel'],
   ['게이트밸브', 'valve'], ['게이트벨브', 'valve'], ['게이트', 'valve'],
   ['밸브', 'valve'], ['벨브', 'valve'], ['valve', 'valve'],
-  ['버터플라이밸브', 'bfly'], ['버터플라이', 'bfly'], ['버터', 'bfly'], ['bfly', 'bfly'],
-  ['경사형체크밸브', 'yvalve'], ['경사밸브', 'yvalve'], ['경사형', 'yvalve'],
-  ['스트레이너', 'yvalve'], ['와이밸브', 'yvalve'], ['y밸브', 'yvalve'], ['yvalve', 'yvalve'],
-  ['볼밸브', 'ball'], ['볼', 'ball'], ['ball', 'ball'],
-  ['체크밸브', 'check'], ['체크', 'check'], ['check', 'check'],
+  ['버터플라이밸브', 'bfly'], ['버터플라이벨브', 'bfly'], ['버터플라이', 'bfly'], ['버터', 'bfly'], ['bfly', 'bfly'],
+  ['경사형체크밸브', 'yvalve'], ['경사형체크벨브', 'yvalve'], ['경사체크밸브', 'yvalve'],
+  ['경사체크벨브', 'yvalve'], ['경사체크', 'yvalve'], ['경사밸브', 'yvalve'], ['경사형', 'yvalve'],
+  ['스트레이너밸브', 'yvalve'], ['스트레이너벨브', 'yvalve'], ['스트레이너', 'yvalve'],
+  ['와이밸브', 'yvalve'], ['와이벨브', 'yvalve'], ['y밸브', 'yvalve'], ['y벨브', 'yvalve'], ['yvalve', 'yvalve'],
+  ['볼밸브', 'ball'], ['볼벨브', 'ball'], ['볼', 'ball'], ['ball', 'ball'],
+  ['체크밸브', 'check'], ['체크벨브', 'check'], ['체크', 'check'], ['check', 'check'],
+  ['스윙체크밸브', 'check'], ['스윙체크벨브', 'check'], ['스윙체크', 'check'],
   ['벨로우즈신축관', 'bellows'], ['벨로우즈', 'bellows'], ['신축관', 'bellows'],
   ['플렉시블조인트', 'bellows'], ['플렉시블', 'bellows'], ['후렉시블', 'bellows'],
   ['휴렉시블', 'bellows'], ['플랙시블', 'bellows'], ['조인트', 'bellows'], ['bellows', 'bellows'],
@@ -110,6 +113,20 @@ const EQUIP_ALIASES = [
   ['유량계', 'flow'], ['플로우미터', 'flow'], ['플로미터', 'flow'], ['유량', 'flow'], ['flowmeter', 'flow'], ['flow', 'flow'],
   ['압력계', 'gauge'], ['온도계', 'gauge'], ['게이지', 'gauge'], ['계기', 'gauge'], ['gauge', 'gauge'],
 ].sort((a, b) => b[0].length - a[0].length);
+
+// 띄어 쓴 부속 이름 — 붙여 쓴 형태와 같은 부속 하나로 합친다. ("볼 벨브" → 볼밸브 1개)
+// 왼쪽: 공백을 지운 낱말들, 오른쪽: 파서가 아는 한 낱말.
+const SPACED_FITTINGS = new Map([
+  ['볼벨브', '볼밸브'], ['볼밸브', '볼밸브'],
+  ['체크벨브', '체크밸브'], ['체크밸브', '체크밸브'],
+  ['게이트벨브', '게이트밸브'], ['게이트밸브', '게이트밸브'],
+  ['버터플라이벨브', '버터플라이밸브'], ['버터플라이밸브', '버터플라이밸브'],
+  ['스윙체크벨브', '스윙체크'], ['스윙체크밸브', '스윙체크'], ['스윙체크', '스윙체크'],
+  ['경사체크벨브', '경사체크'], ['경사체크밸브', '경사체크'], ['경사체크', '경사체크'],
+  ['경사형체크벨브', '경사형체크밸브'], ['경사형체크밸브', '경사형체크밸브'],
+  ['스트레이너벨브', '스트레이너'], ['스트레이너밸브', '스트레이너'],
+  ['와이벨브', '와이밸브'], ['y벨브', 'y밸브'],
+]);
 
 // ── 연결 방식 명령 ───────────────────────────────────────────────────────────
 // 이후에 놓는 배관·부속의 접합 방식을 바꾼다. (플랜지 = 기본, 단조 = 소켓웰드·나사식)
@@ -196,6 +213,27 @@ function tokenize(text) {
     .filter(Boolean);
 }
 
+// 낱말로 흩어진 부속 이름을 하나로 붙인다. 붙인 형태가 아는 부속일 때만 합치므로
+// "볼 1000"처럼 숫자·방향이 섞인 말은 건드리지 않는다.
+function mergeSpacedFittings(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    let hit = null;
+    for (let n = 3; n >= 2; n -= 1) {
+      if (i + n > tokens.length) continue;
+      const key = tokens.slice(i, i + n).join('').toLowerCase();
+      if (SPACED_FITTINGS.has(key)) { hit = { n, word: SPACED_FITTINGS.get(key) }; break; }
+    }
+    if (hit) {
+      out.push(hit.word);
+      i += hit.n - 1;
+    } else {
+      out.push(tokens[i]);
+    }
+  }
+  return out;
+}
+
 function parseLength(token) {
   const m = /^(\d+(?:\.\d+)?)(mm|cm|m|미터|센치미터|센치|미리|밀리|미리미터|밀리미터)?$/i.exec(token);
   if (!m) return null;
@@ -235,7 +273,7 @@ function nextSmallerBore(bore) {
  *    | {op:'newpipe'|'undo'|'reset'|'help'}
  */
 export function parseCommand(text) {
-  const tokens = tokenize(normalizeSpoken(text));
+  const tokens = mergeSpacedFittings(tokenize(normalizeSpoken(text)));
   const unknown = [];
 
   // 1) 토큰 분류
@@ -290,9 +328,10 @@ export function parseCommand(text) {
   // 2-0) "단조 볼밸브" · "소켓 엘보" · "나사 밸브" — 부속 앞의 단조/소켓/나사는
   //      모드를 바꾸지 않고 그 한 개 부속만 단조형으로 놓는다.
   const forgedOnce = new Set();
+  // 관경("단조 25a 볼밸브")은 건너뛰고 그 뒤 부속을 본다.
   const nextMeaningful = (from) => {
     for (let j = from + 1; j < items.length; j += 1) {
-      if (items[j].kind === 'cmd') continue;
+      if (items[j].kind === 'cmd' || items[j].kind === 'bore') continue;
       return j;
     }
     return -1;
@@ -460,6 +499,7 @@ export const CMD_HELP = `
     <li><code>단조모드</code> · <code>단조타입</code> · <code>단조형</code> · <code>소켓타입</code> · <code>나사식</code> — 단조형으로 전환</li>
     <li><code>단조 볼밸브</code> · <code>소켓 엘보</code> · <code>단조 티</code> · <code>나사 밸브</code> — 앞에 <b>단조·소켓·나사</b>를 붙이면 그 한 개만 단조형</li>
     <li><code>니쁠</code> · <code>45도엘보</code> · <code>캡</code> · <code>유니온</code> · <code>유량계</code> — 지금 위치에 그 부속을 답니다</li>
+    <li><code>25a 볼벨브</code> · <code>단조 25a 볼 벨브</code> — 배관 없이 부속부터 바로 답니다(지금 커서·방향, 없으면 오른쪽)</li>
     <li><code>새배관</code> — 새 배관을 시작합니다 (지금 위치에서)</li>
     <li><code>밸브 하나 달아줘</code> · <code>50미리 위로 좀 올려줘 500</code> — 말하듯 써도 알아듣습니다(군더더기 무시)</li>
     <li><code>지워</code> · <code>삭제</code> — 방금 추가한 배관·부속을 지웁니다</li>

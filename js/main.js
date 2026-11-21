@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=34';
-import { buildScene } from './builders.js?v=34';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=34';
-import { buildOBJ } from './obj.js?v=34';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=34';
-import { parseCommand, CMD_HELP } from './cmd.js?v=34';
-import { buildDimItems } from './dims.js?v=34';
+} from './store.js?v=35';
+import { buildScene } from './builders.js?v=35';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=35';
+import { buildOBJ } from './obj.js?v=35';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=35';
+import { parseCommand, CMD_HELP } from './cmd.js?v=35';
+import { buildDimItems } from './dims.js?v=35';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
