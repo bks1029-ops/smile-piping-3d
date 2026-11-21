@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=35';
-import { buildScene } from './builders.js?v=35';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=35';
-import { buildOBJ } from './obj.js?v=35';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=35';
-import { parseCommand, CMD_HELP } from './cmd.js?v=35';
-import { buildDimItems } from './dims.js?v=35';
+} from './store.js?v=36';
+import { buildScene } from './builders.js?v=36';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=36';
+import { buildOBJ } from './obj.js?v=36';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=36';
+import { parseCommand, CMD_HELP } from './cmd.js?v=36';
+import { buildDimItems } from './dims.js?v=36';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -75,6 +75,7 @@ class App {
     this.cmdSign = 1;
     this.cmdMarked = false;
     this.padOpen = false;
+    this.viewbarOpen = false;   // 모바일 보기 바 펼침 상태(기본은 '등각' 1개로 접힘)
     // 방향 기준: 'me' = 지금 보는 화면 기준(기본), 'plan' = 도면 축 기준
     this.dirFrame = 'me';
     this.lastDirV = null;   // 직전에 그린 구간의 진행 방향(단위 벡터) — 명령을 건너 이어서 꺾임을 본다
@@ -110,6 +111,7 @@ class App {
     try { savedFrame = localStorage.getItem('smilePiping3D.dirFrame'); } catch (e) { /* ignore */ }
     this.setDirFrame(savedFrame === 'plan' ? 'plan' : 'me', true);
     this.setPadOpen(true);
+    this.setViewbar(false);   // 모바일 보기 바는 '등각' 1개로 접힌 상태로 시작
     this.updatePadInfo();
     this.updateMicUi();
 
@@ -1639,6 +1641,37 @@ class App {
     this.rebuild();
   }
 
+  // ── 모바일 보기 바: '등각 ▲' 1개로 접혀 있다가, 누르면 위로 펼쳐진다 ────────
+  // 넓은 화면(>860px)은 기존 상단 가로 보기 바 그대로 — 접힘 규칙은 모바일 CSS에만 있다.
+  isMobileLayout() {
+    return window.innerWidth <= 860;
+  }
+
+  setViewbar(open) {
+    const bar = $('#viewbar');
+    this.viewbarOpen = !!open;
+    if (!bar) return;
+    bar.classList.toggle('open', this.viewbarOpen);
+    const iso = bar.querySelector('[data-view="iso"]');
+    if (iso) {
+      if (this.isMobileLayout()) iso.setAttribute('aria-expanded', this.viewbarOpen ? 'true' : 'false');
+      else iso.removeAttribute('aria-expanded');
+    }
+    // 펼친 보기 바는 작은 창처럼 다룬다 — 휴대폰 뒤로가기로 페이지를 나가지 않고 먼저 접힌다.
+    if (this.viewbarOpen) this.syncOverlayEntry();
+    else this.releaseOverlayEntry();
+  }
+
+  // 접힌 보기 바의 [등각]을 누르면 뷰 전환 대신 펼치기만 한다. true를 돌려주면 클릭을 소비한 것.
+  viewbarTap(btn) {
+    const bar = $('#viewbar');
+    if (!bar || !btn || !this.isMobileLayout()) return false;
+    if (bar.classList.contains('open')) return false;   // 펼쳐진 상태의 등각 = 등각 뷰 + 접힘
+    if (btn.dataset.view !== 'iso') return false;
+    this.setViewbar(true);
+    return true;
+  }
+
   // ── 콤팩트 방향 조이스틱 (3×2 D패드) ─────────────────────────
   // 방향을 고르면 그 방향이 강조되고, 명령창에 길이(mm)만 치고 [실행]하면 그 방향으로 그려진다.
   setPadOpen(on) {
@@ -1758,6 +1791,9 @@ class App {
     let maxT = Math.max(m, hr.height - pr.height - m);
     const l = Math.min(Math.max(left, m), maxL);
     // 명령창·보기 바가 있는 아래 띠 위로만 놓는다 — 조이스틱을 끌어도 이들은 가릴 수 없다.
+    // 띠와의 여유는 기본 자리(조이스틱 bottom 58px · 명령창 윗변 52px = 6px)와 같은 6px로 맞춘다.
+    // 보기 바는 모바일에서 오른쪽 '등각' 1개로 줄어 있어 왼쪽 아래(기본 자리)와는 겹치지 않는다.
+    const barGap = 6;
     ['#cmdForm', '#viewbar'].forEach((sel) => {
       const b = $(sel);
       if (!b || b.hidden) return;
@@ -1767,7 +1803,7 @@ class App {
       const by = br.top - hr.top;
       if (by < hr.height / 2) return;   // 위쪽(상단 바)에 있는 것은 아래 띠 장애물이 아니다
       const hOverlap = l < bx + br.width && l + pr.width > bx;
-      if (hOverlap) maxT = Math.min(maxT, by - pr.height - m);
+      if (hOverlap) maxT = Math.min(maxT, by - pr.height - barGap);
     });
     const t = Math.min(Math.max(top, m), Math.max(m, maxT));
     return { left: l, top: t };
@@ -2547,8 +2583,23 @@ class App {
 
   // ── UI 바인딩 ───────────────────────────────────────────
   bindUI() {
-    // 뷰
-    $$('.vbtn[data-view]').forEach((b) => b.addEventListener('click', () => this.setView(b.dataset.view)));
+    // 뷰 — 모바일은 접힌 보기 바의 [등각]을 먼저 펼치고, 뷰를 고르면 다시 접는다.
+    $$('.vbtn[data-view]').forEach((b) => b.addEventListener('click', () => {
+      if (this.viewbarTap(b)) return;
+      this.setView(b.dataset.view);
+      const bar = $('#viewbar');
+      if (bar && bar.classList.contains('open')) this.setViewbar(false);
+    }));
+    // 펼친 보기 바 바깥(3D 화면·명령창 등)을 누르면 접힌다.
+    document.addEventListener('pointerdown', (e) => {
+      const bar = $('#viewbar');
+      if (!bar || !bar.classList.contains('open')) return;
+      if (e.target && e.target.closest && e.target.closest('#viewbar')) return;
+      this.setViewbar(false);
+    }, true);
+    window.addEventListener('resize', () => {
+      if (!this.isMobileLayout() && this.viewbarOpen) this.setViewbar(false);
+    });
     // 치수 표시 토글 (기본 켜짐 · localStorage에 기억)
     const btnDims = $('#btnDims');
     if (btnDims) btnDims.addEventListener('click', () => this.setDims(!this.dimsOn));
@@ -2815,8 +2866,10 @@ class App {
     const modal = $('#modalRoot');
     const props = $('#props');
     const drawer = $('#drawer');
+    const bar = $('#viewbar');
     // 조이스틱은 상시 도구라 뒤로가기로 닫지 않는다.
     return !!((modal && !modal.hidden) || (props && !props.hidden)
+      || (bar && bar.classList.contains('open'))
       || (drawer && drawer.classList.contains('open')));
   }
 
@@ -2843,6 +2896,7 @@ class App {
     this.overlayEntry = false; // 뒤로가기가 우리 항목을 소비했다
     if (!$('#modalRoot').hidden) this.closeModal();
     else if (!$('#props').hidden) this.clearSelection();
+    else if (this.viewbarOpen) this.setViewbar(false);
     else if (this.padOpen) this.setPadOpen(false);
     else if ($('#drawer').classList.contains('open')) this.setDrawerOpen(false);
     // 다른 창이 아직 열려 있으면 항목을 다시 깔아, 다음 뒤로가기도 페이지를 지키게 한다.

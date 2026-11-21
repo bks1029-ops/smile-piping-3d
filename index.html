@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=35">
+<link rel="stylesheet" href="./css/style.css?v=36">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -25,8 +25,9 @@
       </div>
     </div>
 
+    <!-- 보기 바 — 넓은 화면은 가로 한 줄, 모바일은 '등각 ▲' 1개로 접혀 있다가 누르면 위로 펼쳐진다 -->
     <div class="viewbar" id="viewbar">
-      <button class="vbtn active" data-view="iso">등각</button>
+      <button class="vbtn active" data-view="iso" id="btnViewIso">등각<span class="vcaret" aria-hidden="true">▲</span></button>
       <button class="vbtn" data-view="top">위에서</button>
       <button class="vbtn" data-view="front">정면</button>
       <button class="vbtn ghost" data-view="reset">리셋</button>
@@ -242,6 +243,6 @@
 
 <input type="file" id="aiFile" accept="image/*" hidden>
 
-<script type="module" src="./js/main.js?v=35"></script>
+<script type="module" src="./js/main.js?v=36"></script>
 </body>
 </html>

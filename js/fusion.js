@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis } from './store.js?v=35';
+import { elbowBasis, dirBasis } from './store.js?v=36';
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기

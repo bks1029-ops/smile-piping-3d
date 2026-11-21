@@ -81,6 +81,8 @@ html, body {
 .vbtn:hover { color: var(--txt); background: #1b222b; }
 .vbtn.active { background: #2c3542; color: #fff; }
 .vbtn.ghost { color: var(--dim2); }
+/* 모바일 접힘 화살표 — 넓은 화면에서는 쓰지 않는다 */
+.vcaret { display: none; }
 /* 치수 토글 — 켜지면 주황 테두리로 표시 */
 .vbtn.dims { color: var(--dim); }
 .vbtn.dims.active {
@@ -731,23 +733,54 @@ input[type="color"] {
   #topbar { height: 52px; gap: 8px; padding: 0 10px; }
   .brand-text span { display: none; }
   .brand-text strong { font-size: 13px; }
+  /* 보기 바는 오른쪽 아래에 '등각 ▲' 버튼 1개로 접혀 있고, 누르면 나머지가 위로 펼쳐진다.
+     접힌 버튼은 명령창(8~52px) 바로 위 58px — 왼쪽 아래는 조이스틱 자리로 비워 둔다. */
   .viewbar {
     position: fixed;
-    left: 50%;
-    /* 하단은 이제 명령창이 차지한다 — 보기 바는 명령창 바로 위 */
+    left: auto;
+    right: 8px;
     bottom: calc(58px + env(safe-area-inset-bottom));
-    transform: translateX(-50%);
+    transform: none;
     margin: 0;
-    /* left:50%만 주면 shrink-to-fit 이 화면 절반 폭으로 잡혀 버튼 글자가 세로로 쪼개진다. */
-    width: max-content;
-    max-width: calc(100% - 24px);
+    /* 등각(첫 버튼)이 맨 아래에 남고 위에서/정면/리셋/치수가 그 위로 쌓인다 */
+    flex-direction: column-reverse;
+    align-items: stretch;
     flex-wrap: nowrap;
+    gap: 4px;
+    padding: 4px;
+    width: auto;
+    max-width: calc(100% - 16px);
     z-index: 30;
     background: rgba(15, 20, 25, 0.94);
     backdrop-filter: blur(10px);
     box-shadow: var(--shadow);
   }
-  .vbtn { padding: 7px 11px; font-size: 12px; white-space: nowrap; }
+  .viewbar .vbtn { padding: 7px 10px; font-size: 12px; text-align: center; white-space: nowrap; }
+  .viewbar .vcaret {
+    display: inline-block;
+    margin-left: 5px;
+    font-size: 8px;
+    line-height: 1;
+    color: #8d99a6;
+    vertical-align: 1px;
+    transition: transform 0.18s ease;
+  }
+  .viewbar.open .vcaret { transform: rotate(180deg); }
+  /* 접힌 상태 = 등각 1개만. 나머지는 누르기 전까지 자리를 차지하지 않는다 */
+  .viewbar:not(.open) > .vbtn[data-view]:not([data-view="iso"]) { display: none; }
+  .viewbar > .vbtn[data-view="iso"] { min-width: 74px; font-weight: 600; }
+  .viewbar:not(.open) > .vbtn[data-view="iso"] {
+    border: 1px solid #3a4655;
+    background: #18202a;
+    box-shadow: var(--shadow);
+  }
+  .viewbar.open > .vbtn[data-view]:not([data-view="iso"]) {
+    animation: vbSlideUp 0.16s ease-out;
+  }
+  @keyframes vbSlideUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
   .dim-label { font-size: 9.5px; padding: 1px 4px; border-radius: 5px; }
   .top-actions .btn.ghost { display: none; }
   .only-mobile { display: inline-flex; }
@@ -808,13 +841,13 @@ input[type="color"] {
   .cmd-bar .cmd-undo, .cmd-bar .cmd-pad { width: 32px; padding: 0; justify-content: center; }
   .cmd-bar .undo-ico, .cmd-bar .pad-ico { font-size: 15px; }
 
-  /* 콤팩트 조이스틱은 왼쪽 아래 — 명령창(8~52px)·보기 바(58~94px) 위에 둔다.
-     pad bottom 102px 이면 두 띠와 8px 이상 떨어져 절대 겸치지 않는다. */
+  /* 콤팩트 조이스틱은 왼쪽 아래 — 보기 바가 오른쪽 '등각' 1개로 접혀서 아래 띠가 비었다.
+     명령창(8~52px) 바로 왼쪽 위 58px에 붙여 3D 화면을 가장 넓게 쓴다. */
   .dir-pad {
     left: 6px;
     right: auto;
     top: auto;
-    bottom: calc(102px + env(safe-area-inset-bottom));
+    bottom: calc(58px + env(safe-area-inset-bottom));
     width: 152px;
     padding: 5px;
     gap: 3px;
@@ -826,11 +859,6 @@ input[type="color"] {
 }
 
 @media (max-width: 860px) {
-  .viewbar {
-    left: auto;
-    right: 8px;
-    transform: none;
-  }
   .vbtn { padding: 7px 9px; font-size: 11.5px; }
 }
 

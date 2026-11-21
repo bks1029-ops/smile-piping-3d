@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>모바일 390×844 확인 — 보기 바 접힘/펼침 · 조이스틱 자리</title>
+<style>
+  html, body { margin: 0; background: #222; color: #ddd; font: 14px/1.5 -apple-system, sans-serif; }
+  #wrap { display: flex; gap: 16px; padding: 12px; align-items: flex-start; }
+  iframe { width: 390px; height: 844px; border: 2px solid #555; background: #000; }
+  #report { max-width: 560px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  #report b { color: #f5a623; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <iframe id="f" src="./index.html?r=vb36" title="앱"></iframe>
+  <div id="report">측정 중...</div>
+</div>
+<script>
+const f = document.getElementById('f');
+const out = document.getElementById('report');
+
+function rect(w, sel) {
+  const el = w.document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  if (!r.width && !r.height) return { hidden: true, w: 0, h: 0, top: 0, bottom: 0, left: 0, right: 0 };
+  const cs = w.getComputedStyle(el);
+  return {
+    x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+    top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1), left: +r.left.toFixed(1), right: +r.right.toFixed(1),
+    display: cs.display,
+  };
+}
+function overlap(a, b) {
+  if (!a || !b || a.hidden || b.hidden) return { area: 0 };
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return { overlapX: +Math.max(0, w).toFixed(1), overlapY: +Math.max(0, h).toFixed(1),
+           area: +(Math.max(0, w) * Math.max(0, h)).toFixed(1) };
+}
+
+function measure() {
+  const w = f.contentWindow;
+  if (!w || !w.document.querySelector('#viewbar')) return null;
+  const d = w.document;
+  const vh = w.innerHeight;
+  const bar = d.querySelector('#viewbar');
+  const btns = [...bar.querySelectorAll('.vbtn')].map((b) => {
+    const r = b.getBoundingClientRect();
+    return { view: b.dataset.view || 'dims', text: b.textContent.trim(), w: +r.width.toFixed(1),
+             h: +r.height.toFixed(1), top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1),
+             shown: r.width > 0 && r.height > 0 && w.getComputedStyle(b).display !== 'none',
+             active: b.classList.contains('active') };
+  });
+  const pad = rect(w, '#dirPad');
+  const cmd = rect(w, '#cmdForm');
+  const vb = rect(w, '#viewbar');
+  const iso = rect(w, '#btnViewIso');
+  const m = {
+    viewport: { w: w.innerWidth, h: vh },
+    open: bar.classList.contains('open'),
+    shownButtons: btns.filter((b) => b.shown).map((b) => b.text),
+    hiddenButtons: btns.filter((b) => !b.shown).map((b) => b.text),
+    btnCount: btns.length,
+    viewbar: vb, iso, pad, cmd,
+    padBottomY: pad ? +pad.bottom.toFixed(1) : null,
+    cmdTopY: cmd ? +cmd.top.toFixed(1) : null,
+    padGapToCmd: (pad && cmd) ? +(cmd.top - pad.bottom).toFixed(1) : null,
+    padBottomGapToScreen: pad ? +(vh - pad.bottom).toFixed(1) : null,
+    overlapPadCmd: overlap(pad, cmd),
+    overlapPadViewbar: overlap(pad, vb),
+    overlapViewbarCmd: overlap(vb, cmd),
+    isoText: d.querySelector('#btnViewIso').textContent.trim(),
+    ariaExpanded: d.querySelector('#btnViewIso').getAttribute('aria-expanded'),
+    viewActive: [...d.querySelectorAll('.vbtn.active')].map((b) => b.dataset.view),
+    errors: (w.__errors || []).slice(),
+    sheets: [...d.styleSheets].map((s) => (s.href || '').split('/').pop()).join(','),
+    script: (d.querySelector('script[type=module]') || {}).src || '',
+  };
+  window.__m = m;
+  out.innerHTML =
+    '<b>viewport</b> ' + m.viewport.w + '×' + m.viewport.h + '\n'
+    + '<b>open</b> ' + m.open + ' · aria-expanded=' + m.ariaExpanded + '\n'
+    + '<b>보이는 버튼</b> ' + JSON.stringify(m.shownButtons) + '\n'
+    + '<b>숨은 버튼</b> ' + JSON.stringify(m.hiddenButtons) + '\n'
+    + '<b>#viewbar</b> ' + JSON.stringify(vb) + '\n'
+    + '<b>#btnViewIso</b> ' + JSON.stringify(iso) + '\n'
+    + '<b>#dirPad</b> ' + JSON.stringify(pad) + '\n'
+    + '<b>#cmdForm</b> ' + JSON.stringify(cmd) + '\n'
+    + '<b>dirPad∩cmdForm</b> ' + JSON.stringify(m.overlapPadCmd) + '\n'
+    + '<b>dirPad∩viewbar</b> ' + JSON.stringify(m.overlapPadViewbar) + '\n'
+    + '<b>viewbar∩cmdForm</b> ' + JSON.stringify(m.overlapViewbarCmd) + '\n'
+    + '<b>active</b> ' + JSON.stringify(m.viewActive) + '\n'
+    + '<b>errors</b> ' + JSON.stringify(m.errors) + '\n'
+    + '<b>assets</b> ' + m.sheets + ' · ' + m.script.split('/').pop();
+  return m;
+}
+
+f.addEventListener('load', () => {
+  let tries = 0;
+  const t = setInterval(() => {
+    tries++;
+    const w = f.contentWindow;
+    const pad = w.document.querySelector('#dirPad');
+    const bar = w.document.querySelector('#viewbar');
+    if ((pad && bar && pad.getBoundingClientRect().height > 0 && w.innerWidth === 390) || tries > 60) {
+      clearInterval(t);
+      setTimeout(() => {
+        try { measure(); } catch (e) { out.textContent = 'ERR ' + e.message; }
+        // 이후 상태 변화(펼침/접힘)를 계속 반영
+        setInterval(() => { try { measure(); } catch (e) { /* ignore */ } }, 250);
+      }, 900);
+    }
+  }, 150);
+});
+</script>
+</body>
+</html>
