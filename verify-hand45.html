@@ -275,10 +275,11 @@ async function desktop() {
   await H.dragFrom({ ...(app.handAnchor || c3) }, { x: 0, y: 0, z: 1 }, 150);
   await H.setDim(2500);
   const c4 = { ...app.handAnchor };
-  await H.pressWorld(c4);
-  await H.dragFrom({ ...(app.handAnchor || c4) }, { x: S, y: -S, z: 0 }, 140);
   d.querySelector('#btnViewIso').click();
-  await wait(1100);
+  await wait(900);
+  await H.pressWorld(c4);
+  await H.dragFrom({ ...(app.handAnchor || c4) }, { x: 1, y: 0, z: 0 }, 110);
+  await wait(400);
   log.push({
     step: 'C) 스크린샷 장면',
     pipes: app.state.pipes.length,
