@@ -1751,12 +1751,26 @@ class App {
     const pad = $('#dirPad');
     if (!pad) return { left: 0, top: 0 };
     const host = pad.parentElement;
-    const r = host.getBoundingClientRect();
+    const hr = host.getBoundingClientRect();
     const pr = pad.getBoundingClientRect();
     const m = 4;
-    const maxL = Math.max(m, r.width - pr.width - m);
-    const maxT = Math.max(m, r.height - pr.height - m);
-    return { left: Math.min(Math.max(left, m), maxL), top: Math.min(Math.max(top, m), maxT) };
+    const maxL = Math.max(m, hr.width - pr.width - m);
+    let maxT = Math.max(m, hr.height - pr.height - m);
+    const l = Math.min(Math.max(left, m), maxL);
+    // 명령창·보기 바가 있는 아래 띠 위로만 놓는다 — 조이스틱을 끌어도 이들은 가릴 수 없다.
+    ['#cmdForm', '#viewbar'].forEach((sel) => {
+      const b = $(sel);
+      if (!b || b.hidden) return;
+      const br = b.getBoundingClientRect();
+      if (!br.width || !br.height) return;
+      const bx = br.left - hr.left;
+      const by = br.top - hr.top;
+      if (by < hr.height / 2) return;   // 위쪽(상단 바)에 있는 것은 아래 띠 장애물이 아니다
+      const hOverlap = l < bx + br.width && l + pr.width > bx;
+      if (hOverlap) maxT = Math.min(maxT, by - pr.height - m);
+    });
+    const t = Math.min(Math.max(top, m), Math.max(m, maxT));
+    return { left: l, top: t };
   }
 
   // left/top 은 #viewport 기준 px. save=true 면 다음에 열 때도 같은 자리에 둔다.
