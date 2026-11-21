@@ -36,6 +36,16 @@ function harness(frameEl) {
   const w = frameEl.contentWindow;
   const app = w.__app;
   const c = w.document.querySelector('#scene');
+  // 오류가 앱 코드에서 났는지, 캔버스 이벤트를 프로그램으로 만든 탓인지 가려내려고 발생 위치를 모은다.
+  w.__errorDetail = w.__errorDetail || [];
+  w.addEventListener('error', (ev) => {
+    w.__errorDetail.push({
+      message: ev.message,
+      file: String(ev.filename || '').split('/').pop(),
+      line: ev.lineno,
+      stack: (ev.error && ev.error.stack ? String(ev.error.stack).split('\n').slice(0, 3).join(' | ') : null),
+    });
+  });
   const frame = () => new Promise((r) => w.requestAnimationFrame(() => r()));
   const ev = (type, x, y) => c.dispatchEvent(new w.PointerEvent(type, {
     pointerId: 21, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true,
@@ -221,8 +231,9 @@ async function desktop() {
 }
 
 function rectOf(el) {
-  if (!el) return null;
+  if (!el || !el.getBoundingClientRect) return null;
   const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
   return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 }
 
@@ -260,6 +271,8 @@ async function mobile() {
     if (!r.width || !r.height) return null;
     return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
   };
+  const errs = (w.__errors || []).map((e) => String(e));
+  const detail = (w.__errorDetail || []).slice();
   const pad = rectOf2('#dirPad');
   const cmd = rectOf2('#cmdForm');
   const bar = rectOf2('#viewbar');
@@ -269,7 +282,7 @@ async function mobile() {
     step: 'M) 390×844 겹침',
     viewport: [w.innerWidth, w.innerHeight],
     handDimOpen: !!dim,
-    handDimRect: rectOf('#handDim'),
+    handDimRect: rectOf(d.querySelector('#handDim')),
     padCmd: overlap(pad, cmd).area,
     padBar: overlap(pad, bar).area,
     badgeBar: overlap(badge, bar).area,
@@ -280,7 +293,8 @@ async function mobile() {
     dimBar: overlap(dim, bar).area,
     pipes: app.state.pipes.length,
     equip: app.state.equipment.map((e) => e.type),
-    errors: (w.__errors || []).slice(),
+    errors: errs,
+    errorDetail: detail,
   });
   window.__mready = true;
 }
