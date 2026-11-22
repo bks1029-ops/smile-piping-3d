@@ -260,9 +260,13 @@ const fitInfo = (() => {
   const center = box.getCenter(new THREE.Vector3());
   const min = box.min, max = box.max;
   const corners = [];
-  [min.x, max.x].forEach((x) => [min.y, max.y].forEach((y) => [min.z, max.z].forEach((z) => {
-    corners.push(new THREE.Vector3(x, y, z));
-  }))));
+  [min.x, max.x].forEach((x) => {
+    [min.y, max.y].forEach((y) => {
+      [min.z, max.z].forEach((z) => {
+        corners.push(new THREE.Vector3(x, y, z));
+      });
+    });
+  });
   const dir = new THREE.Vector3(1, 0.8, 1.2).normalize();
   const pad = 0.9;   // 화면 가장자리에서 10% 여백
   let dist = Math.max(3, box.getSize(new THREE.Vector3()).length());
