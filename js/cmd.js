@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=50';
+import { BORES, MATERIALS } from './store.js?v=51';
 
 // ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
 // 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
@@ -84,6 +84,8 @@ const EQUIP_ALIASES = [
   ['원심펌프', 'pump'], ['원심', 'pump'], ['펌프', 'pump'], ['pump', 'pump'],
   ['대형원통저장탱크', 'stank'], ['원통저장탱크', 'stank'], ['저장탱크', 'stank'],
   ['원통탱크', 'stank'], ['대형탱크', 'stank'], ['원통', 'stank'], ['stank', 'stank'],
+  ['스팀헤더', 'header'], ['배관헤더', 'header'], ['헤더', 'header'], ['매니폴드', 'header'],
+  ['매니홀드', 'header'], ['분배기', 'header'], ['분배관', 'header'], ['header', 'header'],
   ['사각수조', 'rtank'], ['사각탱크', 'rtank'], ['물탱크', 'rtank'], ['수조', 'rtank'], ['rtank', 'rtank'],
   ['소형탱크', 'tank'], ['드럼', 'tank'], ['탱크', 'tank'], ['tank', 'tank'],
   ['제어반', 'panel'], ['mcc', 'panel'], ['panel', 'panel'],
@@ -97,6 +99,10 @@ const EQUIP_ALIASES = [
   ['볼밸브', 'ball'], ['볼벨브', 'ball'], ['볼', 'ball'], ['ball', 'ball'],
   ['체크밸브', 'check'], ['체크벨브', 'check'], ['체크', 'check'], ['check', 'check'],
   ['스윙체크밸브', 'check'], ['스윙체크벨브', 'check'], ['스윙체크', 'check'],
+  ['안전밸브', 'safety_valve'], ['안전벨브', 'safety_valve'], ['안전변', 'safety_valve'],
+  ['감압밸브', 'safety_valve'], ['감압벨브', 'safety_valve'], ['감압변', 'safety_valve'],
+  ['릴리프밸브', 'safety_valve'], ['릴리프', 'safety_valve'], ['safetyvalve', 'safety_valve'],
+  ['safety_valve', 'safety_valve'],
   ['벨로우즈신축관', 'bellows'], ['벨로우즈', 'bellows'], ['신축관', 'bellows'],
   ['플렉시블조인트', 'bellows'], ['플렉시블', 'bellows'], ['후렉시블', 'bellows'],
   ['휴렉시블', 'bellows'], ['플랙시블', 'bellows'], ['조인트', 'bellows'], ['bellows', 'bellows'],
