@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis } from './store.js?v=51';
+import { elbowBasis, dirBasis, gaugeBasis } from './store.js?v=53';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -49,6 +49,13 @@ export function buildFusionScript(state) {
           const s = Math.sin(th);
           item.rmat = [c, 0, s, 0, 1, 0, -s, 0, c];
         }
+      }
+      // 계기는 다이얼 정면(배관 바깥 법선)으로 축을 잡는다 — 웹앱 gaugeBasis와 같은 행렬.
+      // (니쁠은 로컬 −Z로 배관 중심을 향해 꽂힌다)
+      if (e.type === 'gauge' && Array.isArray(e.normal) && e.normal.length === 3
+          && e.normal.every((v) => Number.isFinite(Number(v)))) {
+        item.normal = e.normal.map((v) => Math.round(v * 1e6) / 1e6);
+        item.rmat = gaugeBasis(e.normal).map((v) => Math.round(v * 1e6) / 1e6);
       }
       // 배관 끝 부속(플랜지·밸브·피팅)은 진행 방향 벡터를 함께 넘긴다 —
       // 웹앱과 같은 축 정렬(수직·좌우·45° 경사)로 Fusion에 놓인다.
@@ -869,20 +876,22 @@ def build_support(comp, e, tag):
 
 
 def build_gauge(comp, e, tag):
-    """압력계·온도계 — 원형 다이얼 + 스템"""
+    """압력계·온도계 — 원형 다이얼 + 배관에 꽂히는 니쁠
+    웹앱과 같은 로컬 규약: 원점 = 배관 외벽 접합점, −Z = 배관 속으로 꽂히는 니쁠(10mm),
+    +Z = 다이얼이 보는 바깥. e.rmat(배관 바깥 법선)이 이 축을 돌린다."""
     made = 0
     sx, sy, sz = _scaled(e, 0.2, 0.34, 0.16)
 
     def P(lx, ly, lz):
         return local_to_world(e, (lx * sx, ly * sy, lz * sz))
 
-    if add_cylinder(comp, P(0, 0, 0), P(0, 0.1, 0), 0.012 * sx, tag + '_Stem'):
+    if add_cylinder(comp, P(0, 0, -0.01), P(0, 0, 0.055), 0.011 * sx, tag + '_Nipple'):
         made += 1
-    if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.13, 0), 0.024 * sx, tag + '_Socket'):
+    if add_cylinder(comp, P(0, 0, 0.055), P(0, 0, 0.081), 0.021 * sx, tag + '_Socket'):
         made += 1
-    if add_cylinder(comp, P(0, 0.2, 0), P(0, 0.2, 0.04), 0.085 * sx, tag + '_Case'):
+    if add_cylinder(comp, P(0, 0, 0.125), P(0, 0, 0.155), 0.082 * sx, tag + '_Case'):
         made += 1
-    if add_cylinder(comp, P(0, 0.2, 0.04), P(0, 0.2, 0.05), 0.076 * sx, tag + '_Dial'):
+    if add_cylinder(comp, P(0, 0, 0.155), P(0, 0, 0.161), 0.072 * sx, tag + '_Dial'):
         made += 1
     return made
 

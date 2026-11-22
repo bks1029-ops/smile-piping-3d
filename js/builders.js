@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, headerBody } from './store.js?v=51';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody } from './store.js?v=53';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -967,7 +967,15 @@ function buildSupport(spec) {
   return g;
 }
 
-// ── 엽력계·온도계 (원형 다이얼 + 스템) ─────────────
+// ── 압력계·온도계 (원형 다이얼 + 꽂히는 니쁠) ────────────────────────────────
+// 로컬 규약 — 배관에 꽂히는 방향을 여기 한 곳에서 정한다(store.js attachGaugeToPipe와 짝):
+//  · 원점(0,0,0) = 배관 외벽에 닿는 접합점
+//  · −Z = 니쁠이 배관 속으로 들어가는 방향 (니쁠 끝이 벽 안 GAUGE_NIP_PEN만큼 꽂힌다)
+//  · +Z = 다이얼이 보는 바깥 방향 (다이얼 중심 z ≈ 0.14) · +Y = 다이얼의 12시
+// buildEquipment가 로컬 +Z를 spec.normal(배관 바깥 법선)에 맞추므로, 니쁠은 언제나
+// 배관 중심을 향해 직각으로 꽂히고 다이얼은 바깥을 정면으로 본다.
+const GAUGE_NIP_LEN = 0.055;   // 외벽 접합점 → 육각 소켓까지 니쁠 길이(m)
+const GAUGE_NIP_PEN = 0.01;    // 니쁠이 배관 벽 안으로 들어가는 깊이(m)
 function buildGauge(spec) {
   const g = new THREE.Group();
   const caseMat = MAT(spec.color, 0.35, 0.55);
@@ -975,21 +983,29 @@ function buildGauge(spec) {
   const faceMat = MAT('#f2f6fa', 0.5, 0.05);
   const dark = MAT('#1e242a', 0.6, 0.3);
 
-  // 스템 · 육각 소켓
-  add(g, cyl(0.012, 0.1, 12), steel, 0, 0.05, 0);
-  add(g, cyl(0.024, 0.03, 6), steel, 0, 0.115, 0);
-  // 옆에서 붙은 계기 — 배관 쪽(−Z)으로 짧은 니쁠을 내밀어 관에 매달린 모양을 만든다
-  if (spec.mount === 'side') add(g, cyl(0.011, 0.14, 10), steel, 0, 0.02, -0.06, Math.PI / 2, 0, 0);
-  // 다이얼 케이스 (면이 +Z 방향)
-  add(g, cyl(0.085, 0.04, 28), caseMat, 0, 0.22, 0, Math.PI / 2, 0, 0);
-  add(g, torus(0.085, 0.011), steel, 0, 0.22, 0.002, 0, 0, 0);
-  add(g, cyl(0.076, 0.006, 28), faceMat, 0, 0.22, 0.023, Math.PI / 2, 0, 0);
-  add(g, cyl(0.055, 0.004, 24), MAT('#dfe7ee', 0.6, 0.05), 0, 0.22, 0.026, Math.PI / 2, 0, 0);
-  // 바늘 · 중심 핀
-  add(g, box(0.06, 0.007, 0.003), dark, 0.012, 0.225, 0.03, 0, 0, -0.5);
-  add(g, cyl(0.008, 0.01, 10), dark, 0, 0.22, 0.03, Math.PI / 2, 0, 0);
+  // 크기 배율 (기본 0.2×0.34×0.16 = 압력계 164mm 다이얼 + 140mm 스탠드오프)
+  const sx = Math.max(0.4, (Number(spec.w) || 0.2) / 0.2);
+  const sy = Math.max(0.4, (Number(spec.h) || 0.34) / 0.34);
+  const sz = Math.max(0.4, (Number(spec.d) || 0.16) / 0.16);
 
-  g.scale.set(spec.w / 0.2, spec.h / 0.34, spec.d / 0.16);
+  // 니쁠 — 벽을 뚫고 들어가는 깊이는 배율과 상관없이 항상 10mm로 맞춘다.
+  const pen = GAUGE_NIP_PEN / sz;
+  const nipLen = GAUGE_NIP_LEN + pen;
+  add(g, cyl(0.011, nipLen, 14), steel, 0, 0, (GAUGE_NIP_LEN - pen) / 2, Math.PI / 2, 0, 0);
+  // 육각 소켓 + 목
+  add(g, cyl(0.021, 0.026, 6), steel, 0, 0, GAUGE_NIP_LEN + 0.013, Math.PI / 2, 0, 0);
+  add(g, cyl(0.013, 0.03, 14), steel, 0, 0, GAUGE_NIP_LEN + 0.041, Math.PI / 2, 0, 0);
+  // 다이얼 케이스 (면이 +Z 바깥을 본다)
+  add(g, cyl(0.082, 0.03, 30), caseMat, 0, 0, 0.14, Math.PI / 2, 0, 0);
+  add(g, torus(0.084, 0.01), steel, 0, 0, 0.156, 0, 0, 0);
+  add(g, cyl(0.072, 0.006, 30), faceMat, 0, 0, 0.158, Math.PI / 2, 0, 0);
+  add(g, cyl(0.05, 0.003, 26), MAT('#dfe7ee', 0.6, 0.05), 0, 0, 0.161, Math.PI / 2, 0, 0);
+  // 바늘 · 중심 핀
+  add(g, box(0.055, 0.006, 0.003), dark, 0.01, 0, 0.164, 0, 0, -0.5);
+  add(g, cyl(0.008, 0.01, 10), dark, 0, 0, 0.166, Math.PI / 2, 0, 0);
+
+  g.scale.set(sx, sy, sz);
+  g.userData.nipple = { len: GAUGE_NIP_LEN, pen: GAUGE_NIP_PEN };   // 검증용
   return g;
 }
 
@@ -1072,7 +1088,17 @@ export function buildEquipment(spec) {
     if (!deg) return;
     g.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), D(deg));
   };
-  if (elbowLike && Array.isArray(spec.inDir) && Array.isArray(spec.outDir)) {
+  if (spec.type === 'gauge' && Array.isArray(spec.normal)) {
+    // 계기 — 다이얼 정면(로컬 +Z)을 배관 외벽 바깥 법선에 맞춘다. 니쁠은 그 반대로 꽂힌다.
+    const b = gaugeBasis(spec.normal);
+    const m = new THREE.Matrix4().set(
+      b[0], b[1], b[2], 0,
+      b[3], b[4], b[5], 0,
+      b[6], b[7], b[8], 0,
+      0, 0, 0, 1,
+    );
+    g.quaternion.setFromRotationMatrix(m);
+  } else if (elbowLike && Array.isArray(spec.inDir) && Array.isArray(spec.outDir)) {
     // 진입·진출 벡터로 두 입구를 배관에 정확히 맞춘다 (XY·YZ·XZ 어느 평면이든)
     const b = elbowBasis(spec.inDir, spec.outDir);
     const m = new THREE.Matrix4().set(

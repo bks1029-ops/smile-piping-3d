@@ -6,14 +6,14 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
-  aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS,
-} from './store.js?v=51';
-import { buildScene } from './builders.js?v=51';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=51';
-import { buildOBJ } from './obj.js?v=51';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=51';
-import { parseCommand, CMD_HELP } from './cmd.js?v=51';
-import { buildDimItems } from './dims.js?v=51';
+  aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
+} from './store.js?v=53';
+import { buildScene } from './builders.js?v=53';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=53';
+import { buildOBJ } from './obj.js?v=53';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=53';
+import { parseCommand, CMD_HELP } from './cmd.js?v=53';
+import { buildDimItems } from './dims.js?v=53';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -1665,6 +1665,7 @@ class App {
       conn: this.cmdConn,
     });
     this.pushUndo(t.label + ' 추가');
+    if (spec.type === 'gauge') attachGaugeToPipe(this.state.pipes, spec);
     this.state.equipment.push(spec);
     this.lastAdded = { kind: 'equipment', id: spec.id };
     this.selection = { kind: 'equipment', id: spec.id };
@@ -2432,6 +2433,10 @@ class App {
     }
     if (pipes.length) this.state.pipes.push(...pipes);
     if (equip.length) this.state.equipment.push(...equip);
+    // 계기는 방금 그린 배관 외벽에 바로 붙인다(니쁠이 배관 중심을 향해 직각으로 꽂힘).
+    equip.forEach((e) => {
+      if (e.type === 'gauge') attachGaugeToPipe(this.state.pipes, e);
+    });
     if (equip.length) this.lastAdded = { kind: 'equipment', id: equip[equip.length - 1].id };
     else if (pipes.length) this.lastAdded = { kind: 'pipe', id: pipes[pipes.length - 1].id };
     // 연속으로 명령을 칠 수 있게 선택은 비워 둔다 (모바일에서 속성 패널이 명령창을 가리는 것 방지)
@@ -3530,6 +3535,7 @@ class App {
     this.rebuild();
     // 보정한 내용을 짧게 알려 준다 — 무엇이 자동으로 바로잡혔는지 보이게.
     const notes = [];
+    if (report.straightened) notes.push(`기운 수직관 ${report.straightened}곳 바로 세움`);
     if (report.stood) notes.push(`수직 배관 밸브 ${report.stood}개 세움`);
     if (report.seated) notes.push(`배관 끝 ${report.seated}곳 헤더 윗면에 맞춤`);
     if (report.lifted) notes.push(`묻힌 부속 ${report.lifted}개 올림`);

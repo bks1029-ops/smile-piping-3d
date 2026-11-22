@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>검증 · 계기 니쁠 밀착 + 수직관 바로 세우기</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f13; color: #dfe6ee;
+    font-family: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', system-ui, sans-serif; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #report { position: fixed; left: 14px; top: 14px; padding: 12px 14px; border-radius: 10px;
+    background: rgba(12, 17, 22, .9); border: 1px solid #24303c; font-size: 12.5px; line-height: 1.55;
+    max-width: 560px; white-space: pre-wrap; }
+  #report b { color: #ffd166; }
+  .ok { color: #7ee2a8; }
+  .bad { color: #ff7b72; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="report">검증 준비 중…</div>
+<script type="importmap">
+{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
+</script>
+<script>
+  window.__errors = window.__errors || [];
+  window.addEventListener('error', (e) => window.__errors.push('error: ' + (e.message || e.error)));
+  window.addEventListener('unhandledrejection', (e) => window.__errors.push('promise: ' + ((e.reason && e.reason.message) || e.reason)));
+  window.addEventListener('load', () => setTimeout(() => {
+    const el = document.getElementById('report');
+    if (el && !window.__verify) el.innerHTML = '<span class="bad">스크립트 오류: ' + window.__errors.join(' | ') + '</span>';
+  }, 1200));
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { aiResultToScene, nearestPipeHit, pipeOuterRadius } from './js/store.js?v=53';
+import { buildScene } from './js/builders.js?v=53';
+import { buildFusionScript } from './js/fusion.js?v=53';
+
+// ── 사용자가 보낸 실제 AI 결과(사진 30698·30700)를 흉내 낸 mock ──────────────
+// 일부러 틀린 값을 넣었다: 수직관 위 끝이 몇 cm 비뚤고, 계기는 rot만 돌아가
+// 니쁠이 배관을 빗나가 허공에 떠 있던 상태.
+const MOCK = {
+  layoutPlan: `1) 적색 스팀 헤더 HDR-101(2.4m × 0.4m)가 바닥 y=0에 눕고 윗면은 1.0m.
+2) 헤더 윗면 x=-0.8에서 80A, x=0에서 150A 수직관이 위로 올라간다(둘 다 위 끝이 살짝 비뚤다).
+3) 위쪽 2.9m에 100A 수평 연결관, 오른쪽 1.8m에 50A 수평 지관.
+4) 수직관 옆·앞에 압력계 4개, 50A 지관 위·옆에 2개.`,
+  equipment: [
+    { type: 'header', name: 'HDR-101 스팀 헤더', x: 0, y: 0, z: 0, w: 2.4, h: 0.4, d: 0.4, rot: 0, color: '#b04a35' },
+    { type: 'bfly', name: 'BF-101 기어 버터플라이', x: 0, y: 2.2, z: 0, bore: '150A', axis: 'y', color: '#1f5fd0' },
+    // 계기 — 자리만 대충 주고 rot은 엉뚱하게(예전 앱이 하던 방식)
+    { type: 'gauge', name: 'PG-101 압력계', x: -0.8, y: 2.3, z: 0.3, rot: 90 },
+    { type: 'gauge', name: 'PG-102 압력계', x: 0.3, y: 2.0, z: 0, rot: 270 },
+    { type: 'gauge', name: 'PG-103 압력계', x: -0.25, y: 2.5, z: 0.02 },
+    { type: 'gauge', name: 'PG-104 압력계', x: 0.05, y: 1.45, z: 0 },
+    { type: 'gauge', name: 'PG-105 압력계', x: 1.9, y: 1.92, z: 0, rot: 90 },
+    { type: 'gauge', name: 'PG-106 압력계', x: 1.9, y: 1.8, z: 0.28 }
+  ],
+  pipes: [
+    { name: '80A 수직 분기', bore: '80A', material: 'carbon', color: '#b04a35',
+      points: [{ x: -0.8, y: 1.0, z: 0 }, { x: -0.74, y: 2.9, z: 0.03 }] },
+    { name: '150A 수직 분기', bore: '150A', material: 'sus',
+      points: [{ x: 0, y: 1.0, z: 0 }, { x: 0.05, y: 3.0, z: -0.02 }] },
+    { name: '100A 상부 연결', bore: '100A', material: 'carbon', color: '#b04a35',
+      points: [{ x: -0.8, y: 2.9, z: 0 }, { x: 0.6, y: 2.9, z: 0 }] },
+    { name: '50A 수평 지관', bore: '50A', material: 'carbon',
+      points: [{ x: 1.2, y: 1.8, z: 0 }, { x: 2.6, y: 1.8, z: 0 }] }
+  ],
+  notes: '적색 헤더 + 80A·150A 수직관, 압력계 6개'
+};
+
+const TILTED = MOCK.pipes.map((p) => {
+  const a = p.points[0];
+  const b = p.points[p.points.length - 1];
+  return { name: p.name, horiz: Math.hypot(b.x - a.x, b.z - a.z), dy: Math.abs(b.y - a.y) };
+});
+
+const { equipment, pipes, report } = aiResultToScene(MOCK);
+const state = { equipment, pipes, floorPlan: { visible: false } };
+
+// ── 렌더러 ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0b0f13');
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 200);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0.2, 2.0, 0);
+camera.position.set(3.1, 2.5, 4.2);
+controls.update();
+
+scene.add(new THREE.HemisphereLight('#dfe9f4', '#1b232b', 0.55));
+const sun = new THREE.DirectionalLight('#fff6e8', 1.6);
+sun.position.set(4, 7, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -8;
+sun.shadow.camera.right = 8;
+sun.shadow.camera.top = 8;
+sun.shadow.camera.bottom = -8;
+scene.add(sun);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshStandardMaterial({ color: '#1a2027', roughness: 0.95, metalness: 0.05 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(40, 40, 0x2b3742, 0x1d262e);
+grid.position.y = 0.002;
+scene.add(grid);
+
+const root = buildScene(state);
+scene.add(root);
+
+// ── 검증 ① 수직관이 바로 섰는지 ─────────────────────────────────────────
+const straight = equipment.length && pipes.map((p) => {
+  const a = p.points[0];
+  const b = p.points[p.points.length - 1];
+  const before = TILTED.find((t) => t.name === p.name) || { horiz: 0 };
+  const wasTilted = before.dy >= 0.3 && before.horiz > 0.02 && before.horiz <= 0.15;
+  return {
+    name: p.name,
+    horizBefore: +before.horiz.toFixed(3),
+    horizAfter: +Math.hypot(b.x - a.x, b.z - a.z).toFixed(3),
+    wasTilted,
+    ok: !wasTilted || Math.hypot(b.x - a.x, b.z - a.z) < 1e-6,
+  };
+});
+
+// ── 검증 ②③ 계기: 데이터 + 실제 메시의 니쁠 끝 ──────────────────────────
+const gauges = equipment.filter((e) => e.type === 'gauge').map((g) => {
+  const hit = nearestPipeHit(pipes, g);
+  const R = pipeOuterRadius(hit.pipe);
+  const obj = root.children.find((o) => o.userData && o.userData.pick && o.userData.pick.id === g.id);
+  let tipDepth = null;
+  let dialDot = null;
+  let tipGap = null;
+  if (obj) {
+    obj.updateWorldMatrix(true, false);
+    // 로컬 니쁠 끝(0, 0, −0.01) — builders.js GAUGE_NIP_PEN
+    const tip = obj.localToWorld(new THREE.Vector3(0, 0, -0.01));
+    const axisDist = Math.hypot(tip.x - hit.px, tip.y - hit.py, tip.z - hit.pz);
+    tipDepth = +(R - axisDist).toFixed(4);
+    // 다이얼 정면(로컬 +Z)이 배관 바깥을 보는지
+    const zAxis = new THREE.Vector3(0, 0, 1).transformDirection(obj.matrixWorld);
+    const out = new THREE.Vector3(g.x - hit.px, g.y - hit.py, g.z - hit.pz).normalize();
+    dialDot = +zAxis.dot(out).toFixed(3);
+    // 원점이 외벽에 닿는지
+    const org = new THREE.Vector3(g.x, g.y, g.z);
+    const axisDist0 = Math.hypot(org.x - hit.px, org.y - hit.py, org.z - hit.pz);
+    tipGap = +(axisDist0 - R).toFixed(4);
+  }
+  return {
+    name: g.name, pos: [g.x, g.y, g.z], normal: g.normal,
+    pipe: hit.pipe.name, R: +R.toFixed(4), tipDepth, tipGap, dialDot,
+    ok: tipDepth != null && tipDepth >= 0.005 && tipDepth <= 0.011
+      && Math.abs(tipGap) < 0.0015 && dialDot > 0.99,
+  };
+});
+
+// ── 검증 ④ Fusion 스크립트에 계기 축·바로 세운 좌표가 들어갔는지 ─────────
+const py = buildFusionScript(state);
+const pyOk = {
+  gaugeNormal: /'normal': build_gauge/.test(py) && /'normal':/.test(py),
+  gaugeNipple: /_Nipple/.test(py),
+};
+
+const errors = window.__errors || [];
+window.__verify = {
+  counts: { equipment: equipment.length, pipes: pipes.length },
+  report, straight, gauges, fusion: pyOk, errors,
+  pipes: pipes.map((p) => ({ name: p.name, first: p.points[0], last: p.points[p.points.length - 1] })),
+};
+
+const pass = (b) => `<span class="${b ? 'ok' : 'bad'}">${b ? 'OK' : '실패'}</span>`;
+const lines = [];
+lines.push(`<b>AI mock → 기하 보정 → 3D</b>  장비 ${equipment.length} · 배관 ${pipes.length}`);
+lines.push(`보정: 기운 수직관 ${report.straightened}곳 · 게기 ${report.gauged}개 · 세움 ${report.stood} · 헤더 윗면 ${report.seated} · 이음 ${report.welded}`);
+straight.forEach((s) => lines.push(s.wasTilted
+  ? `① ${s.name} ${pass(s.ok)}  수평편차 ${s.horizBefore}m → ${s.horizAfter}m`
+  : `① ${s.name}  수직(검사 대상 아님)`));
+gauges.forEach((g) => lines.push(
+  `② ${g.name} ${pass(g.ok)}  ${g.pipe} 니쁠 꽂힘 ${g.tipDepth == null ? '-' : (g.tipDepth * 1000).toFixed(1) + 'mm'}`
+  + ` · 원점 틈 ${g.tipGap == null ? '-' : (g.tipGap * 1000).toFixed(1) + 'mm'} · 다이얼 바깥 ${g.dialDot}`));
+lines.push(`③ Fusion 계기 축 ${pass(!!pyOk.gaugeNormal)} 니쁠 바디 ${pass(!!pyOk.gaugeNipple)}`);
+lines.push(`④ 콘솔 오류 ${errors.length}건 ${pass(errors.length === 0)}`);
+document.getElementById('report').innerHTML = lines.join('\n');
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+});
+
+function tick() {
+  requestAnimationFrame(tick);
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+</script>
+</body>
+</html>

@@ -157,6 +157,28 @@ export function dirBasis(dir) {
   return [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
 }
 
+// 계기 정면(법선 n)에 맞춘 3D 회전행렬 (행 우선 3×3, 각 열 = 로컬 X·Y·Z가 향하는 월드 방향).
+//  · 로컬 +Z = n — 다이얼이 바깥을 정면으로 보고, 니쁠(−Z)은 배관 중심을 향한다.
+//  · 로컬 +Y = 최대한 월드 위쪽 — 다이얼의 12시가 서 있다.
+// dirBasis와 같은 형식이라 Matrix4.set()·Fusion rmat에 그대로 쓴다.
+export function gaugeBasis(normal) {
+  const nrm = (v) => {
+    const l = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0] / l, v[1] / l, v[2] / l];
+  };
+  const z = Array.isArray(normal) && normal.length === 3
+    && normal.every((v) => Number.isFinite(Number(v)))
+    ? nrm([Number(normal[0]), Number(normal[1]), Number(normal[2])]) : [0, 0, 1];
+  if (Math.hypot(z[0], z[1], z[2]) < 1e-6) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  // 수직으로 선 계기(위를 봄)는 월드 Y를 기준으로 못 세우므로 Z를 쓴다.
+  const up = Math.abs(z[1]) > 0.95 ? [0, 0, -1] : [0, 1, 0];
+  let x = [up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]];
+  const xl = Math.hypot(x[0], x[1], x[2]) || 1;
+  x = [x[0] / xl, x[1] / xl, x[2] / xl];
+  const y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+  return [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]];
+}
+
 // 이경 부속(레듀샤·티)의 실제 폭(m). builders.js·fusion.js의 치수식과 같다.
 //  · 레듀샤: 큰 관경에서 작은 관경으로 줄어드는 원뿔 길이 + 양단 플랜지
 //  · 티: 주배관 길이 + 양단 용접 비드
@@ -399,6 +421,12 @@ export function makeEquipment(type, opts) {
   else if (t.vertical) spec.axis = 'y';
   // 옆에서 니쁠로 달린 계기 — builders.js가 연결 니쁠을 그린다
   if (o.mount === 'side') spec.mount = 'side';
+  // 계기 정면 방향(배관 외벽 바깥 단위벡터) — 다이얼이 이쪽을 보고 니쁠은 반대로 꽂힌다.
+  if (Array.isArray(o.normal) && o.normal.length === 3
+    && o.normal.every((v) => Number.isFinite(Number(v)))) {
+    const n = o.normal.map((v) => round3(Number(v)));
+    if (Math.hypot(n[0], n[1], n[2]) > 1e-6) spec.normal = n;
+  }
   // 배관 끝에 붙은 부속은 진행 방향 벡터를 기억한다 — 3D 회전을 이 벡터로 잡아
   // 플랜지 원판·밸브 바디가 어느 방향(수직·좌우·45° 경사)에서도 배관 축에 딱 맞는다.
   if (Array.isArray(o.dir) && o.dir.length === 3 && o.dir.every((v) => Number.isFinite(Number(v)))) {
@@ -624,7 +652,8 @@ export function standOnVerticalPipe(state, spec, radius) {
 // 부속이 헤더·탱크 본체에 묻혔으면 본체 위로 올린다(반복해 다른 본체도 피한다).
 // y는 부속 중심이다 — 세워 놓았으면 배관 방향 길이(w)의 절반이 아래로 내려와 본체를 스친다.
 export function liftOutOfBodies(state, spec) {
-  if (!spec || BODY_LIKE.has(spec.type) || spec.type === 'support') return false;
+  // 계기는 배관 외벽에 붙는 부속이라 본체와 겹쳐도 올리지 않는다(붙인 자리를 지킨다).
+  if (!spec || BODY_LIKE.has(spec.type) || spec.type === 'support' || spec.type === 'gauge') return false;
   const half = spec.axis === 'y'
     ? Math.max(0.02, num(spec.w, 0.1) / 2)
     : Math.max(0.02, num(spec.h, 0.1) / 2);
@@ -654,6 +683,8 @@ export function postProcessAi(state) {
   (state.equipment || []).forEach((spec) => {
     if (liftOutOfBodies(state, spec)) report.lifted += 1;
   });
+  // 마지막에 계기를 배관 외벽에 다시 붙인다 — 세우기·올리기로 배관 자리가 바뀌었을 수 있다.
+  alignGauges(state);
   return report;
 }
 
@@ -702,6 +733,97 @@ export function aiTypeOf(type) {
 const SNAP_WELD = 0.15;   // 배관 연결점 불이기 거리
 const SNAP_VERT = 0.4;    // 수직 배관에 달린 부속으로 보는 거리
 
+// ── 계기(압력계·온도계)를 배관 외벽에 직각으로 밀착 ──────────────────────────
+// builders.js의 buildGauge와 짝을 맞춘 규약:
+//  · 게이지 원점(x, y, z) = 배관 외벽에 닿는 접합점
+//  · 로컬 −Z = 니쁠이 배관 속으로 들어가는 방향 (니쁠 끝이 벽 안 10mm까지 꽂힌다)
+//  · 로컬 +Z = 다이얼이 보는 바깥 방향,  spec.normal 에 이 단위벡터를 저장
+// 그래서 원점을 "배관 위 가장 가까운 점 + 외벽 법선 × 관 반지름"에 두면 니쁠은
+// 어떤 방향(+Z·+X·−X·위)의 배관이든 배관 중심을 향해 수직으로 꽂히고 다이얼은 바깥을 본다.
+export const GAUGE_REACH = 0.9;   // 계기를 붙일 가장 먼 거리(m)
+const GAUGE_AXES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+// 배관 외벽 반지름(보온 자켓 포함) — builders.js buildPipe의 r과 같은 식
+export function pipeOuterRadius(pipe) {
+  const bore = BORES[pipe && pipe.bore] || BORES['100A'];
+  const mat = MATERIALS[pipe && pipe.material] || MATERIALS.carbon;
+  return bore.od / 2 + (mat.jacket || 0);
+}
+
+// 점에서 가장 가까운 배관 구간 위의 점 — { dist, px, py, pz, dir, pipe }
+// dir은 그 구간의 단위 진행 벡터다(계기를 꽂을 방향을 정할 때 축을 가려내는 데 쓴다).
+export function nearestPipeHit(pipes, point) {
+  let best = null;
+  (pipes || []).forEach((pipe) => {
+    const pts = (pipe && pipe.points) || [];
+    for (let i = 1; i < pts.length; i += 1) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z;
+      const L2 = vx * vx + vy * vy + vz * vz;
+      if (L2 < 1e-9) continue;
+      let t = ((point.x - a.x) * vx + (point.y - a.y) * vy + (point.z - a.z) * vz) / L2;
+      t = Math.max(0, Math.min(1, t));
+      const px = a.x + vx * t, py = a.y + vy * t, pz = a.z + vz * t;
+      const dist = Math.hypot(point.x - px, point.y - py, point.z - pz);
+      if (!best || dist < best.dist) {
+        const L = Math.sqrt(L2);
+        best = { dist, px, py, pz, dir: { x: vx / L, y: vy / L, z: vz / L }, pipe };
+      }
+    }
+  });
+  return best;
+}
+
+// 계기가 배관에서 빠져나갈 방향(다이얼 정면) — 배관 축에 수직인 6축 중,
+// 지금 계기가 놓인 쪽에 가장 가까운 축으로 스냅한다(대각선으로 비뚤게 달지 않게).
+// 배관 중심에 그대로 놓였으면 수직관은 +Z(정면), 수평관은 +Y(위)로 단다.
+export function gaugeNormalAt(spec, hit) {
+  const d = hit.dir;
+  let rx = spec.x - hit.px;
+  let ry = spec.y - hit.py;
+  let rz = spec.z - hit.pz;
+  const along = rx * d.x + ry * d.y + rz * d.z;
+  rx -= d.x * along;
+  ry -= d.y * along;
+  rz -= d.z * along;
+  const len = Math.hypot(rx, ry, rz);
+  if (len < 0.08) return Math.abs(d.y) > 0.7 ? [0, 0, 1] : [0, 1, 0];
+  let best = null;
+  let bestDot = -2;
+  GAUGE_AXES.forEach((a) => {
+    const para = a[0] * d.x + a[1] * d.y + a[2] * d.z;
+    if (Math.abs(para) > 0.55) return;   // 배관과 나란한 축이면 니쁠이 배관을 스쳐 지나간다
+    const dot = (rx * a[0] + ry * a[1] + rz * a[2]) / len;
+    if (dot > bestDot + 1e-9) { bestDot = dot; best = a; }
+  });
+  return best || (Math.abs(d.y) > 0.7 ? [0, 0, 1] : [0, 1, 0]);
+}
+
+// 계기 하나를 가장 가까운 배관 외벽에 직각으로 붙인다. 붙일 배관이 없으면 false.
+export function attachGaugeToPipe(pipes, spec) {
+  if (!spec || spec.type !== 'gauge') return false;
+  const hit = nearestPipeHit(pipes, spec);
+  if (!hit || hit.dist > GAUGE_REACH) return false;
+  const n = gaugeNormalAt(spec, hit);
+  const r = pipeOuterRadius(hit.pipe);
+  spec.x = round3(hit.px + n[0] * r);
+  spec.y = round3(Math.max(0.02, hit.py + n[1] * r));
+  spec.z = round3(hit.pz + n[2] * r);
+  spec.normal = [n[0], n[1], n[2]];
+  spec.mount = 'side';   // 니쁠로 배관에 붙은 계기 (예전 저장분 호환)
+  return true;
+}
+
+// 씬의 모든 계기를 배관에 다시 붙인다 — AI 배치 직후·명령으로 계기를 달았을 때
+export function alignGauges(state) {
+  let n = 0;
+  ((state && state.equipment) || []).forEach((spec) => {
+    if (spec && spec.type === 'gauge' && attachGaugeToPipe((state && state.pipes) || [], spec)) n += 1;
+  });
+  return n;
+}
+
 export function sanitizeAiScene(raw) {
   const src = raw || {};
   const equipment = (Array.isArray(src.equipment) ? src.equipment : [])
@@ -720,7 +842,7 @@ export function sanitizeAiScene(raw) {
       name: p.name || `배관 ${i + 1}`,
       points: p.points.map((q) => ({ x: num(q.x, 0), y: Math.max(0, num(q.y, 0)), z: num(q.z, 0) })),
     }));
-  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0 };
+  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0 };
   const bodies = equipment
     .map((e) => ({ spec: e, body: equipBody(e) }))
     .filter((b) => b.body && (b.spec.type === 'header' || b.spec.type === 'tank'
@@ -735,6 +857,24 @@ export function sanitizeAiScene(raw) {
     });
     return top;
   };
+
+  // ⓪ 살짝 기운 수직관 바로 세우기 — AI가 수직관 위 끝의 (x, z)를 아래 끝과 몇 cm 다르게
+  //    뽑아 배관이 비스듬히 기우는 경우가 있다(사진 30698의 768mm 80A). 수직 성분이
+  //    지배적이고(0.3m 이상) 수평 편차가 0.15m 이내인 미세 기울기는 아래 (x, z)에 맞춰
+  //    완전 수직으로 만든다. 이 배관에 붙은 밸브·게이지는 아래 ③⑤가 새 좌표로 다시 맞춘다.
+  pipes.forEach((p) => {
+    const pts = p.points;
+    for (let i = 1; i < pts.length; i += 1) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (Math.abs(b.y - a.y) < 0.3) continue;
+      const horiz = Math.hypot(b.x - a.x, b.z - a.z);
+      if (horiz < 1e-6 || horiz > 0.15) continue;
+      b.x = a.x;
+      b.z = a.z;
+      report.straightened += 1;
+    }
+  });
 
   // ① 수직 배관 끝을 본체 윗면에 앉히기
   pipes.forEach((p) => {
@@ -829,38 +969,12 @@ export function sanitizeAiScene(raw) {
     }
   });
 
-  // ⑤ 수직 배관 옆 압력계 — 관 외벽 바깥으로 비켜 세우고, 다이얼은 관 반대쪽을 보게
+  // ⑤ 계기(압력계·온도계) — 가장 가까운 배관 외벽에 니쁠을 직각으로 꽂는다.
+  //    수직관이든 수평관이든 같은 규칙: 원점 = 배관 위 가장 가까운 점 + 외벽 법선 × 반지름.
+  //    (예전에는 수직관 옆 계기만 손봤고, rot만 돌려 니쁠이 옆으로 빗나가 허공에 떴다)
   equipment.forEach((e) => {
     if (e.type !== 'gauge') return;
-    let best = null;
-    let bestD = SNAP_VERT;
-    pipes.forEach((p) => {
-      const pts = p.points;
-      for (let i = 1; i < pts.length; i += 1) {
-        const a = pts[i - 1];
-        const b = pts[i];
-        const dy = Math.abs(b.y - a.y);
-        if (dy < 0.3) continue;
-        if (dy <= Math.abs(b.x - a.x) + Math.abs(b.z - a.z)) continue;
-        if (e.y < Math.min(a.y, b.y) - 0.3 || e.y > Math.max(a.y, b.y) + 0.3) continue;
-        const d = Math.hypot(e.x - a.x, e.z - a.z);
-        if (d <= bestD) { bestD = d; best = { x: a.x, z: a.z, bore: p.bore }; }
-      }
-    });
-    if (!best) return;
-    // 배관 중심에서 벗어날 방향 — 이미 기운 방향을 살리고, 정중앙이면 +Z
-    let dx = e.x - best.x;
-    let dz = e.z - best.z;
-    const len = Math.hypot(dx, dz);
-    if (len < 0.05) { dx = 0; dz = 1; } else { dx /= len; dz /= len; }
-    const off = boreOd(best.bore) / 2 + 0.11;
-    e.x = round3(best.x + dx * off);
-    e.z = round3(best.z + dz * off);
-    // 다이얼이 관 바깥(사람 쪽)을 보게 돌린다 — 세워 않은 계기가 관을 등지는 모양을 괴한다.
-    e.rot = dz >= 0 && Math.abs(dz) >= Math.abs(dx) ? 0 : (dx > 0 ? 90 : 270);
-    if (dz < -0.5) e.rot = 180;
-    e.mount = 'side';   // 옆에서 니쁠로 붙은 계기 — builders.js가 연결 니쁠을 그린다
-    report.gauged += 1;
+    if (attachGaugeToPipe(pipes, e)) report.gauged += 1;
   });
 
   return { equipment, pipes, report, layoutPlan: typeof src.layoutPlan === 'string' ? src.layoutPlan : '' };
@@ -879,7 +993,7 @@ export function aiResultToScene(result) {
         w: e.w, h: e.h, d: e.d,
         rot: e.rot, color: e.color,
         bore: e.bore, bore1: e.bore1, bore2: e.bore2,
-        axis: e.axis, conn: e.conn, mount: e.mount,
+        axis: e.axis, conn: e.conn, mount: e.mount, normal: e.normal,
       });
       // 계기는 배관 관경과 상관없이 알아보기 좋은 크기로 그린다.
       if (spec.type === 'gauge') {
@@ -1024,6 +1138,8 @@ export function sampleScene() {
     ]),
   );
 
+  // 샘플의 압력계도 배관 외벽에 직각으로 붙인다(니쁠이 배관 중심을 향하게).
+  alignGauges(s);
   return s;
 }
 
@@ -1078,6 +1194,12 @@ export function normalizeState(raw) {
       if (AXIS_VALUES.has(e.axis)) item.axis = e.axis;
       else if (t.vertical) item.axis = 'y';
       if (e.mount === 'side') item.mount = 'side';
+      // 계기 정면 방향(배관 외벽 바깥)도 살린다 — 열이 열리면 니쁠이 다시 빗나간다.
+      if (type === 'gauge' && Array.isArray(e.normal) && e.normal.length === 3
+        && e.normal.every((v) => Number.isFinite(Number(v)))) {
+        const n = e.normal.map((v) => round3(Number(v)));
+        if (Math.hypot(n[0], n[1], n[2]) > 1e-6) item.normal = n;
+      }
       // 진행 방향 벡터(배관 축)가 저장돼 있으면 그대로 살려 3D 회전을 다시 맞춘다.
       if (Array.isArray(e.dir) && e.dir.length === 3 && e.dir.every((v) => Number.isFinite(Number(v)))) {
         const d = e.dir.map((v) => round3(Number(v)));
@@ -1137,6 +1259,10 @@ export function normalizeState(raw) {
     x: num(f.x, 0),
     z: num(f.z, 0),
   };
+  // 계기는 배관 외벽에 직각으로 붙는다 — normal이 없는 예전 도면은 배관에서 방향을 다시 잡는다.
+  s.equipment.forEach((e) => {
+    if (e.type === 'gauge' && !e.normal) attachGaugeToPipe(s.pipes, e);
+  });
   return s;
 }
 
