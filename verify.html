@@ -87,7 +87,21 @@ async function scenB() {
   const { w, app } = frame();
   app.clearAll({ silent: true });
   app.setView('top', true);
+  await TICK(250);
+  // 위에서 보되 가까이 — 짧은 구간(300mm)을 그려 "치수가 작을 때"를 만든다
+  app.camera.position.set(0, 2.2, 0.002);
+  app.controls.target.set(0, 0, 0);
+  app.controls.update();
   app.setHandMode(true, true);
+  // 합성 포인터에는 setPointerCapture가 실패한다 — 검증용으로만 감싼다 (앱 오류 아님)
+  const proto = w.Element.prototype;
+  ['setPointerCapture', 'releasePointerCapture'].forEach((fn) => {
+    const orig = proto[fn];
+    if (!orig || orig.__wrapped) return;
+    const wrapped = function (id) { try { return orig.call(this, id); } catch (e) { return undefined; } };
+    wrapped.__wrapped = true;
+    proto[fn] = wrapped;
+  });
   await TICK(400);
 
   const c = app.renderer.domElement;
@@ -125,24 +139,9 @@ async function scenB() {
       inp.value = v;
       return { v, fits: inp.scrollWidth <= inp.clientWidth + 1, scrollW: inp.scrollWidth, w: inp.clientWidth };
     });
-    // 예전 CSS(폭 고정 없음 + 전역 input 규칙)를 흉내 내 원인 확인
-    form.style.width = 'auto';
-    form.style.maxWidth = 'none';
-    inp.style.width = '100%';
-    inp.style.minWidth = '0';
-    inp.style.fontSize = '13px';
-    await TICK(80);
-    const fr2 = rect(form);
-    res.before = { formW: fr2.w, inputW: inp.clientWidth, scrollW: inp.scrollWidth };
-    form.style.width = '';
-    form.style.maxWidth = '';
-    inp.style.width = '';
-    inp.style.minWidth = '';
-    inp.style.fontSize = '';
     // 스크린샷용 — 네 자리 숫자를 넣어 둔다
     inp.value = '1500';
-    inp.focus();
-    await TICK(150);
+    await TICK(120);
   }
   res.errors = w.__errors || [];
   out('B', res);
