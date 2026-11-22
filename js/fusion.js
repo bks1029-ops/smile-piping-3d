@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis } from './store.js?v=41';
+import { elbowBasis, dirBasis } from './store.js?v=42';
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기
@@ -300,31 +300,35 @@ def build_panel(comp, e, tag):
 
 
 def build_valve(comp, e, tag):
+    """게이트밸브 — 몸체·플랜지·스템·핸드휠.
+    기본 치수(0.264 × 0.58 × 0.3)는 100A 배관 기준이라, sx = 몸체 지름·면간거리(관경 비례),
+    sy = 스템·핸들 높이(대구경에서 덜 솟게) 로 나눠 배율을 잡는다. 웹앱 builders.js와 같은 비율."""
     made = 0
-    sw = e.get('w', 0.34) / 0.34
-    sh = e.get('h', 0.55) / 0.58
-    rs = (sw + sh) / 2.0
+    sx = e.get('w', 0.264) / 0.264
+    sy = e.get('h', 0.58) / 0.58
+    sz = e.get('d', 0.3) / 0.3
+
     def P(lx, ly, lz):
         # local_to_world 가 장비 회전(rot)을 적용하므로 로컬 좌표로 전달한다
-        return local_to_world(e, (lx, ly, lz))
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
 
     def on_axis(dist, ly):
         return P(dist, ly, 0)
 
     # 몸체
-    if add_cylinder(comp, on_axis(-0.08, 0), on_axis(0.08, 0), 0.085 * rs, tag + '_Body'):
+    if add_cylinder(comp, on_axis(-0.08, 0), on_axis(0.08, 0), 0.085 * sx, tag + '_Body'):
         made += 1
     # 플랜지 2개 (단조형이면 소켓 보스)
-    for sx in (-1, 1):
+    for d in (-1, 1):
         if forged(e):
-            made += socket_boss(comp, e, tag, (sx * 0.1, 0, 0), (sx, 0, 0), 0.085 * rs)
-        elif add_cylinder(comp, on_axis(sx * 0.085, 0), on_axis(sx * 0.125, 0), 0.13 * rs, tag + '_Flange'):
+            made += socket_boss(comp, e, tag, (d * 0.1, 0, 0), (d, 0, 0), 0.085 * sx, (sx, sy, sz))
+        elif add_cylinder(comp, on_axis(d * 0.085, 0), on_axis(d * 0.125, 0), 0.13 * sx, tag + '_Flange'):
             made += 1
     # 보닛 + 스템
-    if add_cylinder(comp, P(0, 0.04, 0), P(0, 0.32, 0), 0.045 * rs, tag + '_Stem'):
+    if add_cylinder(comp, P(0, 0.04, 0), P(0, 0.32, 0), 0.045 * sx, tag + '_Stem'):
         made += 1
     # 핸드휠 (원판)
-    if add_cylinder(comp, P(0, 0.38, 0), P(0, 0.41, 0), 0.17 * rs, tag + '_Handwheel'):
+    if add_cylinder(comp, P(0, 0.38, 0), P(0, 0.41, 0), 0.17 * sx, tag + '_Handwheel'):
         made += 1
     return made
 
@@ -365,7 +369,7 @@ def build_vpump(comp, e, tag):
 def build_butterfly(comp, e, tag):
     """기어식 버터플라이 밸브 — 웨이퍼 바디 · 볼트 플랜지 · 기어박스 · 핸드휠"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.34, 0.46, 0.32)
+    sx, sy, sz = _scaled(e, 0.174, 0.46, 0.32)
     rot = e.get('rot', 0)
 
     def P(lx, ly, lz):
@@ -391,7 +395,7 @@ def build_butterfly(comp, e, tag):
 def build_yvalve(comp, e, tag):
     """경사형(Y자) 체크·스트레이너 — Y 분기 바디 + 상하 플랜지 + 핸드휠"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.36, 0.5, 0.34)
+    sx, sy, sz = _scaled(e, 0.296, 0.5, 0.34)
     rot = e.get('rot', 0)
 
     def P(lx, ly, lz):
@@ -419,7 +423,7 @@ def build_yvalve(comp, e, tag):
 def build_ball(comp, e, tag):
     """볼밸브 — 바디 + 레버 핸들"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.26, 0.34, 0.24)
+    sx, sy, sz = _scaled(e, 0.234, 0.34, 0.24)
     rot = e.get('rot', 0)
 
     def P(lx, ly, lz):
@@ -445,7 +449,7 @@ def build_ball(comp, e, tag):
 def build_check(comp, e, tag):
     """체크밸브 — 웨이퍼 · 스윙 바디"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.24, 0.26, 0.22)
+    sx, sy, sz = _scaled(e, 0.108, 0.26, 0.22)
     rot = e.get('rot', 0)
 
     def P(lx, ly, lz):
@@ -467,7 +471,7 @@ def build_check(comp, e, tag):
 def build_bellows(comp, e, tag):
     """벨로우즈 신축관 — 주름 원통 + 양단 플랜지 + 타이로드"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.38, 0.34, 0.34)
+    sx, sy, sz = _scaled(e, 0.304, 0.34, 0.34)
 
     def P(lx, ly, lz):
         return local_to_world(e, (lx * sx, ly * sy, lz * sz))
@@ -720,7 +724,7 @@ def build_flow(comp, e, tag):
 def build_flange(comp, e, tag):
     """플랜지 — 볼트링 원판 + 볼트 8개"""
     made = 0
-    sx, sy, sz = _scaled(e, 0.14, 0.26, 0.26)
+    sx, sy, sz = _scaled(e, 0.06, 0.26, 0.26)
 
     def P(lx, ly, lz):
         return local_to_world(e, (lx * sx, ly * sy, lz * sz))

@@ -225,11 +225,16 @@ html, body {
 /* ── 방금 그은 구간의 치수(mm) 입력 — 배관 위에 붙는 작은 팝업 ── */
 .hand-dim {
   position: absolute;
-  z-index: 14;
+  z-index: 27;
   transform: translate(-50%, -100%);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  /* left가 화면 오른쪽에 가까우면 shrink-to-fit이 폭을 잘라 숫자칸이 0으로 줄었다 —
+     내용 폭을 그대로 쓰고, 넘칠 때만 화면 폭 안으로 제한한다. */
+  width: max-content;
+  max-width: calc(100% - 12px);
+  flex: 0 0 auto;
   padding: 4px 4px 4px 8px;
   background: rgba(9, 27, 21, 0.95);
   border: 1px solid rgba(61, 220, 151, 0.55);
@@ -253,21 +258,28 @@ html, body {
   transform: rotate(45deg);
   pointer-events: none;
 }
-.hand-dim-input {
-  width: 70px;
-  padding: 2px 4px;
+/* 입력칸 — 3~5자리(180 · 1500 · 12000)가 언제나 다 보이도록 고정 폭·최소 폭을 잡는다.
+   (전역 input[type="number"] 규칙보다 세게 잡으려고 두 단계 선택자를 쓴다: width:100%·min-width:0에 먹히지 않게) */
+.hand-dim .hand-dim-input {
+  width: 92px;
+  min-width: 92px;
+  flex: 0 0 auto;
+  padding: 3px 7px;
   font: inherit;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  color: #06251b;
-  background: #d8ffe9;
-  border: 1px solid rgba(61, 220, 151, 0.6);
+  color: #04231a;
+  background: #e6fff2;
+  border: 1px solid rgba(61, 220, 151, 0.8);
   border-radius: 6px;
   outline: none;
 }
-.hand-dim-input:focus { border-color: #5ce1a2; box-shadow: 0 0 0 2px rgba(92, 225, 162, 0.3); }
+.hand-dim .hand-dim-input:focus { border-color: #5ce1a2; box-shadow: 0 0 0 2px rgba(92, 225, 162, 0.35); }
+/* 숫자 입력칸의 위·아래 화살표가 폭을 잡아먹지 않게 (숫자는 직접 친다) */
+.hand-dim .hand-dim-input::-webkit-outer-spin-button,
+.hand-dim .hand-dim-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .hand-dim-unit { font-size: 11px; font-weight: 700; color: #9fe8c4; }
 .hand-dim-ok {
   padding: 3px 9px;

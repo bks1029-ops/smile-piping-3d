@@ -58,6 +58,46 @@ export function boreOd(bore) {
   return (BORES[bore] || BORES['100A']).od;
 }
 
+// ── 밸브·피팅 크기 — 달린 배관 관경에 비례 ──────────────────────────────────
+// EQUIP_TYPES의 밸브·피팅 기본 w/h/d는 100A(외경 114.3mm) 배관에 달린 치수다.
+// 25A 배관에 25A 볼밸브를 달면 외경비만큼 작아져야 배관 굵기와 어울린다.
+export const SIZE_REF_BORE = '100A';
+
+// 관경을 따라 크기가 바뀌는 부속 — 밸브류 + 배관에 인라인으로 물리는 피팅·계기
+export const BORE_SIZED_TYPES = new Set([
+  'valve', 'bfly', 'yvalve', 'ball', 'check',        // 밸브
+  'bellows', 'nipple', 'cap', 'union', 'flange',     // 피팅
+  'flow',                                            // 유량계
+]);
+
+export function isBoreSized(type) {
+  return BORE_SIZED_TYPES.has(type);
+}
+
+// 관경 → 크기 배율
+export function boreScale(bore) {
+  const r = boreOd(bore) / boreOd(SIZE_REF_BORE);
+  // plan : 몸체 지름·플랜지·면간거리 — 배관 외경에 정비례해 배관과 맞물린다
+  //        (25A 볼밸브 = 100A의 0.30배, 200A = 1.89배)
+  // rise : 스템·핸들 높이 — 대구경에서 사람 키만큼 솟지 않도록 외경비의 0.65제곱
+  //        (100A 0.58m → 25A 0.26m · 200A 0.88m · 600A 1.72m, 실제 현장 밸브와 비슷한 키)
+  return { plan: r, rise: Math.pow(r, 0.65) };
+}
+
+// 관경이 바뀐 부속의 몸체·핸들 크기를 새 관경 비율로 다시 잡는다.
+// (엘보·레듀샤·티는 각자 관경으로 치수를 뽑으므로 여기서 다루지 않는다)
+export function applyBoreSize(spec) {
+  const t = spec && EQUIP_TYPES[spec.type];
+  if (!t || !isBoreSized(spec.type)) return spec;
+  const bore = BORES[spec.bore] ? spec.bore : SIZE_REF_BORE;
+  const bs = boreScale(bore);
+  spec.bore = bore;
+  spec.w = round3(t.defaults.w * bs.plan);
+  spec.h = round3(t.defaults.h * bs.rise);
+  spec.d = round3(t.defaults.d * bs.plan);
+  return spec;
+}
+
 // ── 엘보(90°·45°) 치수 — 관경 외경에서 그대로 뽑는다 ─────────────────────────
 // r   : 배관 외경 반지름 (= 엘보 관 반지름, 배관과 같은 굵기로 앉는다)
 // R   : 곡률 반경 (긴 반경 엘보 = 1.5D, D = 외경)
@@ -269,20 +309,27 @@ export function uid(prefix) {
 export function makeEquipment(type, opts) {
   const t = EQUIP_TYPES[type] || EQUIP_TYPES.tank;
   const o = opts || {};
+  // 밸브·피팅은 달린 배관 관경을 기억하고, 그 외경에 비례해 몸체·핸들 크기를 잡는다.
+  const sized = isBoreSized(type);
+  const bore = sized
+    ? (BORES[o.bore] ? o.bore : (BORES[o.bore1] ? o.bore1 : SIZE_REF_BORE))
+    : null;
+  const bs = bore ? boreScale(bore) : null;
   const spec = {
     id: uid('e'),
     kind: 'equipment',
     type,
     name: o.name || t.label,
     x: num(o.x, 0), y: num(o.y, 0), z: num(o.z, 0),
-    w: num(o.w, t.defaults.w),
-    h: num(o.h, t.defaults.h),
-    d: num(o.d, t.defaults.d),
+    w: num(o.w, bs ? round3(t.defaults.w * bs.plan) : t.defaults.w),
+    h: num(o.h, bs ? round3(t.defaults.h * bs.rise) : t.defaults.h),
+    d: num(o.d, bs ? round3(t.defaults.d * bs.plan) : t.defaults.d),
     rot: num(o.rot, 0),
     color: o.color || t.color,
     // 연결 방식 — 플랜지(기본) / 단조형(소켓웰드·나사식). 기존 호출은 플랜지로 남는다.
     conn: o.conn === 'forged' ? 'forged' : 'flange',
   };
+  if (bore) spec.bore = bore;
   // 배관 끝에 붙은 부속은 진행 방향 벡터를 기억한다 — 3D 회전을 이 벡터로 잡아
   // 플랜지 원판·밸브 바디가 어느 방향(수직·좌우·45° 경사)에서도 배관 축에 딱 맞는다.
   if (Array.isArray(o.dir) && o.dir.length === 3 && o.dir.every((v) => Number.isFinite(Number(v)))) {
@@ -359,11 +406,10 @@ export function sampleScene() {
     equip('tank', 'D-101 드럼', -5.7, 0.4, 0.6, 0.9, 0.6),
   ];
 
-  // 매니폴드 게이트밸브 (하부 헤더 y=0.95, z=1.6 위에 인라인 배치)
+  // 매니폴드 게이트밸브 (하부 헤더 y=0.95, z=1.6 위에 인라인 배치) — 150A 헤더 굵기에 맞춘 크기
   [-2.6, -0.9, 0.8, 2.5].forEach((x, i) => {
     s.equipment.push(makeEquipment('valve', {
-      name: 'GV-' + (101 + i) + ' 게이트밸브', x, y: 0.95, z: 1.6,
-      w: 0.34, h: 0.58, d: 0.3,
+      name: 'GV-' + (101 + i) + ' 게이트밸브', x, y: 0.95, z: 1.6, bore: '150A',
     }));
   });
 
@@ -412,8 +458,8 @@ export function sampleScene() {
     [5.4, HDR_Y + elbowDims('elbow', '80A').face, HDR_Z], [5.4, 2.1, HDR_Z],
   ]));
 
-  const inline = (type, name, x) =>
-    makeEquipment(type, { name, x, y: HDR_Y, z: HDR_Z });
+  const inline = (type, name, x, extra) =>
+    makeEquipment(type, { name, x, y: HDR_Y, z: HDR_Z, bore: '80A', ...(extra || {}) });
 
   s.equipment.push(
     inline('bfly', 'BF-101 기어 버터플라이', -4.4),
@@ -421,8 +467,8 @@ export function sampleScene() {
     inline('ball', 'BV-101 볼밸브', -2.0),
     inline('check', 'CV-101 체크밸브', -0.9),
     inline('bellows', 'EJ-101 벨로우즈 신축관', 0.4),
-    inline('tee', 'TE-101 티 분기', 1.8),
-    inline('reducer', 'RD-101 레듀샤 80A→50A', 3.0),
+    inline('tee', 'TE-101 티 분기', 1.8, { bore1: '80A', bore2: '80A' }),
+    inline('reducer', 'RD-101 레듀샤 80A→50A', 3.0, { bore1: '80A', bore2: '50A' }),
     inline('flange', 'FL-101 플랜지', 4.2),
     makeEquipment('elbow', {
       name: 'EL-101 90° 엘보', x: 5.4, y: HDR_Y, z: HDR_Z, bore: '80A',
@@ -454,6 +500,26 @@ export function sampleScene() {
   return s;
 }
 
+// 부속 자리에서 0.6m 안에 있는 가장 가까운 배관의 관경 (없으면 null)
+function nearestBore(state, item) {
+  let best = null;
+  let bestD = 0.6;
+  state.pipes.forEach((p) => {
+    const pts = p.points || [];
+    for (let i = 1; i < pts.length; i += 1) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z;
+      const L2 = vx * vx + vy * vy + vz * vz;
+      let t = L2 > 1e-9 ? ((item.x - a.x) * vx + (item.y - a.y) * vy + (item.z - a.z) * vz) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(item.x - (a.x + vx * t), item.y - (a.y + vy * t), item.z - (a.z + vz * t));
+      if (d <= bestD) { bestD = d; best = p.bore; }
+    }
+  });
+  return best;
+}
+
 // 불러온 JSON을 안전한 형태로 정리
 export function normalizeState(raw) {
   const s = emptyState();
@@ -463,19 +529,24 @@ export function normalizeState(raw) {
     raw.equipment.forEach((e) => {
       const type = EQUIP_TYPES[e && e.type] ? e.type : 'tank';
       const t = EQUIP_TYPES[type];
+      // 밸브·피팅은 관경에 비례해 크기가 작아질 수 있으므로 하한을 낮게 둔다 (25A 볼밸브 폭 0.07m).
+      const floor = isBoreSized(type) ? 0.01 : 0.1;
       const item = {
         id: e.id || uid('e'),
         kind: 'equipment',
         type,
         name: typeof e.name === 'string' ? e.name : t.label,
         x: num(e.x, 0), y: Math.max(0, num(e.y, 0)), z: num(e.z, 0),
-        w: Math.max(0.1, num(e.w, t.defaults.w)),
-        h: Math.max(0.1, num(e.h, t.defaults.h)),
-        d: Math.max(0.1, num(e.d, t.defaults.d)),
+        w: Math.max(floor, num(e.w, t.defaults.w)),
+        h: Math.max(floor, num(e.h, t.defaults.h)),
+        d: Math.max(floor, num(e.d, t.defaults.d)),
         rot: num(e.rot, 0),
         color: /^#[0-9a-f]{6}$/i.test(e.color || '') ? e.color : t.color,
         conn: e.conn === 'forged' ? 'forged' : 'flange',
       };
+      // 밸브·피팅이 달린 배관 관경 — 저장된 값을 살린다.
+      // (예전 도면은 관경을 기억하지 않으므로 비워 두고, 아래에서 붙어 있는 배관을 보고 채운다)
+      if (isBoreSized(type) && BORES[e.bore]) item.bore = e.bore;
       // 진행 방향 벡터(배관 축)가 저장돼 있으면 그대로 살려 3D 회전을 다시 맞춘다.
       if (Array.isArray(e.dir) && e.dir.length === 3 && e.dir.every((v) => Number.isFinite(Number(v)))) {
         const d = e.dir.map((v) => round3(Number(v)));
@@ -514,6 +585,15 @@ export function normalizeState(raw) {
       });
     });
   }
+  // ── 예전 도면 살리기 — 관경을 모르던 밸브·피팅은 붙어 있는 배관 관경으로 크기를 다시 맞춘다.
+  // (2026-11-22 이전 저장분은 모두 100A 크기로 그려져 25A 배관 위에서 터무니없이 컸다)
+  s.equipment.forEach((e) => {
+    if (!isBoreSized(e.type) || e.bore) return;
+    const near = nearestBore(s, e);
+    if (near) { e.bore = near; applyBoreSize(e); }
+    else e.bore = SIZE_REF_BORE;
+  });
+
   const f = raw.floorPlan || {};
   s.floorPlan = {
     src: typeof f.src === 'string' && f.src.startsWith('data:image') ? f.src : null,

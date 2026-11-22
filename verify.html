@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>검증 — 밸브 관경 비례 · 손 그리기 치수 창</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #101418; color: #dfe7ee; font: 12px/1.4 -apple-system, "Malgun Gothic", sans-serif; }
+  #stage { display: block; width: 390px; height: 844px; border: 0; background: #0b0f13; }
+  #report { margin: 0; padding: 8px 10px; white-space: pre-wrap; font: 11px/1.35 ui-monospace, monospace; color: #9fe8c4; width: 640px; }
+</style>
+</head>
+<body>
+<iframe id="stage" src="./index.html?v=42&verify=1" width="390" height="844" title="앱"></iframe>
+<pre id="report">loading…</pre>
+<script>
+const TICK = (ms) => new Promise((r) => setTimeout(r, ms || 120));
+const out = (label, data) => {
+  const el = document.getElementById('report');
+  el.textContent = el.textContent.replace('loading…', '') + '\n' + label + ' ' + JSON.stringify(data, null, 0);
+};
+
+function frame() {
+  const f = document.getElementById('stage');
+  return { f, w: f.contentWindow, app: f.contentWindow.__app };
+}
+
+// 3D 그룹의 실제 화면 밖 크기(m) — 메시 꼭짓점을 월드로 옮겨 잰다
+function bboxOf(w, group) {
+  const V = w.__app.camera.position.constructor;
+  const v = new V();
+  const min = [1e9, 1e9, 1e9];
+  const max = [-1e9, -1e9, -1e9];
+  group.updateMatrixWorld(true);
+  const box = { };
+  group.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    const g = o.geometry;
+    if (!g.boundingBox) g.computeBoundingBox();
+    const bb = g.boundingBox;
+    if (!bb) return;
+    [bb.min.x, bb.max.x].forEach((x) => [bb.min.y, bb.max.y].forEach((y) => [bb.min.z, bb.max.z].forEach((z) => {
+      v.set(x, y, z).applyMatrix4(o.matrixWorld);
+      min[0] = Math.min(min[0], v.x); min[1] = Math.min(min[1], v.y); min[2] = Math.min(min[2], v.z);
+      max[0] = Math.max(max[0], v.x); max[1] = Math.max(max[1], v.y); max[2] = Math.max(max[2], v.z);
+    })));
+  });
+  box.min = min.map((n) => Math.round(n * 1000) / 1000);
+  box.max = max.map((n) => Math.round(n * 1000) / 1000);
+  box.size = [0, 1, 2].map((i) => Math.round((max[i] - min[i]) * 1000) / 1000);
+  return box;
+}
+
+// ── A. 관경별 볼밸브 크기 ───────────────────────────────────────────────
+window.__verifyA = async function () {
+  const { w, app } = frame();
+  const t0 = (w.__errors || []).length;
+  app.clearAll({ silent: true });
+  await TICK(150);
+
+  const rows = [['25A', -1.7], ['100A', 0], ['200A', 1.7]];
+  rows.forEach(([bore, z]) => {
+    app.setCmdCursor({ x: -2.4, y: 0.75, z }, true);
+    app.runCommandLine(bore.toLowerCase() + ' 볼벨브 오른쪽 2500');
+  });
+  app.clearSelection();
+  app.setView('iso', true);
+  await TICK(500);
+
+  const OD = { '15A': 21.7, '20A': 27.2, '25A': 34.0, '32A': 42.7, '40A': 48.6, '50A': 60.5, '65A': 76.3, '80A': 89.1, '100A': 114.3, '125A': 139.8, '150A': 165.2, '200A': 216.3, '250A': 267.4, '300A': 318.5, '600A': 609.6 };
+  const res = { test: 'A', valves: [] };
+  app.state.equipment.filter((e) => e.type === 'ball').forEach((e) => {
+    const g = app.root.children.find((c) => c.userData && c.userData.pick && c.userData.pick.id === e.id);
+    const box = g ? bboxOf(w, g) : null;
+    const pipe = app.state.pipes.find((p) => Math.abs(p.points[0].y - e.y) < 0.02 && Math.abs(p.points[0].z - e.z) < 0.02);
+    const od = (pipe && OD[pipe.bore]) || 0;
+    res.valves.push({
+      bore: e.bore, size: box ? box.size : null,
+      pipe: pipe ? pipe.bore : null, pipeOdMm: od,
+      // 배관 외경 대비 밸브 세로·가로 비율 (배관과 어울리는지)
+      raiserRatio: box && od ? Math.round((box.size[1] * 1000 / od) * 100) / 100 : null,
+      lengthRatio: box && od ? Math.round((box.size[0] * 1000 / od) * 100) / 100 : null,
+      w: e.w, h: e.h, d: e.d,
+    });
+  });
+  res.errors = (w.__errors || []).slice(t0);
+  out('A', res);
+  return res;
+};
+
+// ── B. 손 그리기 치수 창 ────────────────────────────────────────────────
+window.__verifyB = async function () {
+  const { f, w, app } = frame();
+  app.clearAll({ silent: true });
+  app.setView('top', true);
+  app.setHandMode(true, true);
+  await TICK(300);
+
+  const c = app.renderer.domElement;
+  const r = c.getBoundingClientRect();
+  const PE = w.PointerEvent;
+  const ev = (type, x, y) => new PE(type, {
+    clientX: r.left + x, clientY: r.top + y, pointerId: 9,
+    pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true,
+  });
+  // 화면 오른쪽 가장자리 가까이에서 짧게 끈다 — 예전에는 이 자리에서 숫자칸이 잘렸다.
+  c.dispatchEvent(ev('pointerdown', 300, 430));
+  c.dispatchEvent(ev('pointermove', 350, 430));
+  c.dispatchEvent(ev('pointerup', 350, 430));
+  await TICK(250);
+
+  const form = w.document.querySelector('#handDim');
+  const inp = w.document.querySelector('#handDimInput');
+  const doc = w.document;
+  const rct = (el) => { const b = el.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), w: Math.round(b.width), h: Math.round(b.height) }; };
+  const inter = (a, b) => {
+    const x = Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l));
+    const y = Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+    return Math.round(x * y);
+  };
+
+  const res = { test: 'B', open: form && !form.hidden, valueNow: inp ? inp.value : null };
+  if (form && !form.hidden && inp) {
+    // 5자리(12000)까지 넣어 본다
+    inp.value = '12000';
+    const cs = w.getComputedStyle(inp);
+    const fr = rct(form);
+    const pads = ['#dirPad', '#cmdForm', '#viewbar'].map((sel) => {
+      const el = doc.querySelector(sel);
+      return el && !el.hidden && el.getBoundingClientRect().width ? inter(fr, rct(el)) : 0;
+    });
+    res.now = {
+      form: fr, inputW: inp.clientWidth, inputScrollW: inp.scrollWidth,
+      inputFits: inp.scrollWidth <= inp.clientWidth + 1,
+      fontSize: cs.fontSize, color: cs.color, bg: cs.backgroundColor,
+      inView: fr.l >= 0 && fr.t >= 0 && fr.r <= 390 && fr.b <= 844,
+      overlap: pads, overlapTotal: pads.reduce((a, b) => a + b, 0),
+    };
+    // 예전 CSS(폭 고정 없음 + 전역 input[type=number] 규칙)를 흉내 내 원인을 확인한다.
+    form.style.width = 'auto';
+    form.style.maxWidth = 'none';
+    inp.style.width = '100%';
+    inp.style.minWidth = '0';
+    inp.style.fontSize = '13px';
+    await TICK(60);
+    const fr2 = rct(form);
+    res.before = { formW: fr2.w, inputW: inp.clientWidth, inputScrollW: inp.scrollWidth, inputFits: inp.scrollWidth <= inp.clientWidth + 1 };
+    form.style.width = '';
+    form.style.maxWidth = '';
+    inp.style.width = '';
+    inp.style.minWidth = '';
+    inp.style.fontSize = '';
+    inp.value = '12000';
+    await TICK(80);
+    res.after = { inputW: inp.clientWidth, inputScrollW: inp.scrollWidth, formW: rct(form).w };
+  }
+  res.errors = (w.__errors || []).slice();
+  out('B', res);
+  return res;
+};
+
+// 준비되면 앱을 띄운다
+window.__ready = (async () => {
+  const f = document.getElementById('stage');
+  for (let i = 0; i < 120; i += 1) {
+    if (f.contentWindow && f.contentWindow.__app && f.contentWindow.__app.root) break;
+    await TICK(100);
+  }
+  await TICK(200);
+  out('ready', { ok: !!(f.contentWindow && f.contentWindow.__app) });
+})();
+</script>
+</body>
+</html>

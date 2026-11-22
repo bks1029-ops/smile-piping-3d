@@ -5,14 +5,14 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
-  CONN_MODES, CONN_TYPES, connOf,
-} from './store.js?v=41';
-import { buildScene } from './builders.js?v=41';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=41';
-import { buildOBJ } from './obj.js?v=41';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=41';
-import { parseCommand, CMD_HELP } from './cmd.js?v=41';
-import { buildDimItems } from './dims.js?v=41';
+  CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
+} from './store.js?v=42';
+import { buildScene } from './builders.js?v=42';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=42';
+import { buildOBJ } from './obj.js?v=42';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=42';
+import { parseCommand, CMD_HELP } from './cmd.js?v=42';
+import { buildDimItems } from './dims.js?v=42';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -29,6 +29,11 @@ const KEY_MODEL_MIGRATED = 'smilePiping3D.geminiModelMigrated';
 const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const fmt = (n) => String(Math.round(Number(n) * 100) / 100);
+// 부속 크기는 25A에서 0.07m까지 작아진다 — 소수 셋째 자리까지 보여 준다.
+const fmtSize = (n) => String(Math.round(Number(n) * 1000) / 1000);
+// 밸브·피팅은 작은 값도 다루므로 입력칸 눈금·하한을 낮춘다.
+const sizeStep = (spec) => (isBoreSized(spec && spec.type) ? 0.005 : 0.1);
+const sizeMin = (spec) => (isBoreSized(spec && spec.type) ? 0.01 : 0.1);
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -400,6 +405,15 @@ class App {
     input.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') { ev.preventDefault(); this.closeHandDim(); }
     });
+    // 휴대폰 키보드가 올라오거나 화면을 확대해 보이는 영역이 줄면,
+    // 숫자칸이 키보드에 가려지지 않게 보이는 자리로 다시 밀어 넣는다.
+    const vv = window.visualViewport;
+    if (vv) {
+      const keep = () => { if (this.handDimItem) this.positionHandDim(); };
+      vv.addEventListener('resize', keep);
+      vv.addEventListener('scroll', keep);
+    }
+    window.addEventListener('scroll', () => { if (this.handDimItem) this.positionHandDim(); }, { passive: true });
   }
 
   setHandMode(on, quiet) {
@@ -770,13 +784,21 @@ class App {
     if (!rect.width || !rect.height) return;
     const s = this.projectToScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 }, rect);
     if (!s) return;
-    const w = form.offsetWidth || 150;
-    const h = form.offsetHeight || 34;
-    const x = Math.max(w / 2 + 6, Math.min(rect.width - w / 2 - 6, s.x));
+    const w = form.offsetWidth || 176;
+    const h = form.offsetHeight || 36;
+    // 지금 눈에 보이는 영역 — 휴대폰 키보드가 올라오면 visualViewport가 줄어든다.
+    // 캔버스 로컬 좌표(치수 창이 놓이는 좌표계)로 환산해 그 안에만 앉힌다.
+    const vv = window.visualViewport;
+    const viewL = vv ? Math.max(0, vv.offsetLeft - rect.left) : 0;
+    const viewT = vv ? Math.max(0, vv.offsetTop - rect.top) : 0;
+    const viewR = vv ? Math.min(rect.width, vv.offsetLeft + vv.width - rect.left) : rect.width;
+    const viewB = vv ? Math.min(rect.height, vv.offsetTop + vv.height - rect.top) : rect.height;
+    const pad = 6;
+    const x = Math.max(viewL + w / 2 + pad, Math.min(viewR - w / 2 - pad, s.x));
     const x0 = x - w / 2;
     const x1 = x + w / 2;
-    // 조이스틱·명령창·보기 바와 겹치는지 — 겹치는 자리는 피한다.
-    const hits = (top) => ['#dirPad', '#cmdForm', '#viewbar'].some((sel) => {
+    // 조이스틱·명령창·보기 바·손 그리기 배지와 겹치는지 — 겹치는 자리는 피한다.
+    const hits = (top) => ['#dirPad', '#cmdForm', '#viewbar', '#handBadge'].some((sel) => {
       const el = $(sel);
       if (!el || el.hidden) return false;
       const br = el.getBoundingClientRect();
@@ -785,12 +807,13 @@ class App {
       const t = br.top - rect.top;
       return x0 < l + br.width && x1 > l && top < t + br.height && top + h > t;
     });
+    const fits = (top) => top >= viewT + pad && top + h <= viewB - pad;
     const above = s.y - 14 - h;   // 배관 위 (상자 아래변이 배관에서 14px 위)
     const below = s.y + 24;       // 배관 아래
     let top = above;
-    if (above < 6 || hits(above)) {
-      if (below + h < rect.height - 6 && !hits(below)) top = below;
-      else top = Math.max(6, Math.min(rect.height - h - 6, above));
+    if (!fits(above) || hits(above)) {
+      if (fits(below) && !hits(below)) top = below;
+      else top = Math.max(viewT + pad, Math.min(viewB - h - pad, above));
     }
     form.style.left = `${Math.round(x)}px`;
     form.style.top = `${Math.round(top + h)}px`;   // CSS가 translate(-50%, -100%)라 아래변 기준
@@ -1385,9 +1408,9 @@ class App {
     : '회전값(도)으로만 놓인 엘보입니다. 배관을 이어 그리면 방향이 자동으로 맞춰집니다.'}</p>` : ''}
         <div class="prop-section">크기 (m)</div>
         <div class="prop-grid3">
-          <label class="field">가로<input type="number" step="0.1" min="0.1" data-f="w" value="${fmt(spec.w)}"></label>
-          <label class="field">높이<input type="number" step="0.1" min="0.1" data-f="h" value="${fmt(spec.h)}"></label>
-          <label class="field">폭<input type="number" step="0.1" min="0.1" data-f="d" value="${fmt(spec.d)}"></label>
+          <label class="field">가로<input type="number" step="${sizeStep(spec)}" min="${sizeMin(spec)}" data-f="w" value="${fmtSize(spec.w)}"></label>
+          <label class="field">높이<input type="number" step="${sizeStep(spec)}" min="${sizeMin(spec)}" data-f="h" value="${fmtSize(spec.h)}"></label>
+          <label class="field">폭<input type="number" step="${sizeStep(spec)}" min="${sizeMin(spec)}" data-f="d" value="${fmtSize(spec.d)}"></label>
         </div>
         <div class="prop-section">회전 · 색상</div>
         <div class="field-row">
@@ -1442,9 +1465,19 @@ class App {
   // 레듀샤·티는 1차/2차 관경을 속성 패널에서 바꿀 수 있다 (바꾸면 길이도 실제 관경에 맞춰 다시 잡는다).
   boreFields(spec) {
     const isElbow = spec.type === 'elbow' || spec.type === 'elbow45';
-    if (spec.type !== 'reducer' && spec.type !== 'tee' && !isElbow) return '';
+    if (spec.type !== 'reducer' && spec.type !== 'tee' && !isElbow && !isBoreSized(spec.type)) return '';
     const opts = (cur) => Object.keys(BORES).map((b) =>
       `<option value="${b}"${b === cur ? ' selected' : ''}>${b} (${BORES[b].mm}mm)</option>`).join('');
+    // 밸브·피팅 — 관경을 바꾸면 몸체·플랜지·핸들 크기가 그 외경 비율로 다시 잡힌다.
+    if (isBoreSized(spec.type)) {
+      const bore = BORES[spec.bore] ? spec.bore : SIZE_REF_BORE;
+      return `
+        <div class="prop-section">달린 배관 관경</div>
+        <div class="field-row">
+          <label class="field">관경<select data-f="bore">${opts(bore)}</select></label>
+          <label class="field">배관 외경<span class="readonly" title="이 관경에 비례해 밸브 몸체·핸들 크기가 정해집니다">${BORES[bore].mm}mm</span></label>
+        </div>`;
+    }
     if (isElbow) {
       const d = elbowDims(spec.type, spec.bore || '100A');
       return `
@@ -1549,6 +1582,7 @@ class App {
       x: Math.round(target.x * 2) / 2,
       y: 0,
       z: Math.round(target.z * 2) / 2,
+      bore: this.cmdBore,
       conn: this.cmdConn,
     });
     this.pushUndo(t.label + ' 추가');
@@ -2055,9 +2089,11 @@ class App {
       const dv = prevDir || this.lastDirV;
       const dir = INLINE_TYPES.has(type) && dv
         ? [r3(dv.x), r3(dv.y), r3(dv.z)] : null;
+      // bore — 밸브·피팅은 이 관경의 외경에 비례해 몸체·핸들 크기가 정해진다.
       const spec = makeEquipment(type, {
         name: `${t.short}-${100 + nextEqSeq(type)} ${t.label}`,
         x: cursor.x, y: cursor.y, z: cursor.z, rot,
+        bore,
         conn,
         ...(dir ? { dir } : {}),
         ...(extra || {}),
@@ -3248,7 +3284,7 @@ class App {
     const eq = (result.equipment || []).map((e) => makeEquipment(typeMap(e.type), {
       name: e.name, x: e.x, y: Math.max(0, Number(e.y) || 0), z: e.z,
       w: e.w, h: e.h, d: e.d, rot: e.rot, color: e.color,
-      bore1: e.bore1, bore2: e.bore2,
+      bore: e.bore, bore1: e.bore1, bore2: e.bore2,
     })).filter((e) => Number.isFinite(e.x) && Number.isFinite(e.z));
     const pipes = (result.pipes || [])
       .filter((p) => p && Array.isArray(p.points) && p.points.length >= 2)
@@ -3360,6 +3396,14 @@ class App {
         spec[t.dataset.f] = t.value;
         spec.w = fittingNaturalWidth(spec.type, spec.bore1, spec.bore2);
         this.refreshScene();
+        return;
+      }
+      // 밸브·피팅 관경을 바꾸면 몸체·플랜지·핸들 크기를 그 외경 비율로 다시 잡는다.
+      if (t.dataset.f === 'bore' && isBoreSized(spec.type)) {
+        spec.bore = BORES[t.value] ? t.value : SIZE_REF_BORE;
+        applyBoreSize(spec);
+        this.refreshScene();
+        this.renderProps();
         return;
       }
       // 엘보 관경을 바꾸면 외경·곡률·접합면 폭을 다시 뽑는다.
