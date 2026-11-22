@@ -127,7 +127,8 @@ const parts2Ok = parts2.length === 6 && parts2.filter((p) => p.kind === 'full').
   && parts2.filter((p) => p.kind === 'tile').length === 4
   && parts2[0].label === '[사진 1/2 · 전체 사진]'
   && /^\[사진 1\/2 · 확대 영역 1\/2: 좌상\]$/.test(parts2[1].label)
-  && /^\[사진 2\/2 · 확대 영역 1\/2: 우상\]$/.test(parts2[3].label);
+  && parts2[3].label === '[사진 2/2 · 전체 사진]'
+  && /^\[사진 2\/2 · 확대 영역 1\/2: 우상\]$/.test(parts2[4].label);
 const parts3Ok = parts3.length === 3 && parts3.every((p) => p.kind === 'full');
 
 // ── ③ AI mock — 일부러 끊긴 배관 + 겹친 장비 ─────────────────────────
@@ -171,6 +172,9 @@ const cap = join('100A 상부 수평');
 const branch = join('50A 지관');
 const snapAOk = cap && Math.hypot(cap[0][0] - 0, cap[0][1] - 3.0, cap[0][2] + 2.2) < 1e-6;
 const snapBOk = branch && Math.abs(branch[1][1] - 3.0) < 1e-6 && Math.abs(branch[1][0] - 1.3) < 1e-6;
+const vert = join('100A 수직 분기');
+// 수직관은 이음 과정에서 x,z가 끌려가 기울면 안 된다
+const verticalOk = vert && Math.abs(vert[1][0]) < 1e-6 && Math.abs(vert[1][2] + 2.2) < 1e-6;
 
 // 장비 이격 검사 — 최소 여백 0.15m까지 겹침이 풀렸는지
 const boxOf = (e) => {
@@ -254,8 +258,9 @@ window.__setCam = (px, py, pz, tx, ty, tz) => {
 
 const errors = window.__errors || [];
 window.__verify = {
-  tiles: tileChecks, labels1, parts: { one: parts1.length, two: parts2.length, three: parts3.length },
-  report, snapAOk, snapBOk, spreadOk, headerFixed, resOk, pairs, errors,
+  tiles: tileChecks, labels1, labels2: parts2.map((p) => p.label),
+  parts: { one: parts1.length, two: parts2.length, three: parts3.length },
+  report, snapAOk, snapBOk, verticalOk, spreadOk, headerFixed, resOk, pairs, errors,
   equipment: equipment.map((e) => ({ name: e.name, type: e.type, x: e.x, z: e.z })),
   pipes: pipes.map((p) => ({ name: p.name, points: p.points })),
 };
@@ -265,7 +270,7 @@ lines.push(`① 고해상도 상향(MAX_SIDE 2048 · 0.86) ${pass(resOk)}`);
 lines.push(`② 2000×1500 사진 → 확대 타일 ${tiles.length}장 ${pass(tilesOk)} ${tileChecks.map((t) => `${t.name} ${t.w}×${t.h}(차이 ${t.diff})`).join(' · ')}`);
 lines.push(`③ 사진 1장 → 전체 1 + 타일 4 = ${parts1.length}장 ${pass(parts1Ok)}  라벨 ${labels1.join(' ')}`);
 lines.push(`④ 사진 2장 → ${parts2.length}장(전체 2 + 타일 4) ${pass(parts2Ok)} · 사진 3장 → ${parts3.length}장(확대 생략) ${pass(parts3Ok)}`);
-lines.push(`⑤ 끊긴 배관 끝 붙임: 상부 수평 ${pass(!!snapAOk)} · 지관→구간(티) ${pass(!!snapBOk)} (snapped ${report.snapped}곳)`);
+lines.push(`⑤ 끊긴 배관 끝 붙임: 상부 수평 ${pass(!!snapAOk)} · 지관→구간(티) ${pass(!!snapBOk)} · 수직관 안 기움 ${pass(!!verticalOk)} (snapped ${report.snapped}곳)`);
 lines.push(`⑥ 겹친 장비 이격 ${pass(spreadOk)} (spread ${report.spread}대) · 헤더는 그대로 ${pass(!!headerFixed)}`);
 pairs.forEach((p) => lines.push(`    ${p.a} ↔ ${p.b}  겹침 ${p.ox}×${p.oz} ${pass(p.ok)}`));
 lines.push(`⑦ 3D 렌더 · 콘솔 오류 ${errors.length}건 ${pass(errors.length === 0)}`);

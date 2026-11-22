@@ -953,7 +953,9 @@ export function sanitizeAiScene(raw) {
   });
 
   // ① 수직 배관 끝을 본체 윗면에 앉히기
-  pipes.forEach((p) => {
+  //    장비 위에 앉힌 끝(seatedEnds)은 아래 ②-b에서 다른 배관 쪽으로 끌려가면 안 된다.
+  const seatedEnds = new Set();
+  pipes.forEach((p, pi) => {
     const pts = p.points;
     const ends = [];
     if (pts.length >= 2) {
@@ -983,6 +985,7 @@ export function sanitizeAiScene(raw) {
         }
       }
       pt.y = round3(top);
+      seatedEnds.add(`${pi}:${i}`);
       // 꺾임점이 너무 짧아지면(5cm 미만) 내부 점을 같은 높이로 끌어올림
       if (Math.abs(inner.y - pt.y) < 0.05) inner.y = pt.y;
       report.seated += 1;
@@ -1013,6 +1016,16 @@ export function sanitizeAiScene(raw) {
   // ②-b 살짝 뜬 배관 끝을 다른 배관에 이어 붙이기 (0.15~0.25m)
   //    AI가 "여기서 꺾여 이어진다"는 배관을 몇 십 cm 어긋나게 주면 공중에 뜨거나 끊긴 채로 그려진다.
   //    끝점끼리(②)에서 못 붙인 끝을, 다른 배관의 끝점이나 구간(티 분기) 중 더 가까운 쪽으로 당긴다.
+  //    단, 끌고 갈 상대를 가려 둔다:
+  //     · 장비 위에 앉힌 끝 — 헤더·탱크 노즐 자리를 지킨다(상대 배관이 붙으러 오게 둔다)
+  //     · 수직관의 끝 — x,z를 옮기면 수직관이 기울므로 높이(y)만 당긴다
+  const verticalEnd = (ref) => {
+    const pts = pipes[ref.pi].points;
+    const p = pts[ref.i];
+    const adj = ref.i === 0 ? pts[1] : pts[pts.length - 2];
+    if (!p || !adj) return false;
+    return Math.abs(p.y - adj.y) > Math.abs(p.x - adj.x) + Math.abs(p.z - adj.z);
+  };
   const endRefs = [];
   pipes.forEach((p, pi) => {
     endRefs.push({ pi, i: 0 });
@@ -1021,6 +1034,7 @@ export function sanitizeAiScene(raw) {
   endRefs.forEach((A) => {
     const pa = pipes[A.pi].points[A.i];
     if (!pa) return;
+    if (seatedEnds.has(`${A.pi}:${A.i}`)) return;   // 장비 노즐 자리는 그대로
     let best = null;
     endRefs.forEach((B) => {
       if (B.pi === A.pi) return;
@@ -1040,6 +1054,14 @@ export function sanitizeAiScene(raw) {
       }
     });
     if (!best) return;
+    const vert = verticalEnd(A);
+    if (vert) {
+      // 수직관은 높이만 당긴다 — x,z를 건드리면 기운 수직관이 된다.
+      if (Math.abs(best.y - pa.y) < 1e-4) return;
+      pa.y = round3(Math.max(0, best.y));
+      report.snapped += 1;
+      return;
+    }
     // 붙인 자리가 배관을 5cm도 안 되는 꺾임으로 만들면 붙이지 않는다(찌그러진 배관 방지)
     const prev = pipes[A.pi].points[A.i === 0 ? 1 : A.i - 1];
     if (prev && Math.hypot(best.x - prev.x, best.y - prev.y, best.z - prev.z) < 0.05) return;
