@@ -226,6 +226,8 @@ renderer.toneMappingExposure = 1.05;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#0b0f13');
+// 바닥 끝(지평선)과 먼 그리드가 배경으로 자연스럽게 사라지게 안개를 준다.
+scene.fog = new THREE.Fog('#0b0f13', 9, 26);
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
