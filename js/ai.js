@@ -121,10 +121,10 @@ function modelRetryable(status, detail) {
 async function callModel({ apiKey, model, text, mimeType, base64, images }) {
   const url = `${API_ROOT}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   // 사진 여러 장이면 parts에 텍스트 한 번 + 이미지 N장을 담아 한 번의 요청으로 보낸다.
-  const parts = [{ text }];
+  const reqParts = [{ text }];
   const list = Array.isArray(images) && images.length ? images : (base64 ? [{ mimeType, base64 }] : []);
   list.forEach((im) => {
-    if (im && im.base64) parts.push({ inlineData: { mimeType: im.mimeType || 'image/jpeg', data: im.base64 } });
+    if (im && im.base64) reqParts.push({ inlineData: { mimeType: im.mimeType || 'image/jpeg', data: im.base64 } });
   });
   let res;
   try {
@@ -132,7 +132,7 @@ async function callModel({ apiKey, model, text, mimeType, base64, images }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts }],
+        contents: [{ role: 'user', parts: reqParts }],
         generationConfig: { temperature: 0.15, responseMimeType: 'application/json', maxOutputTokens: 16384 },
       }),
     });
