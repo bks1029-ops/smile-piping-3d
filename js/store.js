@@ -805,14 +805,23 @@ function connectOpenEnds(pipes, seatedEnds) {
     if (!best) return;
     const inner = pts[A.i === 0 ? 1 : pts.length - 2];
     const prev = pts[A.i === 0 ? 2 : pts.length - 3];
-    const vertical = !!inner && !!prev
+    // 끝이 향하는 바깥 방향 — 배관을 이 방향으로 늘려 닿는 상대만 이어 붙인다.
+    // 화면 밖으로 나가는 주배관 끝은 가장 가까운 배관이 자기 **뒤쪽**에 있으므로
+    // 이 검사에서 걸러진다(주배관 끝이 옆 분기 끝으로 끌려가 주배관이 꺾이는 것을 막는다).
+    const dirx = pt.x - inner.x;
+    const diry = pt.y - inner.y;
+    const dirz = pt.z - inner.z;
+    const dl = Math.hypot(dirx, diry, dirz);
+    const fwd = dl < 1e-9 ? 1
+      : ((best.x - pt.x) * dirx + (best.y - pt.y) * diry + (best.z - pt.z) * dirz) / dl;
+    if (fwd < -0.01) return;
+    const vertical = !!prev
       && Math.abs(pt.y - inner.y) > Math.abs(pt.x - inner.x) + Math.abs(pt.z - inner.z);
     const pull = Math.hypot(best.x - pt.x, best.z - pt.z);
-    if (vertical) {
+    if (vertical && pull <= 0.45) {
       // 수직 구간은 수직을 유지한 채 도착 배관 중심선 위로 옮긴다 —
       // 끝점과 바로 위 꺾임점의 (x, z)를 도착 배관 중심선 값으로 함께 맞춘다.
-      if (pull > 1e-6 && pull <= 0.45
-        && Math.hypot(best.x - prev.x, best.z - prev.z) >= 0.1) {
+      if (pull > 1e-6 && Math.hypot(best.x - prev.x, best.z - prev.z) >= 0.1) {
         inner.x = round3(best.x);
         inner.z = round3(best.z);
         pt.x = round3(best.x);
