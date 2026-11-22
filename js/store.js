@@ -737,6 +737,8 @@ export function aiTypeOf(type) {
 // 원본 AI JSON(장비·배관 배열)을 받아 보정본을 돌려준다.
 const SNAP_WELD = 0.15;   // 배관 연결점 불이기 거리
 const SNAP_JOINT = 0.25;  // 살짝 뜬 배관 끝을 이어 붙이는 거리 (끝점·구간 모두)
+const SNAP_BRANCH = 0.6;  // 허공에 뜬 분기 배관 끝을 다른 배관 중심선에 이어 붙이는 거리
+const SNAP_TOUCH = 0.05;  // 이미 닿아 있는 것으로 보는 거리 (이어진 배관은 건드리지 않는다)
 const SNAP_VERT = 0.4;    // 수직 배관에 달린 부속으로 보는 거리
 const EQUIP_GAP = 0.15;   // 대형 장비끼리 최소 여백(m)
 // 서로 밀어내는 대형 설비 — 앞뒤 거리감(Z)이 무너지는 걸 막는 대상
@@ -753,6 +755,84 @@ function closestOnSegment(p, a, b) {
   t = Math.max(0, Math.min(1, t));
   const x = a.x + vx * t, y = a.y + vy * t, z = a.z + vz * t;
   return { d: Math.hypot(p.x - x, p.y - y, p.z - z), x, y, z };
+}
+
+// ②-c 허공에 뜬 분기 배관 끝을 0.6m 안의 다른 배관 중심선에 이어 붙인다.
+// AI가 현장 사진의 ㄷ자·ㄱ자 분기를 "대충 근처"로 적어 주면 끝점이 도착 배관에서 0.3~0.6m
+// 떨어진 공중에 남는다. ②-b(0.25m)로도 못 붙인 끝을 골라, 가장 가까운 상대 배관 선분의
+// 직교 투영점(= 상대 배관 중심선 위)으로 끝점을 끌어온다.
+//   · 자기 자신 제외 · 이미 0.05m 안으로 닿은 끝은 그대로 둔다(이미 이어진 배관)
+//   · 장비 노즐에 앉힌 끝(seatedEnds)은 건드리지 않는다 — 헤더·탱크 연결을 지킨다
+//   · 내려오는(올라가는) 수직 구간은 기울이지 않는다 — 끝점과 위 꺾임점을 같은 (dx, dz)만큼
+//     함께 옮겨 수직을 유지하고, 높이만 도착 배관 중심 높이로 맞춘다
+function connectOpenEnds(pipes, seatedEnds) {
+  let n = 0;
+  const ends = [];
+  pipes.forEach((p, pi) => {
+    ends.push({ pi, i: 0 });
+    ends.push({ pi, i: p.points.length - 1 });
+  });
+  // 이 점이 다른 배관(자기 제외)의 끝점이나 구간에 이미 닿아 있는가
+  const touchesOther = (pi, pt) => pipes.some((p, k) => {
+    if (k === pi) return false;
+    const q = p.points;
+    const a = q[0];
+    const b = q[q.length - 1];
+    if (Math.hypot(pt.x - a.x, pt.y - a.y, pt.z - a.z) <= SNAP_TOUCH) return true;
+    if (Math.hypot(pt.x - b.x, pt.y - b.y, pt.z - b.z) <= SNAP_TOUCH) return true;
+    for (let i = 1; i < q.length; i += 1) {
+      if (closestOnSegment(pt, q[i - 1], q[i]).d <= SNAP_TOUCH) return true;
+    }
+    return false;
+  });
+  ends.forEach((A) => {
+    const pts = pipes[A.pi].points;
+    const pt = pts[A.i];
+    if (!pt) return;
+    if (seatedEnds.has(`${A.pi}:${A.i}`)) return;
+    if (touchesOther(A.pi, pt)) return;
+    // 가장 가까운 상대 배관 중심선 위의 점
+    let best = null;
+    pipes.forEach((p, pi) => {
+      if (pi === A.pi) return;
+      for (let i = 1; i < p.points.length; i += 1) {
+        const hit = closestOnSegment(pt, p.points[i - 1], p.points[i]);
+        if (hit.d > SNAP_TOUCH && hit.d <= SNAP_BRANCH && (!best || hit.d < best.d)) {
+          best = { d: hit.d, x: hit.x, y: hit.y, z: hit.z };
+        }
+      }
+    });
+    if (!best) return;
+    const inner = pts[A.i === 0 ? 1 : pts.length - 2];
+    const prev = pts[A.i === 0 ? 2 : pts.length - 3];
+    const vertical = !!inner && !!prev
+      && Math.abs(pt.y - inner.y) > Math.abs(pt.x - inner.x) + Math.abs(pt.z - inner.z);
+    const pull = Math.hypot(best.x - pt.x, best.z - pt.z);
+    if (vertical) {
+      // 수직 구간은 수직을 유지한 채 도착 배관 중심선 위로 옮긴다 —
+      // 끝점과 바로 위 꺾임점의 (x, z)를 도착 배관 중심선 값으로 함께 맞춘다.
+      if (pull > 1e-6 && pull <= 0.45
+        && Math.hypot(best.x - prev.x, best.z - prev.z) >= 0.1) {
+        inner.x = round3(best.x);
+        inner.z = round3(best.z);
+        pt.x = round3(best.x);
+        pt.z = round3(best.z);
+      }
+      const moved = Math.hypot(best.x - pt.x, best.z - pt.z) > 1e-6;
+      if (!moved && Math.abs(best.y - pt.y) < 1e-4) return;
+      pt.y = round3(Math.max(0, best.y));
+      n += 1;
+      return;
+    }
+    // 바로 앞 점과 5cm도 안 되는 꺾임을 만들면 붙이지 않는다(찌그러진 배관 방지)
+    if (inner && Math.hypot(best.x - inner.x, best.y - inner.y, best.z - inner.z) < 0.05) return;
+    if (Math.abs(best.y - pt.y) < 1e-4 && pull < 1e-6) return;
+    pt.x = round3(best.x);
+    pt.y = round3(Math.max(0, best.y));
+    pt.z = round3(best.z);
+    n += 1;
+  });
+  return n;
 }
 
 // 장비가 바닥에서 차지하는 사각형(회전 반영) — rot가 90/270이면 폭과 깊이가 바뀐다.
@@ -919,7 +999,7 @@ export function sanitizeAiScene(raw) {
       name: p.name || `배관 ${i + 1}`,
       points: p.points.map((q) => ({ x: num(q.x, 0), y: Math.max(0, num(q.y, 0)), z: num(q.z, 0) })),
     }));
-  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0, snapped: 0, spread: 0 };
+  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0, snapped: 0, branched: 0, spread: 0 };
   // ⑥ 대형 장비 이격을 먼저 한다 — 배관을 앉히고 붙이는 단계가 최종 장비 위치를 보게 하려는 것이다.
   report.spread = separateMainBodies(equipment);
   const bodies = equipment
@@ -1073,6 +1153,11 @@ export function sanitizeAiScene(raw) {
     pa.z = round3(best.z);
     report.snapped += 1;
   });
+
+  // ②-c 허공에 뜬 분기 배관 끝 자동 연결 (0.25~0.6m) — ㄷ자·ㄱ자 우회 배관의 도착점.
+  //    ②-b까지 지나도 다른 배관에 닿지 않은 끝을 상대 배관 중심선 위의 투영점으로 끌어온다.
+  //    끝점이 바뀌었으므로 아래 ③④가 새 좌표 기준으로 밸브·피팅을 다시 맞춘다.
+  report.branched = connectOpenEnds(pipes, seatedEnds);
 
   // ③④ 수직 배관 위 밸브·피팅 — 세우기 + 본체 밖으로
   equipment.forEach((e) => {

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v58 검증 (임시) — 가로배관·연결 보정</title>
+<style>
+  html, body { margin: 0; background: #1b1f24; color: #e7ecf2; font: 13px/1.5 -apple-system, "Malgun Gothic", sans-serif; }
+  #stage { position: absolute; left: 0; top: 0; width: 390px; height: 844px; background: #000; overflow: hidden; }
+  #fr { display: block; width: 390px; height: 844px; border: 0; }
+  #panel { position: absolute; left: 8px; top: 8px; width: 330px; padding: 8px 10px; border-radius: 8px;
+           background: rgba(12,16,20,.86); border: 1px solid #37414d; font: 10.5px/1.45 ui-monospace, monospace;
+           color: #bfe6c7; pointer-events: none; }
+  #panel b { display: block; margin-bottom: 4px; color: #e7ecf2; font: 11px/1.4 -apple-system, "Malgun Gothic", sans-serif; }
+  #panel .no { color: #ff9d8a; }
+  #panel .dim { color: #8b97a4; }
+  #out { position: absolute; left: 400px; top: 8px; width: 820px; margin: 0; font: 12px/1.5 ui-monospace, monospace;
+         color: #b7e4c7; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <iframe id="fr" src="./index.html?cb=58v" width="390" height="844"></iframe>
+  <div id="panel"><b>v58 자동 검증 · 390×844</b><div id="lines">준비 중…</div></div>
+</div>
+<pre id="out"></pre>
+
+<script type="module">
+import { sanitizeAiScene } from './js/store.js?v=58';
+import { buildFusionScript } from './js/fusion.js?v=58';
+
+const fr = document.getElementById('fr');
+const out = document.getElementById('out');
+const linesEl = document.getElementById('lines');
+const log = (s) => { out.textContent += s + '\n'; };
+const lines = [];
+const result = { checks: [], ok: true, detail: {} };
+window.__verdict = result;
+window.__errs = [];
+
+// ── 30792 사진과 같은 구조를 AI가 "대충" 뽑은 응답 (현장: 아래 대형 보온 가로관 → 수직관 → 게이트밸브
+//    → ㄷ자로 꺾여 위로·옆으로·아래로 내려와 뒤쪽 150A 주배관으로 합류). AI가 흔히 틀리는 두 가지를
+//    그대로 넣는다: ①분기 끝점이 도착 배관 중심선에서 0.3~0.4m 떠 있음 ②옆으로 0.22m 비껴 내려옴.
+const MOCK = {
+  layoutPlan: '1) 앞쪽 아래 은색 보온 대구경 가로관 450A, 뒤쪽 위 300A 보온 가로관.\n2) 450A 위에서 50A 수직관이 올라가 게이트밸브를 지나 ㄷ자로 꺾여 뒤쪽 300A에 합류.\n3) 두 번째 50A 분기는 옆으로 0.45m 이동한 뒤 아래로 내려와 300A에 꽂힘.',
+  equipment: [
+    { type: 'valve', name: 'GV-201 게이트밸브', x: 0.0, y: 1.35, z: 0, axis: 'y', bore: '50A', color: '#3a3f44' },
+    { type: 'valve', name: 'GV-202 게이트밸브', x: 1.2, y: 1.4, z: 0, axis: 'y', bore: '50A', color: '#3a3f44' },
+    { type: 'gauge', name: 'PG-201 압력계', x: 0.25, y: 1.7, z: 0.2 },
+  ],
+  pipes: [
+    { name: '450A 은색 보온 가로관', bore: '450A', material: 'insulated', color: '#c8ced4',
+      points: [{ x: -2.4, y: 0.8, z: 0 }, { x: 2.4, y: 0.8, z: 0 }] },
+    { name: '300A 보온 후면 주배관', bore: '300A', material: 'insulated', color: '#c8ced4',
+      points: [{ x: -2.0, y: 1.35, z: 1.3 }, { x: 2.0, y: 1.35, z: 1.3 }] },
+    { name: '50A ㄷ자 우회 A', bore: '50A', material: 'carbon', color: '#3a3f44',
+      points: [
+        { x: 0.0, y: 0.8, z: 0 },      // 450A 중심선에서 출발
+        { x: 0.0, y: 1.95, z: 0 },     // 수직 상승 (밸브 통과)
+        { x: 0.45, y: 1.95, z: 0 },    // 위에서 옆으로
+        { x: 0.45, y: 1.95, z: 1.3 },  // 뒤로
+        { x: 0.45, y: 1.72, z: 1.3 },  // AI 실수: 중심선(y=1.35)까지 0.37m 못 내려옴
+      ] },
+    { name: '50A ㄷ자 우회 B', bore: '50A', material: 'carbon', color: '#3a3f44',
+      points: [
+        { x: 1.2, y: 0.8, z: 0 },      // 450A 중심선에서 출발
+        { x: 1.2, y: 1.9, z: 0 },      // 수직 상승
+        { x: 1.2, y: 1.9, z: 1.35 },   // 뒤로
+        { x: 1.2, y: 1.58, z: 1.52 },  // AI 실수: 옆으로 0.22m 비껴 내려와 공중에서 끝
+      ] },
+  ],
+  notes: '',
+};
+
+// 배관 끝점이 다른 배관(자기 제외)에 0.05m 안으로 닿아 있는지
+function touchesOther(pipes, pi, pt) {
+  return pipes.some((p, k) => {
+    if (k === pi) return false;
+    const q = p.points;
+    for (let i = 1; i < q.length; i += 1) {
+      const a = q[i - 1], b = q[i];
+      const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z;
+      const L2 = vx * vx + vy * vy + vz * vz;
+      let t = L2 < 1e-9 ? 0 : ((pt.x - a.x) * vx + (pt.y - a.y) * vy + (pt.z - a.z) * vz) / L2;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(pt.x - (a.x + vx * t), pt.y - (a.y + vy * t), pt.z - (a.z + vz * t));
+      if (d <= 0.05) return true;
+    }
+    return false;
+  });
+}
+
+function openEndCount(pipes) {
+  let n = 0;
+  pipes.forEach((p, pi) => {
+    [0, p.points.length - 1].forEach((i) => {
+      const pt = p.points[i];
+      if (!touchesOther(pipes, pi, pt)) n += 1;
+    });
+  });
+  return n;
+}
+
+// 마지막 구간이 수직인가 (위 점과 아래 점의 x·z 차이 < 1mm)
+function lastSegVertical(p) {
+  const n = p.points.length;
+  const a = p.points[n - 2], b = p.points[n - 1];
+  return Math.hypot(b.x - a.x, b.z - a.z) < 0.001;
+}
+
+const check = (label, ok, dim) => {
+  const c = { label, ok: !!ok, dim: dim || '' };
+  result.checks.push(c);
+  if (!ok) result.ok = false;
+  lines.push(`<div class="${ok ? 'ok' : 'no'}">${ok ? 'OK' : 'NG'} · ${label}${dim ? ` <span class="dim">${dim}</span>` : ''}</div>`);
+  linesEl.innerHTML = lines.join('');
+  log(`${ok ? 'OK' : 'NG'}  ${label}  ${dim || ''}`);
+};
+
+async function run() {
+  const w = fr.contentWindow;
+  if (!w || !w.__app) { log('iframe 앱을 찾지 못했습니다'); return; }
+  try { w.__app.scheduleSave = () => {}; w.__app.flushSave = () => {}; } catch (e) {}
+  log('iframe: ' + w.location.href);
+
+  // ── ① 프롬프트에 새 규칙이 실려 있는지 (배포된 ai.js 그대로 확인)
+  let src = '';
+  try { src = await (await fetch('./js/ai.js?v=58')).text(); } catch (e) {}
+  check('프롬프트: 가로 원통 ≠ 세로 탱크', src.includes('가로로 누운') && src.includes('절대 tank·stank·rtank로 분류하지 말 것'));
+  check('프롬프트: ㄷ자 분기는 상대 배관 중심선에', src.includes('분기·우회 배관') && src.includes('중심선 위'));
+
+  // ── ② sanitizeAiScene 기하 보정
+  const clean = sanitizeAiScene(MOCK);
+  result.detail.report = clean.report;
+  log('sanitize report: ' + JSON.stringify(clean.report));
+  const A = clean.pipes.find((p) => p.name.includes('우회 A'));
+  const B = clean.pipes.find((p) => p.name.includes('우회 B'));
+  const endA = A.points[A.points.length - 1];
+  const endB = B.points[B.points.length - 1];
+  log(`A 끝점: ${JSON.stringify(endA)}  B 끝점: ${JSON.stringify(endB)}`);
+  result.detail.endA = endA;
+  result.detail.endB = endB;
+
+  // 450A·300A 가로 원통이 pipe로 남아 있고 tank/stank가 없는지 (프롬프트 규칙이 만든 결과)
+  check('가로 보온 대구경 = 수평 pipe (탱크 0개)',
+    clean.equipment.filter((e) => e.type === 'tank' || e.type === 'stank' || e.type === 'rtank').length === 0
+      && clean.pipes.filter((p) => /450A|300A/.test(p.bore || '')).length === 2);
+  check('게이트밸브 수직(axis y) 유지',
+    clean.equipment.filter((e) => e.type === 'valve' && e.axis === 'y').length === 2);
+  check('ㄷ자 A: 0.37m 뜬 끝점 → 후면관 중심선', Math.abs(endA.y - 1.35) < 0.002 && Math.abs(endA.z - 1.3) < 0.002,
+    `y=${endA.y} z=${endA.z}`);
+  check('ㄷ자 B: 0.22m 비껴 내려온 끝점 → 중심선', Math.abs(endB.y - 1.35) < 0.002 && Math.abs(endB.z - 1.3) < 0.002,
+    `y=${endB.y} z=${endB.z}`);
+  check('ㄷ자 A·B 내려오는 구간 수직 유지', lastSegVertical(A) && lastSegVertical(B));
+  check('허공에 뜬 배관 끝 0곳', openEndCount(clean.pipes) === 0, `${openEndCount(clean.pipes)}곳`);
+  check('자동 연결 보고 2곳', clean.report.branched === 2, `branched=${clean.report.branched}`);
+
+  // ── ③ 라이브 앱에 적용 → 렌더링
+  const app = w.__app;
+  app.applyAIResult(MOCK, 'replace');
+  app.setView('iso', true);
+  try { app.setDrawerOpen(false); } catch (e) {}
+  const st = JSON.parse(JSON.stringify(app.state));
+  result.detail.counts = { equipment: st.equipment.length, pipes: st.pipes.length };
+  const appOpen = openEndCount(st.pipes);
+  check('적용된 씬: 허공 배관 끝 0곳', appOpen === 0, `${appOpen}곳`);
+  check('적용된 씬: NaN 좌표 0개',
+    !st.pipes.some((p) => p.points.some((q) => !isFinite(q.x) || !isFinite(q.y) || !isFinite(q.z)))
+    && !st.equipment.some((e) => !isFinite(e.x) || !isFinite(e.y) || !isFinite(e.z)));
+
+  // ── ④ Fusion 360 .py 내보내기
+  let fus = '';
+  let fusErr = '';
+  try { fus = buildFusionScript(st); } catch (e) { fusErr = (e && e.message) || String(e); }
+  result.detail.fusion = { len: fus.length, err: fusErr };
+  check('Fusion .py 생성', !fusErr && fus.length > 4000, fusErr || `${(fus.length / 1024).toFixed(1)}KB`);
+  check('Fusion .py NaN/undefined 없음', !!fus && !/NaN|undefined/.test(fus));
+
+  // ── ⑤ 콘솔 오류
+  await new Promise((r) => setTimeout(r, 900));
+  const errs = (w.__errors || []).concat(window.__errs);
+  result.detail.errors = errs;
+  check('콘솔 오류 0건', errs.length === 0, errs.length ? errs.slice(0, 3).join(' | ') : '0건');
+
+  lines.push(`<div class="dim">branch 연결 ${clean.report.branched}곳 · 장비 ${st.equipment.length} · 배관 ${st.pipes.length}</div>`);
+  linesEl.innerHTML = lines.join('');
+  window.__done = true;
+  log('\n결과: ' + (result.ok ? '전 항목 OK' : 'NG 있음'));
+}
+
+fr.addEventListener('load', () => {
+  const w = fr.contentWindow;
+  w.addEventListener('error', (e) => window.__errs.push('error: ' + (e.message || e.type)));
+  w.addEventListener('unhandledrejection', (e) => window.__errs.push('rejection: ' + ((e.reason && e.reason.message) || e.reason)));
+  const ce = w.console.error.bind(w.console);
+  w.console.error = (...a) => { window.__errs.push('console.error: ' + a.map(String).join(' ')); ce(...a); };
+  setTimeout(() => run().catch((e) => { log('실행 오류: ' + (e && e.stack || e)); check('검증 실행', false, String(e && e.message || e)); }), 400);
+});
+</script>
+</body>
+</html>

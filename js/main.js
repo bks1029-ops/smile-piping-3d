@@ -7,14 +7,14 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=57';
-import { buildScene } from './builders.js?v=57';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=57';
-import { buildOBJ } from './obj.js?v=57';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=57';
-import { parseCommand, CMD_HELP } from './cmd.js?v=57';
-import { buildDimItems } from './dims.js?v=57';
-import { buildAiImageParts } from './zoom.js?v=57';
+} from './store.js?v=58';
+import { buildScene } from './builders.js?v=58';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=58';
+import { buildOBJ } from './obj.js?v=58';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=58';
+import { parseCommand, CMD_HELP } from './cmd.js?v=58';
+import { buildDimItems } from './dims.js?v=58';
+import { buildAiImageParts } from './zoom.js?v=58';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -3648,6 +3648,7 @@ class App {
     if (report.gauged) notes.push(`계기 ${report.gauged}개 관 밖으로`);
     if (report.welded) notes.push(`배관 이음 ${report.welded}곳 붙임`);
     if (report.snapped) notes.push(`끊긴 배관 끝 ${report.snapped}곳 이어 붙임`);
+    if (report.branched) notes.push(`허공에 뜬 배관 끝 ${report.branched}곳 연결`);
     if (report.spread) notes.push(`겹친 장비 ${report.spread}대 띄움`);
     const extra = notes.length ? ` · ${notes.join(' · ')}` : '';
     this.toast(`AI 배치 완료 · 장비 ${eq.length} / 배관 ${pipes.length}${extra}`,
