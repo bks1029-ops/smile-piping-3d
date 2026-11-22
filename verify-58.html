@@ -50,9 +50,9 @@ const MOCK = {
   ],
   pipes: [
     { name: '450A 은색 보온 가로관', bore: '450A', material: 'sus', color: '#c8ced4',
-      points: [{ x: -1.6, y: 0.8, z: 0 }, { x: 1.6, y: 0.8, z: 0 }] },
+      points: [{ x: -1.0, y: 0.8, z: 0 }, { x: 1.0, y: 0.8, z: 0 }] },
     { name: '300A 보온 후면 주배관', bore: '300A', material: 'sus', color: '#c8ced4',
-      points: [{ x: -1.4, y: 1.35, z: 1.3 }, { x: 1.4, y: 1.35, z: 1.3 }] },
+      points: [{ x: -1.0, y: 1.35, z: 1.3 }, { x: 1.0, y: 1.35, z: 1.3 }] },
     { name: '50A ㄷ자 우회 A', bore: '50A', material: 'carbon', color: '#3a3f44',
       points: [
         { x: 0.0, y: 0.8, z: 0 },      // 450A 중심선에서 출발
@@ -180,7 +180,7 @@ async function run() {
   // 등각 자동 맞춤에서 조금 당겨 ㄷ자 연결부를 크게
   try {
     const t = app.controls.target.clone();
-    const off = app.camera.position.clone().sub(t).multiplyScalar(0.82);
+    const off = app.camera.position.clone().sub(t).multiplyScalar(0.72);
     app.camera.position.copy(t.clone().add(off));
     app.controls.update();
   } catch (e) {}
