@@ -793,14 +793,21 @@ function connectOpenEnds(pipes, seatedEnds) {
     if (seatedEnds.has(`${A.pi}:${A.i}`)) return;
     if (touchesOther(A.pi, pt)) return;
     // 가장 가까운 상대 배관 중심선 위의 점
+    //   상대 배관의 **열린 끝점**으로는 끌어오지 않는다 — 둘 다 주인 없는 끝이라 어느 쪽이
+    //   움직여야 할지 알 수 없고, 주배관 끝이 옆 분기 끝으로 끌려가 주배관이 꺾인다.
+    //   (상대 끝점이 이미 다른 배관·장비에 닿아 있으면 그 점으로 이어도 안전하다)
     let best = null;
     pipes.forEach((p, pi) => {
       if (pi === A.pi) return;
-      for (let i = 1; i < p.points.length; i += 1) {
-        const hit = closestOnSegment(pt, p.points[i - 1], p.points[i]);
-        if (hit.d > SNAP_TOUCH && hit.d <= SNAP_BRANCH && (!best || hit.d < best.d)) {
-          best = { d: hit.d, x: hit.x, y: hit.y, z: hit.z };
-        }
+      const q = p.points;
+      for (let i = 1; i < q.length; i += 1) {
+        const hit = closestOnSegment(pt, q[i - 1], q[i]);
+        if (hit.d <= SNAP_TOUCH || hit.d > SNAP_BRANCH) continue;
+        const nearStart = Math.hypot(hit.x - q[0].x, hit.y - q[0].y, hit.z - q[0].z) < SNAP_TOUCH;
+        const last = q[q.length - 1];
+        const nearEnd = Math.hypot(hit.x - last.x, hit.y - last.y, hit.z - last.z) < SNAP_TOUCH;
+        if ((nearStart && !touchesOther(pi, q[0])) || (nearEnd && !touchesOther(pi, last))) continue;
+        if (!best || hit.d < best.d) best = { d: hit.d, x: hit.x, y: hit.y, z: hit.z };
       }
     });
     if (!best) return;

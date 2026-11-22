@@ -45,7 +45,7 @@ const MOCK = {
   layoutPlan: '1) 앞쪽 아래 은색 보온 대구경 가로관 450A, 뒤쪽 위 300A 보온 가로관.\n2) 450A 위에서 50A 수직관이 올라가 게이트밸브를 지나 ㄷ자로 꺾여 뒤쪽 300A에 합류.\n3) 두 번째 50A 분기는 위에서 뒤로 간 뒤 아래로 내려와 300A에 꽂힘.',
   equipment: [
     { type: 'valve', name: 'GV-201 게이트밸브', x: 0.0, y: 1.35, z: 0, axis: 'y', bore: '50A', color: '#3a3f44' },
-    { type: 'valve', name: 'GV-202 게이트밸브', x: 1.2, y: 1.4, z: 0, axis: 'y', bore: '50A', color: '#3a3f44' },
+    { type: 'valve', name: 'GV-202 게이트밸브', x: 0.8, y: 1.4, z: 0, axis: 'y', bore: '50A', color: '#3a3f44' },
     { type: 'gauge', name: 'PG-201 압력계', x: 0.25, y: 1.7, z: 0.2 },
   ],
   pipes: [
@@ -63,10 +63,10 @@ const MOCK = {
       ] },
     { name: '50A ㄷ자 우회 B', bore: '50A', material: 'carbon', color: '#3a3f44',
       points: [
-        { x: 1.2, y: 0.8, z: 0 },      // 450A 중심선에서 출발
-        { x: 1.2, y: 1.9, z: 0 },      // 수직 상승
-        { x: 1.2, y: 1.9, z: 1.35 },   // 뒤로
-        { x: 1.2, y: 1.58, z: 1.52 },  // AI 실수: 옆으로 0.22m 비껴 내려와 공중에서 끝
+        { x: 0.8, y: 0.8, z: 0 },      // 450A 중심선에서 출발
+        { x: 0.8, y: 1.9, z: 0 },      // 수직 상승
+        { x: 0.8, y: 1.9, z: 1.35 },   // 뒤로
+        { x: 0.8, y: 1.58, z: 1.52 },  // AI 실수: 옆으로 0.22m 비껴 내려와 공중에서 끝
       ] },
   ],
   notes: '',
@@ -143,6 +143,10 @@ async function run() {
   // ── ① 프롬프트에 새 규칙이 실려 있는지 (배포된 ai.js 그대로 확인)
   let src = '';
   try { src = await (await fetch('./js/ai.js?v=58')).text(); } catch (e) {}
+  // 브라우저 캐시에 예전 store.js가 남아 있으면 이 검증이 무의미해진다 — 최신판인지 함께 본다.
+  let sjs = '';
+  try { sjs = await (await fetch('./js/store.js?v=58')).text(); } catch (e) {}
+  check('store.js 최신판(열린 끝 가드)', sjs.includes('열린 끝점으로는 끌어오지 않는다'));
   check('프롬프트: 가로 원통 ≠ 세로 탱크', src.includes('가로로 누운') && src.includes('절대 tank·stank·rtank로 분류하지 말 것'));
   check('프롬프트: ㄷ자 분기는 상대 배관 중심선에', src.includes('분기·우회 배관') && src.includes('중심선 위'));
 
