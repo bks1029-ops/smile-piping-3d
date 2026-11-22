@@ -7,13 +7,13 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS,
-} from './store.js?v=49';
-import { buildScene } from './builders.js?v=49';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=49';
-import { buildOBJ } from './obj.js?v=49';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=49';
-import { parseCommand, CMD_HELP } from './cmd.js?v=49';
-import { buildDimItems } from './dims.js?v=49';
+} from './store.js?v=50';
+import { buildScene } from './builders.js?v=50';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=50';
+import { buildOBJ } from './obj.js?v=50';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=50';
+import { parseCommand, CMD_HELP } from './cmd.js?v=50';
+import { buildDimItems } from './dims.js?v=50';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
