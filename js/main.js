@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
-} from './store.js?v=42';
-import { buildScene } from './builders.js?v=42';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=42';
-import { buildOBJ } from './obj.js?v=42';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=42';
-import { parseCommand, CMD_HELP } from './cmd.js?v=42';
-import { buildDimItems } from './dims.js?v=42';
+} from './store.js?v=43';
+import { buildScene } from './builders.js?v=43';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=43';
+import { buildOBJ } from './obj.js?v=43';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=43';
+import { parseCommand, CMD_HELP } from './cmd.js?v=43';
+import { buildDimItems } from './dims.js?v=43';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -2254,6 +2254,12 @@ class App {
         }
         const inline = INLINE_TYPES.has(op.type);
         if (inline) flush(); // 부속이 들어가는 자리에서 배관을 끊고, 부속 뒤에서 다시 이어 그린다.
+        // 이 명령에서 아직 움직이지 않았으면 바로 뒤에 오는 이동 방향으로 부속을 앉힌다.
+        // (`25a 볼벨브 위로 600` — 예전에는 직전 명령의 방향으로 놓여 배관에서 옆으로 비껴났다)
+        if (inline && !prevDir) {
+          const nx = this.nextMoveOp(ops, i);
+          if (nx && nx.axis) { axis = nx.axis; sign = nx.sign === -1 ? -1 : 1; }
+        }
         // "단조 볼밸브"처럼 부속 앞에 단조/소켓/나사가 붙어 온 부속은 그것만 단조형으로 놓는다.
         const pieceConn = op.conn === 'forged' ? 'forged' : conn;
         const extra = isElbow

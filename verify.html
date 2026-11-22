@@ -10,7 +10,7 @@
 </style>
 </head>
 <body>
-<iframe id="stage" src="./index.html?v=42&verify=1" width="390" height="844" title="앱"></iframe>
+<iframe id="stage" src="./index.html?v=43&verify=1" width="390" height="844" title="앱"></iframe>
 <pre id="report">loading…</pre>
 <script>
 // t=A : 관경별 볼밸브(25A·100A·200A) 크기 비교 장면
@@ -76,7 +76,8 @@ async function scenA() {
     valves.push({
       bore: e.bore, pipe: pipe ? pipe.bore : null, pipeOdMm: od,
       specWH: [e.w, e.h], sizeM: size,
-      lenOverPipeD: size && od ? Math.round((size[0] * 1000 / od) * 100) / 100 : null,
+      // 세로 배관이라 밸브의 배관 방향 길이는 Y 크기(sizeM[1]) — 배관 외경의 몇 배인지
+      lenOverPipeD: size && od ? Math.round((size[1] * 1000 / od) * 100) / 100 : null,
     });
   });
   out('A', { valves, errors: w.__errors || [] });
