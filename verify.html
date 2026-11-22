@@ -55,14 +55,15 @@ async function scenA() {
   const { w, app } = frame();
   app.clearAll({ silent: true });
   await TICK(150);
-  [['25A', -0.45], ['100A', 0], ['200A', 0.45]].forEach(([bore, z]) => {
-    app.setCmdCursor({ x: -0.3, y: 0.42, z }, true);
-    app.runCommandLine(bore.toLowerCase() + ' 볼벨브 오른쪽 600');
+  // 세로 배관 세 줄을 나란히 — 정면에서 보면 굵기와 밸브 크기를 나란히 견줄 수 있다.
+  [['25A', -0.55], ['100A', 0], ['200A', 0.55]].forEach(([bore, x]) => {
+    app.setCmdCursor({ x, y: 0.3, z: 0 }, true);
+    app.runCommandLine(bore.toLowerCase() + ' 볼벨브 위로 600');
   });
   app.clearSelection();
-  app.setView('iso', true);
+  app.setView('front', true);
   await TICK(300);
-  app.camera.position.lerp(app.controls.target, 0.12);
+  app.camera.position.lerp(app.controls.target, 0.1);
   app.controls.update();
   await TICK(400);
 
@@ -70,7 +71,7 @@ async function scenA() {
   app.state.equipment.filter((e) => e.type === 'ball').forEach((e) => {
     const g = app.root.children.find((c) => c.userData && c.userData.pick && c.userData.pick.id === e.id);
     const size = g ? bboxOf(w, g) : null;
-    const pipe = app.state.pipes.find((p) => Math.abs(p.points[0].y - e.y) < 0.02 && Math.abs(p.points[0].z - e.z) < 0.02);
+    const pipe = app.state.pipes.find((p) => Math.abs(p.points[0].x - e.x) < 0.02 && Math.abs(p.points[0].z - e.z) < 0.02);
     const od = (pipe && OD[pipe.bore]) || 0;
     valves.push({
       bore: e.bore, pipe: pipe ? pipe.bore : null, pipeOdMm: od,
