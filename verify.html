@@ -147,6 +147,27 @@ async function scenB() {
   out('B', res);
 }
 
+// t=S : 저장을 지우고 처음 열었을 때의 샘플 현장 — 밸브 크기가 배관에 맞는지 회귀 확인
+async function scenS() {
+  localStorage.removeItem('smilePiping3D.v1');
+  const f = document.getElementById('stage');
+  f.contentWindow.location.reload();
+  await TICK(800);
+  for (let i = 0; i < 150; i += 1) {
+    if (f.contentWindow && f.contentWindow.__app && f.contentWindow.__app.root && f.contentWindow.__app.state.equipment.length) break;
+    await TICK(100);
+  }
+  await TICK(500);
+  const { w, app } = frame();
+  app.setView('iso', true);
+  await TICK(500);
+  out('S', {
+    equipment: app.state.equipment.length,
+    valves: app.state.equipment.filter((e) => ['valve', 'bfly', 'ball', 'check', 'yvalve'].includes(e.type)).map((e) => ({ t: e.type, bore: e.bore, w: e.w })),
+    errors: w.__errors || [],
+  });
+}
+
 (async () => {
   const f = document.getElementById('stage');
   for (let i = 0; i < 150; i += 1) {
@@ -156,6 +177,7 @@ async function scenB() {
   await TICK(300);
   try {
     if (SCEN === 'B') await scenB();
+    else if (SCEN === 'S') await scenS();
     else await scenA();
   } catch (e) {
     out('ERR', { message: String(e && e.message || e), stack: String(e && e.stack || '').slice(0, 400) });
