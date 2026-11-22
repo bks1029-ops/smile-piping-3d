@@ -695,8 +695,11 @@ input[type="color"] {
   background: #0f1419; border: 1px dashed var(--line); border-radius: 8px;
 }
 .ai-photo-empty b { color: var(--txt); }
-.ai-photo-btns { display: flex; gap: 8px; margin-top: 8px; }
+.ai-photo-btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .ai-photo-btns .btn { flex: 1 1 auto; }
+/* 바로 촬영 — 사진첩 선택보다 먼저 눈에 들어오게 한 줄 전체를 쓴다. */
+.ai-photo-btns .btn.shoot { flex: 1 1 100%; font-weight: 700; }
+.ai-photo-btns .btn.ghost.small { flex: 0 0 auto; }
 .err-text { color: #ffb3ae; font-size: 12px; }
 
 /* ── AI 분석 진행 표시 ──────────────────────────────────── */

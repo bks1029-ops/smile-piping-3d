@@ -74,13 +74,8 @@ const PROMPT = `너는 배관설비(플랜트) 현장 사진과 2D 도면, 손�
 - 서로 다른 구역을 찍은 사진들은 사진에 보이는 연결 관계·배관 흐름대로 이어 붙여라. 겹치는 부분은 위치를 맞춰라.
 - 평면 도면과 현장 사진이 섞여 있으면 도면의 배치·치수·분기 구조를 우선하고, 사진은 장비 모양·색·부속 확인에 써라.
 - 사진마다 확실한 정보가 다르므로, 한 사진에서 본 부속을 다른 사진의 같은 배관 위치에 붙여도 된다.
-
-[확대 타일이 함께 첨부되었을 때 — 매우 중요]
-- "[확대 영역 1/4: 좌상]"·"[사진 2/2 · 확대 영역 3/4: 좌하]" 같은 라벨이 붙은 이미지는 같은 사진을 55% 크기로 잘라 확대한 것이다. 별개의 구역이나 다른 현장이 아니다.
-- 확대 타일에서 같은 장비·배관을 또 만들지 말 것(중복 금지). "[전체 사진]"에서 잡은 전체 구도를 그대로 두고, 타일은 디테일을 채우는 데만 써라.
-- 타일로 읽을 것: 밸브 종류·핸들 모양, 플랜지 볼트 원판 유무, 배관 굵기 비교, 배관이 꺾이는 방향, 부품 색, 작은 계기·드레인·니쁠.
-- 타일의 위치(좌상 = 그 사진의 왼쪽 위, 우하 = 오른쪽 아래)를 전체 사진의 같은 자리로 되돌려 좌표를 잡아라.
-- 전체 사진과 타일에서 본 내용이 다르면 확대 타일을 믿어라 — 가까이서 찍은 쪽이 부속을 더 정확히 보여 준다.
+- 정면 사진 하나와 측면·위쪽에서 찍은 추가 사진이 같이 있으면, 측면·위쪽 사진으로 앞뒤 깊이(Z)와 배관이 꺾이는 방향을 먼저 확정하고 정면 사진으로 좌우(X)를 맞춰라.
+  같은 배관이 두 사진에서 다른 길이로 보이면 실제 길이는 더 길게 보이는 쪽(정면에 가까운 쪽)을 따르고, 방향은 측면 사진을 따르라.
 
 [좌표계]
 - 단위: 미터(m). 바닥면 y = 0.
@@ -212,8 +207,8 @@ function modelRetryable(status, detail) {
 async function callModel({ apiKey, model, text, mimeType, base64, images }) {
   const url = `${API_ROOT}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   // 사진 여러 장이면 parts에 텍스트 한 번 + 이미지 N장을 담아 한 번의 요청으로 보낸다.
-  // 이미지마다 라벨("[전체 사진]"·"[확대 영역 2/4: 우상]")을 바로 앞에 붙여,
-  // Gemini가 같은 사진을 확대한 타일을 다른 구역으로 착각하지 않게 한다.
+  // 이미지마다 라벨("[전체 사진]"·"[사진 2/3: 측면]" 같은)을 바로 앞에 붙여, Gemini가
+  // 어느 사진이 정면이고 어느 쪽이 다른 각도인지 알고 깊이를 잡게 한다.
   const reqParts = [{ text }];
   const list = Array.isArray(images) && images.length ? images : (base64 ? [{ mimeType, base64 }] : []);
   list.forEach((im, i) => {
@@ -371,7 +366,7 @@ function splitDataUrl(dataUrl) {
 
 // 사진 여러 장(도면·현장 사진·손그림)을 한 번에 분석한다.
 // dataUrls에는 data URL 문자열과 {src|dataUrl, label}을 섮어 넣을 수 있다.
-// 라벨이 있으면 그 이미지 바로 앞에 라벨 텍스트를 붙여 보낸다(확대 타일용).
+// 라벨이 있으면 그 이미지 바로 앞에 라벨 텍스트를 붙여 보낸다(정면/측면 구분용).
 // 한 장만 올렸을 때도 같은 경로를 쓴다 — 예전 analyzeImage는 이 함수를 감싼 것이다.
 export async function analyzeImages({ apiKey, model, dataUrls, extraNote }) {
   const raw = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
@@ -384,7 +379,7 @@ export async function analyzeImages({ apiKey, model, dataUrls, extraNote }) {
     })
     .filter(Boolean);
   if (!list.length) throw new Error('분석할 사진을 한 장 이상 올려주세요.');
-  if (list.length > 8) throw new Error('사진은 한 번에 최대 8장(확대 타일 포함)까지 분석할 수 있습니다.');
+  if (list.length > 8) throw new Error('사진은 한 번에 최대 8장까지 분석할 수 있습니다.');
   const images = list.map((it) => ({ ...splitDataUrl(it.dataUrl), label: it.label }));
   const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
   const { raw: out, model: used } = await requestWithFallback({ apiKey, model, text, images });

@@ -7,14 +7,14 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=55';
-import { buildScene } from './builders.js?v=55';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=55';
-import { buildOBJ } from './obj.js?v=55';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=55';
-import { parseCommand, CMD_HELP } from './cmd.js?v=55';
-import { buildDimItems } from './dims.js?v=55';
-import { buildAiImageParts } from './zoom.js?v=55';
+} from './store.js?v=56';
+import { buildScene } from './builders.js?v=56';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=56';
+import { buildOBJ } from './obj.js?v=56';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=56';
+import { parseCommand, CMD_HELP } from './cmd.js?v=56';
+import { buildDimItems } from './dims.js?v=56';
+import { buildAiImageParts } from './zoom.js?v=56';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -74,7 +74,7 @@ const AXES_ALL = AXES6.concat(AXES45);   // 45° 모드에서 고를 수 있는 
 const HAND_UP = { x: 0, y: 1, z: 0 };   // 원기둥 미리보기의 기본 축
 const HAND_MIN_MM = 300;                // 최소 구간 길이
 const HAND_STEP_MM = 100;               // 100mm 단위 반올림
-const HAND_SNAP_PX = 56;                // 기존 배관 끝·커서에 붙는 화면 거리
+const HAND_SNAP_PX = 40;                // 손끝이 기존 배관(끝·몸통)·커서에 붙는 화면 거리
 
 // 배관을 끊고 그 자리에 앉는 부속(인라인) — 실제 길이(spec.w)만큼 커서가 전진한다.
 const INLINE_TYPES = new Set([
@@ -105,6 +105,7 @@ class App {
     this.planTexture = null;
     this.pendingAi = false;
     this.aiPhotos = [];   // AI 분석 창에 첨부한 사진들(최대 6장)
+    this.handGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);  // 바닥(y=0) 기준면
     this.aiRunning = false;
     this.wakeLock = null;
     // 한 줄 명령 상태 — 커서(마지막 끝점)와 직전 관경·재질을 이어 쓴다.
@@ -632,9 +633,11 @@ class App {
     if (el) el.hidden = true;
   }
 
-  // 누른 자리 근처에 기존 배관 끝(또는 커서)이 있으면 그 점에서 이어 긋는다.
+  // 누른 자리 근처의 기존 배관 위 점 — 끝점뿐 아니라 배관 몸통(티 분기 자리)까지
+  // 화면 거리로 찾는다. AI가 뽑은 배관은 y > 0 높이에 떠 있으므로 찾은 3D 좌표(y 포함)를
+  // 그대로 handAnchor로 쓴다 — 그 높이 그대로 손 그리기가 이어진다.
   // dir은 그 점으로 들어오는 진행 방향 — 이어 그을 때 엘보 방향을 맞추는 데 쓴다.
-  nearestEndpointScreen(ev, radiusPx) {
+  nearestPipeSnap(ev, radiusPx) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const px = ev.clientX - rect.left;
@@ -642,48 +645,87 @@ class App {
     const v = new THREE.Vector3();
     let best = null;
     let bestD = radiusPx;
-    const test = (p, dir) => {
+    const screenOf = (p) => {
       v.set(p.x, p.y, p.z).project(this.camera);
-      if (v.z > 1 || v.z < -1) return;
-      const sx = (v.x * 0.5 + 0.5) * rect.width;
-      const sy = (-v.y * 0.5 + 0.5) * rect.height;
-      const d = Math.hypot(sx - px, sy - py);
-      if (d < bestD) {
-        bestD = d;
-        best = { x: r3(p.x), y: r3(p.y), z: r3(p.z), dir: dir || null };
-      }
+      if (v.z > 1 || v.z < -1) return null;
+      return { x: (v.x * 0.5 + 0.5) * rect.width, y: (-v.y * 0.5 + 0.5) * rect.height };
     };
-    this.state.pipes.forEach((p) => {
-      const pts = p.points || [];
+    const take = (d, p, dir, kind) => {
+      if (!(d < bestD)) return;
+      bestD = d;
+      best = { x: r3(p.x), y: r3(p.y), z: r3(p.z), dir: dir || null, kind: kind || 'vertex' };
+    };
+    const unit = (a, b) => {
+      const l = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) || 1;
+      return { x: (b.x - a.x) / l, y: (b.y - a.y) / l, z: (b.z - a.z) / l };
+    };
+    const testPoint = (p, dir) => {
+      const s = screenOf(p);
+      if (!s) return;
+      take(Math.hypot(s.x - px, s.y - py), p, dir);
+    };
+
+    this.state.pipes.forEach((pipe) => {
+      const pts = pipe.points || [];
       if (pts.length < 2) return;
-      const a = pts[0];
-      const b = pts[pts.length - 1];
-      const q = pts[1];
-      const r = pts[pts.length - 2];
-      const l0 = Math.hypot(q.x - a.x, q.y - a.y, q.z - a.z) || 1;
-      const l1 = Math.hypot(b.x - r.x, b.y - r.y, b.z - r.z) || 1;
-      // 시작점은 그 배관에서 나가는 방향, 끝점은 그 배관으로 들어오는 방향이다.
-      test(a, { x: -(q.x - a.x) / l0, y: -(q.y - a.y) / l0, z: -(q.z - a.z) / l0 });
-      test(b, { x: (b.x - r.x) / l1, y: (b.y - r.y) / l1, z: (b.z - r.z) / l1 });
+      // 꼭짓점(배관 끝·중간 엘보) — 점을 먼저 보므로 같은 거리면 꼭짓점이 이긴다.
+      for (let i = 0; i < pts.length; i += 1) {
+        const prev = pts[i - 1];
+        const next = pts[i + 1];
+        // 시작점은 그 배관에서 나가는 방향의 반대(밖에서 들어오는 방향), 나머지는 들어오는 방향.
+        const dir = prev ? unit(prev, pts[i]) : (next ? unit(next, pts[i]) : null);
+        testPoint(pts[i], dir);
+      }
+      // 선분 몸통 — 화면에서 선분 위 가장 가까운 점의 비율(t)을 3D 점으로 되돌린다.
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        const sa = screenOf(a);
+        const sb = screenOf(b);
+        if (!sa || !sb) continue;
+        const vx = sb.x - sa.x;
+        const vy = sb.y - sa.y;
+        const l2 = vx * vx + vy * vy;
+        let t = l2 > 1e-6 ? ((px - sa.x) * vx + (py - sa.y) * vy) / l2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(sa.x + vx * t - px, sa.y + vy * t - py);
+        take(d, {
+          x: a.x + (b.x - a.x) * t,
+          y: a.y + (b.y - a.y) * t,
+          z: a.z + (b.z - a.z) * t,
+        }, unit(a, b), 'body');
+      }
     });
-    if (this.cmdMarked) test(this.cmdCursor, this.lastDirV ? { ...this.lastDirV } : null);
+    if (this.cmdMarked) {
+      const s = screenOf(this.cmdCursor);
+      if (s) take(Math.hypot(s.x - px, s.y - py), this.cmdCursor, this.lastDirV ? { ...this.lastDirV } : null);
+    }
     return best;
+  }
+
+  // 옛 이름 — 다른 곳에서 부르던 곳이 있어 그대로 둔다(이제 몸통까지 찾는다).
+  nearestEndpointScreen(ev, radiusPx) {
+    return this.nearestPipeSnap(ev, radiusPx);
   }
 
   // 손 모드에서 누른 자리 → 바닥 위의 점
   handGroundPoint(ev) {
     const ray = this.raycastAt(ev);
     const hits = ray.intersectObject(this.ground, false);
-    if (!hits.length) return null;
-    return hits[0].point;
+    if (hits.length) return hits[0].point;
+    // 바닥 메쉬 밖(지평선 너머)을 눌러도 그리기가 끊기지 않게 y=0 평면과 만나는 점을 쓴다.
+    const p = ray.ray.intersectPlane(this.handGroundPlane, new THREE.Vector3());
+    return p || null;
   }
 
   handPointerDown(e) {
     if (!this.handMode) return;
     // 데스크톱 오른쪽·가운데 버튼은 카메라 조작(이동·확대)에 남겨 둔다.
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // 서랍이 열려 있으면 이 터치는 창을 닫는 데만 쓴다 — 창이 도면을 가린 채 그려지지 않게.
+    if (this.closeCoveringPanel()) return;
     this.lastPointerType = e.pointerType || null;
-    // 방금 그은 구간의 치수 창이 떠 있으면, 캔버스를 톡 누르는 순간 조용힣 닫고 그대로 다음 선을 긋는다.
+    // 방금 그은 구간의 치수 창이 떠 있으면, 캔버스를 톡 누르는 순간 조용히 닫고 그대로 다음 선을 긋는다.
     if (this.handDimItem) this.closeHandDim();
     this.handTouches.add(e.pointerId);
     if (this.handTouches.size > 1) {
@@ -692,28 +734,51 @@ class App {
       this.clearHandPreview();
       return;
     }
-    const p = this.handGroundPoint(e);
-    if (!p) return;
     if (this.handTap && this.handTap.point) {
       // 두 점 찍기의 둘째 점 — 찍어 둔 시작점에서 잰다.
       this.handAnchor = { ...this.handTap.point };
       this.handContinued = true;
     } else {
-      const near = this.nearestEndpointScreen(e, HAND_SNAP_PX);
+      // 기존 배관이 손끝 가까이 있으면 그 위 점(끝·몸통, 높이 그대로)에서 이어 긋는다.
+      // 높이 떠 있는 AI 배관은 그 아래 바닥을 눌렀을 때 화면 거리가 멀어 스냅되지 않도록,
+      // 바닥 점을 구하기 전에 먼저 배관 위 점을 찾는다.
+      const near = this.nearestPipeSnap(e, HAND_SNAP_PX);
+      const p = near ? null : this.handGroundPoint(e);
       if (near) {
         this.handAnchor = { x: near.x, y: near.y, z: near.z };
         this.handDirV = near.dir ? { ...near.dir } : null;
         this.handContinued = true;
+        // 스냅한 점이 배관 몸통이면 그 자리에 티 분기가 생긴다 — 짧게 알려 준다.
+        if (near.kind === 'body' && this.lastPointerType === 'touch') {
+          this.toast(`배관 몸통 ${near.y.toFixed(2)}m 높이에 붙였습니다.`);
+        }
         this.setCmdCursor(this.handAnchor, true);
-      } else {
+      } else if (p) {
         this.handAnchor = { x: r3(p.x), y: Math.max(0, r3(p.y)), z: r3(p.z) };
         this.handDirV = null;
         this.handContinued = false;
+      } else {
+        return;
       }
     }
     this.handDown = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
     try { this.renderer.domElement.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     this.showHandAnchor();
+  }
+
+  // 3D 도면을 가리고 있는 창(모바일 도구 서랍·속성 창)을 닫는다. 닫았으면 true.
+  closeCoveringPanel() {
+    const drawer = $('#drawer');
+    if (drawer && drawer.classList.contains('open')) {
+      this.setDrawerOpen(false);
+      return true;
+    }
+    const props = $('#props');
+    if (props && !props.hidden) {
+      this.clearSelection();
+      return true;
+    }
+    return false;
   }
 
   handPointerMove(e) {
@@ -2967,6 +3032,8 @@ class App {
   onCanvasClick(ev) {
     // 손 그리기 중에는 한 손가락 탭이 그리기 시작점이 된다 — 선택으로 새지 않게 한다.
     if (this.handMode) return;
+    // 열려 있는 창(도구 서랍·속성 창)은 3D 도면을 톡 누르면 먼저 닫는다 — 도면이 가려지지 않게.
+    if (this.closeCoveringPanel()) return;
     const ray = this.raycastAt(ev);
 
     if (this.drawMode) {
@@ -3311,28 +3378,42 @@ class App {
           <div class="ai-photo-grid" id="aiPhotoGrid"></div>
           <p class="hint" id="aiPhotoHint"></p>
           <div class="ai-photo-btns">
-            <button class="btn" id="aiPhotoAdd" type="button">📷 사진 추가</button>
+            <button class="btn accent shoot" id="aiPhotoShoot" type="button">📷 바로 촬영</button>
+            <button class="btn" id="aiPhotoAdd" type="button">🖼 사진첩에서 추가</button>
             <button class="btn ghost small" id="aiPhotoClear" type="button">전체 비우기</button>
           </div>
           <input type="file" id="aiPhotos" accept="image/*" multiple hidden>
+          <!-- 바로 촬영 — 휴대폰에서는 카메라가 바로 열리고, 촬영한 사진이 목록에 들어간다. -->
+          <input type="file" id="aiPhotosCam" accept="image/*" capture="environment" hidden>
         </div>
-        <p class="hint">현장 사진·도면·손그림을 최대 6장까지 올릴 수 있습니다. 여러 각도의 사진을 함께 올리면 한 장면으로 종합해 배치합니다.</p>
-        <p class="hint">사진 1~2장은 자동으로 2×2(55%) 확대 타일을 만들어 밸브·플랜지·배관 굵기까지 함께 읽습니다.</p>`,
+        <p class="hint">현장 사진·도면·손그림을 최대 6장까지 올릴 수 있습니다. <b>📷 바로 촬영</b>으로 지금 현장을 찍어 바로 분석할 수 있습니다.</p>
+        <p class="hint">정면 사진과 함께 <b>다른 각도(측면·위쪽) 추가 사진</b>을 올리면 3D 깊이와 배관 연결을 훨씬 정확하게 잡습니다.</p>`,
       actions: [
         { label: 'AI 분석 시작', cls: 'accent', keep: true, onClick: () => this.runAiFromPhotos() },
         { label: '닫기' },
       ],
     });
     const add = $('#aiPhotoAdd', $('#modalRoot'));
+    const shoot = $('#aiPhotoShoot', $('#modalRoot'));
     const clear = $('#aiPhotoClear', $('#modalRoot'));
     const input = $('#aiPhotos', $('#modalRoot'));
+    const camInput = $('#aiPhotosCam', $('#modalRoot'));
     const grid = $('#aiPhotoGrid', $('#modalRoot'));
     if (add && input) add.addEventListener('click', () => input.click());
+    if (shoot && camInput) shoot.addEventListener('click', () => camInput.click());
     if (clear) clear.addEventListener('click', () => { this.aiPhotos = []; this.renderAiPhotos(); });
     if (input) input.addEventListener('change', async (e) => {
       const files = e.target.files ? Array.from(e.target.files) : [];
       e.target.value = ''; // 같은 사진을 다시 골라도 change가 오도록
       await this.addAiPhotos(files);
+    });
+    if (camInput) camInput.addEventListener('change', async (e) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      e.target.value = ''; // 다시 찍어도 change가 오도록
+      if (!files.length) return;
+      await this.addAiPhotos(files);
+      // "바로 분석"이 되도록 분석 시작 버튼 위치를 알려 준다(여러 각도로 더 찍을 수 있게 자동 시작은 하지 않는다).
+      if (this.aiPhotos.length) this.toast('촬영한 사진을 넣었습니다. 더 찍거나 [AI 분석 시작]을 누르세요.');
     });
     // 썸네일의 × — 누른 사진만 지운다.
     if (grid) grid.addEventListener('click', (e) => {
@@ -3405,11 +3486,11 @@ class App {
             <span class="ai-photo-no">${i + 1}</span>
             <button class="ai-photo-x" type="button" data-i="${i}" title="이 사진 빼기" aria-label="${i + 1}번 사진 빼기">×</button>
           </div>`).join('')
-      : `<div class="ai-photo-empty">아직 사진이 없습니다.<br><b>📷 사진 추가</b>를 눌러 도면·현장 사진을 올려 주세요.</div>`;
+      : `<div class="ai-photo-empty">아직 사진이 없습니다.<br><b>📷 바로 촬영</b>으로 지금 현장을 찍거나 <b>🖼 사진첩에서 추가</b>로 올려 주세요.</div>`;
     const hint = $('#aiPhotoHint', $('#modalRoot'));
     if (hint) {
       hint.textContent = photos.length
-        ? `사진 ${photos.length}장 / 최대 ${max}장 — 여러 각도의 사진을 함께 올리면 하나의 3D 씬으로 종합합니다.`
+        ? `사진 ${photos.length}장 / 최대 ${max}장 — 정면과 함께 측면·위쪽 사진을 더 올리면 3D 깊이와 연결이 더 정확해집니다.`
         : `사진을 한 장만 올려도 되고, 현장을 여러 각도에서 찍어 함께 올리면 더 정확합니다. (최대 ${max}장)`;
     }
   }
@@ -3438,21 +3519,17 @@ class App {
     this.openModal({
       title: 'AI 자동 분석',
       body: `<p><span class="loader"></span>사진 ${photos.length}장에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>
-             <p class="hint" id="aiZoomHint">사진을 4분할로 확대해 디테일까지 함께 읽습니다.</p>
+             <p class="hint" id="aiZoomHint">고해상도(2048px) 원본 사진 그대로 읽습니다.</p>
              <p class="hint">분석은 화면을 닫아도 계속됩니다. 결과가 나오면 다시 알려 드립니다.</p>`,
       actions: [],
     });
     try {
-      // 사진마다 [전체 사진] + 55% 크기 확대 타일을 만들어 함께 보낸다.
-      // 전체 사진 = 구도·장비 위치, 확대 타일 = 밸브 종류·플랜지·배관 굵기·연결 방향.
-      // (localStorage에는 저장하지 않고 이 분석에만 쓴다 — 메모리에서 만들고 버린다)
+      // 사진을 자르지 않고 고해상도 원본 그대로 보낸다 — 4분할 크롭은 AI가 사진마다 다른 시점으로
+      // 착각해 방향을 잃는 문제가 있어 뺐다. 깊이·연결은 다른 각도 추가 사진으로 잡는다.
       const parts = await buildAiImageParts(photos);
-      const tileCount = parts.filter((p) => p.kind === 'tile').length;
       const zoomHint = $('#aiZoomHint', $('#modalRoot'));
       if (zoomHint) {
-        zoomHint.textContent = tileCount
-          ? `사진 ${photos.length}장 + 확대 타일 ${tileCount}장 = 모두 ${parts.length}장을 함께 분석합니다.`
-          : `사진 ${photos.length}장을 분석합니다(사진이 3장 이상이면 확대는 생략).`;
+        zoomHint.textContent = `사진 ${photos.length}장(2048px 원본)을 한 번에 분석합니다.`;
       }
       const asked = this.model();
       const { data: res, model: usedModel } = await analyzeImages({ apiKey: this.apiKey(), model: asked, dataUrls: parts });
@@ -3470,7 +3547,7 @@ class App {
         body: `
           <div class="ai-result">
             장비 <b>${eq.length}</b>개 · 배관 <b>${pp.length}</b>개를 찾았습니다.<br>
-            ${tileCount ? `<span>사진 ${photos.length}장 + 확대 타일 ${tileCount}장(${parts.length}장)으로 읽었습니다.</span><br>` : ''}
+            <span>사진 ${photos.length}장(고해상도 원본)으로 읽었습니다.</span><br>
             ${res.notes ? `<span>${esc(res.notes)}</span>` : ''}
           </div>
           ${plan ? `<div class="ai-plan"><b>구조 정리</b><br>${esc(plan)}</div>` : ''}
