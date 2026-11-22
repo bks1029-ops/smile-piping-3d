@@ -725,13 +725,87 @@ export function aiTypeOf(type) {
 // ── 결정론적 기하 보정기 ────────────────────────────────────────────────
 // AI가 뽑은 JSON을 그대로 그리지 않고, 코드로 한 번 더 정밀하게 맞춘다.
 //  ① 헤더·탱크 위로 올라가는 수직 배관 끝을 본체 윗면에 정확히 앉힌다
-//  ② 직선 배관끼리 0.15m 안에서 어긋난 연결점은 서로 붙여 준다
+//  ② 직선 배관끼리 0.15m 안에서 어긋난 연결점은 서로 붙여 주고, 0.25m 안에서 살짝 뜬 끝은
+//     다른 배관의 끝점이나 구간(티 분기)에 이어 붙인다 — 공중에 뜬 배관을 없앨
 //  ③ 수직 배관(0.4m 이내)에 달린 밸브·피팅은 axis='y'로 세우고 배관 중심(x,z)에 스냅
 //  ④ 그 부속이 헤더·탱크 내부에 들어가면 본체 윗면 위로 끌어올림
 //  ⑤ 수직 배관 옆의 압력계는 배관 외벽 바깥으로 비켜 세워 관 속에 파묻히지 않게 한다
+//  ⑥ 대형 장비(탱크·펌프·열교환기·제어반)끼리 겹치면 XZ에서 최소 여백만큼 밀어낸다
 // 원본 AI JSON(장비·배관 배열)을 받아 보정본을 돌려준다.
 const SNAP_WELD = 0.15;   // 배관 연결점 불이기 거리
+const SNAP_JOINT = 0.25;  // 살짝 뜬 배관 끝을 이어 붙이는 거리 (끝점·구간 모두)
 const SNAP_VERT = 0.4;    // 수직 배관에 달린 부속으로 보는 거리
+const EQUIP_GAP = 0.15;   // 대형 장비끼리 최소 여백(m)
+// 서로 밀어내는 대형 설비 — 앞뒤 거리감(Z)이 무너지는 걸 막는 대상
+const MAIN_BODY_TYPES = new Set(['tank', 'pump', 'hx', 'panel', 'stank', 'rtank']);
+
+// 점 p에서 선분 ab 위 가장 가까운 점 — 배관 구간에 끝점을 붙일 때 쓴다.
+function closestOnSegment(p, a, b) {
+  const vx = b.x - a.x, vy = b.y - a.y, vz = b.z - a.z;
+  const L2 = vx * vx + vy * vy + vz * vz;
+  if (L2 < 1e-9) {
+    return { d: Math.hypot(p.x - a.x, p.y - a.y, p.z - a.z), x: a.x, y: a.y, z: a.z };
+  }
+  let t = ((p.x - a.x) * vx + (p.y - a.y) * vy + (p.z - a.z) * vz) / L2;
+  t = Math.max(0, Math.min(1, t));
+  const x = a.x + vx * t, y = a.y + vy * t, z = a.z + vz * t;
+  return { d: Math.hypot(p.x - x, p.y - y, p.z - z), x, y, z };
+}
+
+// 장비가 바닥에서 차지하는 사각형(회전 반영) — rot가 90/270이면 폭과 깊이가 바뀐다.
+function footprintBox(spec) {
+  const r = (((Math.round(num(spec.rot, 0)) % 360) + 360) % 360);
+  const w = Math.max(0.15, num(spec.w, 0.6));
+  const d = Math.max(0.15, num(spec.d, 0.6));
+  if (r % 90 !== 0) {
+    // 45° 같은 중간 각도는 안전하게 원으로 본다
+    const rad = Math.max(w, d) / 2;
+    return { hw: rad, hd: rad };
+  }
+  const swap = r === 90 || r === 270;
+  return { hw: (swap ? d : w) / 2, hd: (swap ? w : d) / 2 };
+}
+
+// ⑥ 대형 장비끼리 겹친 자리를 XZ에서 최소 여백(EQUIP_GAP)까지 밀어낸다.
+// AI가 펌프·탱크·제어반을 같은 자리에 몰아넣으면 장비가 서로를 뚫고 들어간 그림이 되고
+// 앞뒤 거리감이 사라진다. 겹친 만큼 + 여백만큼만, 겹침이 작은 축으로 반씩 민다.
+function separateMainBodies(equipment) {
+  const moved = new Set();
+  const list = (equipment || []).filter((e) => e && MAIN_BODY_TYPES.has(e.type));
+  for (let pass = 0; pass < 20; pass += 1) {
+    let hit = false;
+    for (let a = 0; a < list.length; a += 1) {
+      for (let b = a + 1; b < list.length; b += 1) {
+        const A = list[a];
+        const B = list[b];
+        const fa = footprintBox(A);
+        const fb = footprintBox(B);
+        const dx = num(B.x, 0) - num(A.x, 0);
+        const dz = num(B.z, 0) - num(A.z, 0);
+        const ox = fa.hw + fb.hw + EQUIP_GAP - Math.abs(dx);
+        const oz = fa.hd + fb.hd + EQUIP_GAP - Math.abs(dz);
+        if (ox <= 1e-4 || oz <= 1e-4) continue;   // 한 축이라도 떨어져 있으면 겹치지 않음
+        hit = true;
+        // 겹침이 작은 축으로 밀면 원래 의도한 배치에서 가장 적게 움직인다.
+        if (ox <= oz) {
+          const push = ox / 2;
+          const s = dx === 0 ? (pass % 2 === 0 ? 1 : -1) : Math.sign(dx);
+          A.x = round3(num(A.x, 0) - s * push);
+          B.x = round3(num(B.x, 0) + s * push);
+        } else {
+          const push = oz / 2;
+          const s = dz === 0 ? (pass % 2 === 0 ? 1 : -1) : Math.sign(dz);
+          A.z = round3(num(A.z, 0) - s * push);
+          B.z = round3(num(B.z, 0) + s * push);
+        }
+        moved.add(A);
+        moved.add(B);
+      }
+    }
+    if (!hit) break;
+  }
+  return moved.size;
+}
 
 // ── 계기(압력계·온도계)를 배관 외벽에 직각으로 밀착 ──────────────────────────
 // builders.js의 buildGauge와 짝을 맞춘 규약:
@@ -842,7 +916,9 @@ export function sanitizeAiScene(raw) {
       name: p.name || `배관 ${i + 1}`,
       points: p.points.map((q) => ({ x: num(q.x, 0), y: Math.max(0, num(q.y, 0)), z: num(q.z, 0) })),
     }));
-  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0 };
+  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0, snapped: 0, spread: 0 };
+  // ⑥ 대형 장비 이격을 먼저 한다 — 배관을 앉히고 붙이는 단계가 최종 장비 위치를 보게 하려는 것이다.
+  report.spread = separateMainBodies(equipment);
   const bodies = equipment
     .map((e) => ({ spec: e, body: equipBody(e) }))
     .filter((b) => b.body && (b.spec.type === 'header' || b.spec.type === 'tank'
@@ -933,6 +1009,45 @@ export function sanitizeAiScene(raw) {
       }
     }
   }
+
+  // ②-b 살짝 뜬 배관 끝을 다른 배관에 이어 붙이기 (0.15~0.25m)
+  //    AI가 "여기서 꺾여 이어진다"는 배관을 몇 십 cm 어긋나게 주면 공중에 뜨거나 끊긴 채로 그려진다.
+  //    끝점끼리(②)에서 못 붙인 끝을, 다른 배관의 끝점이나 구간(티 분기) 중 더 가까운 쪽으로 당긴다.
+  const endRefs = [];
+  pipes.forEach((p, pi) => {
+    endRefs.push({ pi, i: 0 });
+    endRefs.push({ pi, i: p.points.length - 1 });
+  });
+  endRefs.forEach((A) => {
+    const pa = pipes[A.pi].points[A.i];
+    if (!pa) return;
+    let best = null;
+    endRefs.forEach((B) => {
+      if (B.pi === A.pi) return;
+      const pb = pipes[B.pi].points[B.i];
+      const d = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z);
+      if (d > 1e-4 && d <= SNAP_JOINT && (!best || d < best.d)) {
+        best = { d, x: pb.x, y: pb.y, z: pb.z, how: 'end' };
+      }
+    });
+    pipes.forEach((p, pi) => {
+      if (pi === A.pi) return;
+      for (let i = 1; i < p.points.length; i += 1) {
+        const hit = closestOnSegment(pa, p.points[i - 1], p.points[i]);
+        if (hit.d > 1e-4 && hit.d <= SNAP_JOINT && (!best || hit.d < best.d)) {
+          best = { d: hit.d, x: hit.x, y: hit.y, z: hit.z, how: 'seg' };
+        }
+      }
+    });
+    if (!best) return;
+    // 붙인 자리가 배관을 5cm도 안 되는 꺾임으로 만들면 붙이지 않는다(찌그러진 배관 방지)
+    const prev = pipes[A.pi].points[A.i === 0 ? 1 : A.i - 1];
+    if (prev && Math.hypot(best.x - prev.x, best.y - prev.y, best.z - prev.z) < 0.05) return;
+    pa.x = round3(best.x);
+    pa.y = round3(Math.max(0, best.y));
+    pa.z = round3(best.z);
+    report.snapped += 1;
+  });
 
   // ③④ 수직 배관 위 밸브·피팅 — 세우기 + 본체 밖으로
   equipment.forEach((e) => {

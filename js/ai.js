@@ -33,12 +33,54 @@ const PROMPT = `너는 배관설비(플랜트) 현장 사진과 2D 도면, 손�
 3) 마지막에 스스로 점검한다: 밸브가 헤더·탱크 몸통 속에 들어가 있지 않은가, 수직 배관 밸브에 axis: "y"를 넣었는가,
    가로로 누운 원통 분배기를 header로 골랐는가.
 
+[최우선 기준 — 정확한 치수보다 라인·장비]
+- 이 앱의 목적은 현장을 사람에게 설명하는 것이다. mm 치수를 정확히 맞히는 것보다
+  **모든 배관 라인의 시작·꺾임·연결 흐름**과 **장비의 위치·방향·상대 간격**을 사진과 같게 그리는 것이 최우선이다.
+- 치수가 1~2m 어긋나 잘못 읽히는 것은 괜찮다. 그러나 없는 라인을 만들거나, 보이는 라인을 빼거나,
+  장비의 좌우 순서·바라보는 방향을 뒤집으면 그림이 쓸모없어진다.
+- layoutPlan ①②에서 사진에 보이는 배관 라인을 손으로 세어 보고, 그 개수·분기 지점·꺾임 높이를 좌표에 그대로 옮겨라.
+- 사진에서 보이는데 이름을 모르는 배관도 빼지 말고 가장 비슷한 bore·material로 넣어라.
+
+[앞뒤 거리감(Z 깊이) — 납작하게 뭉치지 말 것]
+- 사진 속 앞줄 배관 / 중간의 펌프·드럼 / 뒤쪽 제어반·후면 배관은 실제로 서로 1m 안팎씩 떨어져 있다.
+- 앞줄과 뒤쪽 설비의 Z 간격, 설비 사이의 Z 간격을 최소 0.8~1.5m 이상 넉넉히 주어라.
+  모든 장비를 z=0 근처 한 줄에 몰아넣으면 사진과 다른 납작한 그림이 된다.
+- 카메라가 비스듬히 본 사진에서 뒤로 갈수록 작게 보이는 것을 원근으로 판단하라 — 작게 보이는 쪽이 먼 쪽(Z가 큰 쪽)이다.
+- 바닥에 그은 앞뒤 간격은 equipment의 z 값과 배관 points의 z 값에 모두 반영하라(배관만 앞에 두지 말 것).
+
+[펌프 방향(rot)]
+- pump는 흡입·토출 배관이 붙는 방향에 맞춰 rot를 정하라. 모터가 뒤쪽, 흡입구가 앞쪽 배관을 보는 것이 기본이다.
+- 흡입 배관이 −X에서 오면 rot 180, +X에서 오면 rot 0, +Z에서 오면 rot 90, −Z에서 오면 rot 270 으로 두어
+  모터(몸통 뒤쪽)가 배관 반대쪽을 보게 하라. 0/90/180/270 중 하나를 반드시 골라라.
+- 그 펌프의 흡입·토출 배관 끝점은 펌프 몸통 앞·옆면(x±w/2, z±d/2) 노즐 높이에 맞춰라.
+- vpump(입형 인라인)는 아래 흡입·위 토출이라 rot는 배관이 지나가는 방향만 맞추면 된다.
+
+[배관 연결 완결성 — 공중에 뜬 배관 금지]
+- 사진에서 이어지는 수직·수평 구간과 하부 배관까지 이어서, 끝점 좌표를 서로 맞춰라.
+- 배관 끝은 반드시 (a) 다른 배관의 끝점, (b) 다른 배관의 중간(티 분기), (c) 장비의 노즐 중 하나에 닿아야 한다.
+  어디에도 닿지 않고 공중에서 끝나는 배관을 만들지 말 것.
+- 이어지는 두 끝점은 같은 좌표로 적어라. 0.25m 안쪽으로 살짝 어긋난 것은 앱이 붙여 주지만 그보다 크면 끊어진 배관으로 보인다.
+- 수직관이 위에서 수평관으로 꺾이면, 그 수평관의 끝점을 수직관 꼭대기와 같은 좌표로 적어라(엘보로 이어진다).
+
+[색 구분 — 부품별로]
+- 사진에서 색이 보이면 부품별로 구분해 color를 적어라: 은색 밸브·SUS 배관 "#c8ced4", 흑관·카본 "#3a3f44",
+  파랑 기어 버터플라이·설비 "#1f5fd0", 적색 방청·스팀 배관 "#b04a35", 초록 "#2e7d4f", 노랑 "#d8b02a".
+- 같은 배관이라도 구간별로 도색이 다르면 구간을 나눠 배관을 따로 만들고 각각 color를 적어라.
+- 한 장면에서 은색·흑관·파랑·적색이 모두 보이면 넷 다 구분되어야 한다(전부 흑관으로 뭉개지 말 것).
+
 [사진이 여러 장일 때]
 - 첨부된 사진들은 같은 현장(또는 같은 도면)을 다른 각도·다른 구역에서 찍은 것으로 보고, 하나의 일관된 3D 장면으로 종합하라.
 - 같은 장비·배관이 여러 사진에 나오면 이름과 위치를 기준으로 하나로 합쳐라. 사진마다 같은 장비를 복제하지 말 것.
 - 서로 다른 구역을 찍은 사진들은 사진에 보이는 연결 관계·배관 흐름대로 이어 붙여라. 겹치는 부분은 위치를 맞춰라.
 - 평면 도면과 현장 사진이 섞여 있으면 도면의 배치·치수·분기 구조를 우선하고, 사진은 장비 모양·색·부속 확인에 써라.
 - 사진마다 확실한 정보가 다르므로, 한 사진에서 본 부속을 다른 사진의 같은 배관 위치에 붙여도 된다.
+
+[확대 타일이 함께 첨부되었을 때 — 매우 중요]
+- "[확대 영역 1/4: 좌상]"·"[사진 2/2 · 확대 영역 3/4: 좌하]" 같은 라벨이 붙은 이미지는 같은 사진을 55% 크기로 잘라 확대한 것이다. 별개의 구역이나 다른 현장이 아니다.
+- 확대 타일에서 같은 장비·배관을 또 만들지 말 것(중복 금지). "[전체 사진]"에서 잡은 전체 구도를 그대로 두고, 타일은 디테일을 채우는 데만 써라.
+- 타일로 읽을 것: 밸브 종류·핸들 모양, 플랜지 볼트 원판 유무, 배관 굵기 비교, 배관이 꺾이는 방향, 부품 색, 작은 계기·드레인·니쁠.
+- 타일의 위치(좌상 = 그 사진의 왼쪽 위, 우하 = 오른쪽 아래)를 전체 사진의 같은 자리로 되돌려 좌표를 잡아라.
+- 전체 사진과 타일에서 본 내용이 다르면 확대 타일을 믿어라 — 가까이서 찍은 쪽이 부속을 더 정확히 보여 준다.
 
 [좌표계]
 - 단위: 미터(m). 바닥면 y = 0.
@@ -133,7 +175,7 @@ const PROMPT = `너는 배관설비(플랜트) 현장 사진과 2D 도면, 손�
 - color: 사진에서 관 색이 뚜렷하면 hex (적색 방청 배관 "#b04a35", 은색 아연도 "#c8ced4" 등). 없으면 빼도 된다.
 - points: 꺾이는 지점을 모두 포함한 [{x,y,z}, ...] 배열 (최소 2개). 수직 상승/하강과 엘보를 그대로 표현.
 - 배관은 장비의 노즐 위치에서 시작하거나 끝나게 맞춰라.
-- 서로 이어지는 배관의 끝점은 정확히 같은 좌표로 적어라 (0.15m 넘게 어긋나면 끊어진 배관으로 보인다).
+- 서로 이어지는 배관의 끝점은 정확히 같은 좌표로 적어라 (0.25m 넘게 어긋나면 끊어진 배관으로 보인다).
 
 [규칙]
 - 사진에 보이는 밸브·플랜지·신축관·지지대·계기도 빠뜨리지 말고 equipment에 넣어라.
@@ -170,10 +212,15 @@ function modelRetryable(status, detail) {
 async function callModel({ apiKey, model, text, mimeType, base64, images }) {
   const url = `${API_ROOT}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   // 사진 여러 장이면 parts에 텍스트 한 번 + 이미지 N장을 담아 한 번의 요청으로 보낸다.
+  // 이미지마다 라벨("[전체 사진]"·"[확대 영역 2/4: 우상]")을 바로 앞에 붙여,
+  // Gemini가 같은 사진을 확대한 타일을 다른 구역으로 착각하지 않게 한다.
   const reqParts = [{ text }];
   const list = Array.isArray(images) && images.length ? images : (base64 ? [{ mimeType, base64 }] : []);
-  list.forEach((im) => {
-    if (im && im.base64) reqParts.push({ inlineData: { mimeType: im.mimeType || 'image/jpeg', data: im.base64 } });
+  list.forEach((im, i) => {
+    if (!im || !im.base64) return;
+    const label = im.label ? String(im.label) : `[사진 ${i + 1}]`;
+    reqParts.push({ text: label });
+    reqParts.push({ inlineData: { mimeType: im.mimeType || 'image/jpeg', data: im.base64 } });
   });
   let res;
   try {
@@ -323,15 +370,25 @@ function splitDataUrl(dataUrl) {
 }
 
 // 사진 여러 장(도면·현장 사진·손그림)을 한 번에 분석한다.
+// dataUrls에는 data URL 문자열과 {src|dataUrl, label}을 섮어 넣을 수 있다.
+// 라벨이 있으면 그 이미지 바로 앞에 라벨 텍스트를 붙여 보낸다(확대 타일용).
 // 한 장만 올렸을 때도 같은 경로를 쓴다 — 예전 analyzeImage는 이 함수를 감싼 것이다.
 export async function analyzeImages({ apiKey, model, dataUrls, extraNote }) {
-  const list = (Array.isArray(dataUrls) ? dataUrls : [dataUrls]).filter(Boolean);
+  const raw = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
+  const list = raw
+    .map((it) => {
+      if (!it) return null;
+      if (typeof it === 'string') return { dataUrl: it, label: '' };
+      const d = it.src || it.dataUrl || '';
+      return d ? { dataUrl: d, label: typeof it.label === 'string' ? it.label : '' } : null;
+    })
+    .filter(Boolean);
   if (!list.length) throw new Error('분석할 사진을 한 장 이상 올려주세요.');
-  if (list.length > 6) throw new Error('사진은 한 번에 최대 6장까지 분석할 수 있습니다.');
-  const images = list.map(splitDataUrl);
+  if (list.length > 8) throw new Error('사진은 한 번에 최대 8장(확대 타일 포함)까지 분석할 수 있습니다.');
+  const images = list.map((it) => ({ ...splitDataUrl(it.dataUrl), label: it.label }));
   const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
-  const { raw, model: used } = await requestWithFallback({ apiKey, model, text, images });
-  return { data: parseResult(raw), model: used, count: images.length };
+  const { raw: out, model: used } = await requestWithFallback({ apiKey, model, text, images });
+  return { data: parseResult(out), model: used, count: images.length };
 }
 
 export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {

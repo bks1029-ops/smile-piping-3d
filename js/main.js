@@ -7,13 +7,14 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=53';
-import { buildScene } from './builders.js?v=53';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=53';
-import { buildOBJ } from './obj.js?v=53';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=53';
-import { parseCommand, CMD_HELP } from './cmd.js?v=53';
-import { buildDimItems } from './dims.js?v=53';
+} from './store.js?v=54';
+import { buildScene } from './builders.js?v=54';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=54';
+import { buildOBJ } from './obj.js?v=54';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=54';
+import { parseCommand, CMD_HELP } from './cmd.js?v=54';
+import { buildDimItems } from './dims.js?v=54';
+import { buildAiImageParts } from './zoom.js?v=54';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -3154,12 +3155,14 @@ class App {
     $('#btnPlanUpload').textContent = has ? '다른 도면 올리기' : '도면·현장 사진 올리기';
   }
 
-  // 휴대폰 고해상도 사진은 긴 변 1600px · JPEG 0.82로 줄여서 넘긴다.
+  // 휴대폰 고해상도 사진은 긴 변 2048px · JPEG 0.86로 줄여서 넘긴다.
+  // (예전 1600px · 0.82는 멀리 있는 밸브·배관 굵기 차이가 뭉개져 AI가 라인을 놓쳤다 —
+  //  사용자 요청 "사진을 확대해서 더 디테일하게 보고 그려줄수없어?")
   readImageFile(file, cb) {
     if (!file) return;
     if (!/^image\//.test(file.type)) { this.toast('이미지 파일만 올릴 수 있습니다.', { type: 'err' }); return; }
-    const MAX_SIDE = 1600;
-    const QUALITY = 0.82;
+    const MAX_SIDE = 2048;
+    const QUALITY = 0.86;
 
     const viaFileReader = () => {
       const reader = new FileReader();
@@ -3313,7 +3316,8 @@ class App {
           </div>
           <input type="file" id="aiPhotos" accept="image/*" multiple hidden>
         </div>
-        <p class="hint">현장 사진·도면·손그림을 최대 6장까지 올릴 수 있습니다. 여러 각도의 사진을 함께 올리면 한 장면으로 종합해 배치합니다.</p>`,
+        <p class="hint">현장 사진·도면·손그림을 최대 6장까지 올릴 수 있습니다. 여러 각도의 사진을 함께 올리면 한 장면으로 종합해 배치합니다.</p>
+        <p class="hint">사진 1~2장은 자동으로 2×2(55%) 확대 타일을 만들어 밸브·플랜지·배관 굵기까지 함께 읽습니다.</p>`,
       actions: [
         { label: 'AI 분석 시작', cls: 'accent', keep: true, onClick: () => this.runAiFromPhotos() },
         { label: '닫기' },
@@ -3426,20 +3430,32 @@ class App {
 
   async runAI(dataUrl) {
     if (this.aiRunning) return; // 한 번에 하나만 — 진행 중인 분석을 다른 창으로 덮어쓰지 않는다.
-    const images = (Array.isArray(dataUrl) ? dataUrl : [dataUrl]).filter(Boolean);
-    if (!images.length) return;
+    const photos = (Array.isArray(dataUrl) ? dataUrl : [dataUrl]).filter(Boolean);
+    if (!photos.length) return;
     this.aiRunning = true;
     this.acquireWakeLock(); // 분석하는 동안 폰 화면이 꺼지지 않게 (지원하지 않으면 조용히 무시)
     this.showAiProgress();
     this.openModal({
       title: 'AI 자동 분석',
-      body: `<p><span class="loader"></span>사진 ${images.length}장에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>
+      body: `<p><span class="loader"></span>사진 ${photos.length}장에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>
+             <p class="hint" id="aiZoomHint">사진을 4분할로 확대해 디테일까지 함께 읽습니다.</p>
              <p class="hint">분석은 화면을 닫아도 계속됩니다. 결과가 나오면 다시 알려 드립니다.</p>`,
       actions: [],
     });
     try {
+      // 사진마다 [전체 사진] + 55% 크기 확대 타일을 만들어 함께 보낸다.
+      // 전체 사진 = 구도·장비 위치, 확대 타일 = 밸브 종류·플랜지·배관 굵기·연결 방향.
+      // (localStorage에는 저장하지 않고 이 분석에만 쓴다 — 메모리에서 만들고 버린다)
+      const parts = await buildAiImageParts(photos);
+      const tileCount = parts.filter((p) => p.kind === 'tile').length;
+      const zoomHint = $('#aiZoomHint', $('#modalRoot'));
+      if (zoomHint) {
+        zoomHint.textContent = tileCount
+          ? `사진 ${photos.length}장 + 확대 타일 ${tileCount}장 = 모두 ${parts.length}장을 함께 분석합니다.`
+          : `사진 ${photos.length}장을 분석합니다(사진이 3장 이상이면 확대는 생략).`;
+      }
       const asked = this.model();
-      const { data: res, model: usedModel } = await analyzeImages({ apiKey: this.apiKey(), model: asked, dataUrls: images });
+      const { data: res, model: usedModel } = await analyzeImages({ apiKey: this.apiKey(), model: asked, dataUrls: parts });
       if (usedModel && usedModel !== asked) {
         // 구형 모델이 막혀 다른 모델로 성공한 경우 — 다음에도 같은 문제를 겪지 않게 저장해 둔다.
         try { localStorage.setItem(KEY_MODEL, usedModel); localStorage.setItem(KEY_MODEL_MIGRATED, '1'); } catch (e) { /* ignore */ }
@@ -3454,6 +3470,7 @@ class App {
         body: `
           <div class="ai-result">
             장비 <b>${eq.length}</b>개 · 배관 <b>${pp.length}</b>개를 찾았습니다.<br>
+            ${tileCount ? `<span>사진 ${photos.length}장 + 확대 타일 ${tileCount}장(${parts.length}장)으로 읽었습니다.</span><br>` : ''}
             ${res.notes ? `<span>${esc(res.notes)}</span>` : ''}
           </div>
           ${plan ? `<div class="ai-plan"><b>구조 정리</b><br>${esc(plan)}</div>` : ''}
@@ -3543,6 +3560,8 @@ class App {
     if (report.lifted) notes.push(`묻힌 부속 ${report.lifted}개 올림`);
     if (report.gauged) notes.push(`계기 ${report.gauged}개 관 밖으로`);
     if (report.welded) notes.push(`배관 이음 ${report.welded}곳 붙임`);
+    if (report.snapped) notes.push(`끊긴 배관 끝 ${report.snapped}곳 이어 붙임`);
+    if (report.spread) notes.push(`겹친 장비 ${report.spread}대 띄움`);
     const extra = notes.length ? ` · ${notes.join(' · ')}` : '';
     this.toast(`AI 배치 완료 · 장비 ${eq.length} / 배관 ${pipes.length}${extra}`,
       { action: '되돌리기', onAction: () => this.undo() });
