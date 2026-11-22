@@ -7,25 +7,27 @@
 <style>
   html, body { margin: 0; height: 100%; background: #0b0f13; color: #dfe6ee;
     font-family: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', system-ui, sans-serif; overflow: hidden; }
-  #c { display: block; width: 100vw; height: 100vh; }
-  #report { position: fixed; left: 14px; top: 14px; padding: 12px 14px; border-radius: 10px;
-    background: rgba(12, 17, 22, .92); border: 1px solid #24303c; font-size: 12.5px; line-height: 1.6;
-    max-width: 640px; white-space: pre-wrap; }
+  #panel { position: fixed; left: 0; top: 0; width: 46%; height: 100%; box-sizing: border-box;
+    padding: 12px 14px 16px; overflow-y: auto; background: #0d1218; border-right: 1px solid #24303c; }
+  #c { position: fixed; left: 46%; top: 0; width: 54%; height: 100%; display: block; }
+  #report { font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
   #report b { color: #ffd166; }
-  .ok { color: #7ee2a8; }
-  .bad { color: #ff7b72; }
-  #thumbs { position: fixed; left: 14px; bottom: 14px; display: flex; gap: 8px; align-items: flex-end;
-    background: rgba(12, 17, 22, .92); border: 1px solid #24303c; border-radius: 10px; padding: 8px 10px; }
+  .ok { color: #7ee2a8; font-weight: 700; }
+  .bad { color: #ff7b72; font-weight: 700; }
+  #thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 8px; margin-top: 12px; }
   #thumbs figure { margin: 0; text-align: center; }
-  #thumbs img { display: block; width: 132px; height: 99px; object-fit: cover; border-radius: 5px; border: 1px solid #33404d; }
-  #thumbs figcaption { font-size: 10.5px; color: #9fb0c0; margin-top: 3px; max-width: 132px; line-height: 1.3; }
-  #thumbs figure.full img { border-color: #ffd166; }
+  #thumbs img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 5px;
+    border: 1px solid #33404d; }
+  #thumbs figure.full img { border-color: #ffd166; box-shadow: 0 0 0 1px #ffd166 inset; }
+  #thumbs figcaption { font-size: 10px; color: #9fb0c0; margin-top: 3px; line-height: 1.3; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="report">검증 준비 중…</div>
-<div id="thumbs"></div>
+<div id="panel">
+  <div id="report">검증 준비 중…</div>
+  <div id="thumbs"></div>
+</div>
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
@@ -44,15 +46,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { aiResultToScene, sanitizeAiScene } from './js/store.js?v=54&b=2';
-import { buildScene } from './js/builders.js?v=54&b=2';
-import { buildZoomTiles, buildAiImageParts, ZOOM_FRACTION, TILE_MAX_SIDE } from './js/zoom.js?v=54&b=2';
+import { aiResultToScene, sanitizeAiScene, aiTypeOf } from './js/store.js?v=55';
+import { buildScene } from './js/builders.js?v=55';
+import { buildZoomTiles, buildAiImageParts, ZOOM_FRACTION, TILE_MAX_SIDE } from './js/zoom.js?v=55';
 
 const pass = (b) => `<span class="${b ? 'ok' : 'bad'}">${b ? 'OK' : '실패'}</span>`;
 const lines = [];
 
 // ── ① 2000×1500 테스트 사진 만들기 ────────────────────────────────────
-// 사분면마다 다른 색 + 가장자리 표식 + 작은 부품(밸브·플랜지) 무늬를 그려
+// 사분면마다 다른 색 + 가장자리 글자 + 배관 줄무늬를 그려
 // 잘라 낸 타일이 어느 자리에서 왔는지 픽셀 비교로 확인할 수 있게 한다.
 const W = 2000, H = 1500;
 const srcCanvas = document.createElement('canvas');
@@ -163,6 +165,10 @@ const clean = sanitizeAiScene(MOCK);
 const { equipment, pipes, report } = aiResultToScene(MOCK);
 const state = { equipment, pipes, floorPlan: { visible: false } };
 
+// 정식 type 이름이 그대로 살아오는지 (hx가 tank로 떨어지던 버그)
+const typeOk = equipment.some((e) => e.type === 'hx' && /열교환/.test(e.name))
+  && aiTypeOf('hx') === 'hx' && aiTypeOf('vpump') === 'vpump' && aiTypeOf('Heat Exchanger') === 'hx';
+
 // 끊긴 배관이 붙었는지 (데이터)
 const join = (name) => {
   const p = pipes.find((x) => x.name === name);
@@ -182,7 +188,7 @@ const boxOf = (e) => {
   const swap = r === 90 || r === 270;
   const hw = (swap ? e.d : e.w) / 2;
   const hd = (swap ? e.w : e.d) / 2;
-  return { x0: e.x - hw, x1: e.x + hw, z0: e.z - hd, z1: e.z + hd, hw, hd };
+  return { x0: e.x - hw, x1: e.x + hw, z0: e.z - hd, z1: e.z + hd };
 };
 const main = equipment.filter((e) => ['tank', 'pump', 'hx', 'panel'].includes(e.type));
 const pairs = [];
@@ -195,7 +201,7 @@ for (let i = 0; i < main.length; i += 1) {
     pairs.push({ a: main[i].name, b: main[j].name, ox: +ox.toFixed(3), oz: +oz.toFixed(3), ok: ox <= 0.001 || oz <= 0.001 });
   }
 }
-const spreadOk = report.spread >= 2 && pairs.every((p) => p.ok);
+const spreadOk = report.spread >= 2 && main.length === 4 && pairs.every((p) => p.ok);
 const headerFixed = (() => {
   const h = equipment.find((e) => e.type === 'header');
   return h && Math.abs(h.x) < 1e-6 && Math.abs(h.z + 2.2) < 1e-6;
@@ -204,7 +210,7 @@ const headerFixed = (() => {
 // 배포 파일 상수 확인 (readImageFile 해상도 상향)
 let resOk = false;
 try {
-  const txt = await (await fetch('./js/main.js?v=54&b=2')).text();
+  const txt = await (await fetch('./js/main.js?v=55')).text();
   resOk = /const MAX_SIDE = 2048;/.test(txt) && /const QUALITY = 0\.86;/.test(txt);
 } catch (e) { resOk = false; }
 
@@ -212,7 +218,7 @@ try {
 const canvas = document.getElementById('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -223,11 +229,8 @@ scene.background = new THREE.Color('#0b0f13');
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
-const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 200);
+const camera = new THREE.PerspectiveCamera(40, canvas.clientWidth / Math.max(1, canvas.clientHeight), 0.1, 200);
 const controls = new OrbitControls(camera, canvas);
-controls.target.set(0.3, 1.3, -0.6);
-camera.position.set(4.6, 4.2, 5.4);
-controls.update();
 
 scene.add(new THREE.HemisphereLight('#dfe9f4', '#1b232b', 0.55));
 const sun = new THREE.DirectionalLight('#fff6e8', 1.6);
@@ -250,6 +253,19 @@ scene.add(grid);
 const root = buildScene(state);
 scene.add(root);
 
+// 씬 전체가 화면에 들어오게 카메라를 맞춘다(등각). 장비가 넓게 퍼져도 잘리지 않게.
+{
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const r = Math.max(1.7, size.length() / 2);
+  const dist = (r / Math.sin((camera.fov * Math.PI / 180) / 2)) * 1.08;
+  const dir = new THREE.Vector3(1, 0.82, 1.2).normalize();
+  camera.position.copy(center).addScaledVector(dir, dist);
+  controls.target.copy(center);
+  controls.update();
+}
+
 window.__setCam = (px, py, pz, tx, ty, tz) => {
   camera.position.set(px, py, pz);
   controls.target.set(tx, ty, tz);
@@ -260,20 +276,24 @@ const errors = window.__errors || [];
 window.__verify = {
   tiles: tileChecks, labels1, labels2: parts2.map((p) => p.label),
   parts: { one: parts1.length, two: parts2.length, three: parts3.length },
-  report, snapAOk, snapBOk, verticalOk, spreadOk, headerFixed, resOk, pairs, errors,
+  report, snapAOk, snapBOk, verticalOk, spreadOk, headerFixed, resOk, typeOk, pairs, errors,
   equipment: equipment.map((e) => ({ name: e.name, type: e.type, x: e.x, z: e.z })),
   pipes: pipes.map((p) => ({ name: p.name, points: p.points })),
+  canvas: { w: canvas.clientWidth, h: canvas.clientHeight },
 };
 
-lines.push('<b>스마일산업 3D 배관 · 4분할 확대 + 라인·거리감 검증 (v54)</b>');
+lines.push('<b>스마일산업 3D 배관 · 4분할 확대 + 라인·거리감 검증 (v55)</b>');
 lines.push(`① 고해상도 상향(MAX_SIDE 2048 · 0.86) ${pass(resOk)}`);
-lines.push(`② 2000×1500 사진 → 확대 타일 ${tiles.length}장 ${pass(tilesOk)} ${tileChecks.map((t) => `${t.name} ${t.w}×${t.h}(차이 ${t.diff})`).join(' · ')}`);
-lines.push(`③ 사진 1장 → 전체 1 + 타일 4 = ${parts1.length}장 ${pass(parts1Ok)}  라벨 ${labels1.join(' ')}`);
+lines.push(`② 2000×1500 사진 → 확대 타일 ${tiles.length}장 ${pass(tilesOk)}`);
+lines.push(`    ${tileChecks.map((t) => `${t.name} ${t.w}×${t.h}(차이 ${t.diff})`).join(' · ')}`);
+lines.push(`③ 사진 1장 → 전체 1 + 타일 4 = ${parts1.length}장 ${pass(parts1Ok)}`);
+lines.push(`    ${labels1.join(' ')}`);
 lines.push(`④ 사진 2장 → ${parts2.length}장(전체 2 + 타일 4) ${pass(parts2Ok)} · 사진 3장 → ${parts3.length}장(확대 생략) ${pass(parts3Ok)}`);
 lines.push(`⑤ 끊긴 배관 끝 붙임: 상부 수평 ${pass(!!snapAOk)} · 지관→구간(티) ${pass(!!snapBOk)} · 수직관 안 기움 ${pass(!!verticalOk)} (snapped ${report.snapped}곳)`);
-lines.push(`⑥ 겹친 장비 이격 ${pass(spreadOk)} (spread ${report.spread}대) · 헤더는 그대로 ${pass(!!headerFixed)}`);
+lines.push(`⑥ 겹친 장비 이격 ${pass(spreadOk)} (spread ${report.spread}대 · 본체 ${main.length}대) · 헤더는 그대로 ${pass(!!headerFixed)}`);
 pairs.forEach((p) => lines.push(`    ${p.a} ↔ ${p.b}  겹침 ${p.ox}×${p.oz} ${pass(p.ok)}`));
-lines.push(`⑦ 3D 렌더 · 콘솔 오류 ${errors.length}건 ${pass(errors.length === 0)}`);
+lines.push(`⑦ type 매핑(hx·vpump 유지) ${pass(!!typeOk)} → ${equipment.map((e) => e.type).join(', ')}`);
+lines.push(`⑧ 3D 렌더 ${pass(root.children.length > 0)} · 콘솔 오류 ${errors.length}건 ${pass(errors.length === 0)}`);
 document.getElementById('report').innerHTML = lines.join('\n');
 
 // 썸네일 — 전체 사진 + 확대 타일 4장
@@ -285,9 +305,9 @@ thumbs.innerHTML = parts1.map((p) => `
   </figure>`).join('');
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
 });
 
 function tick() {

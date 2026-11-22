@@ -692,7 +692,10 @@ export function postProcessAi(state) {
 // Gemini는 자유 텍스트 타입을 돌려주기도 해서, 긴 이름부터 구체적으로 매칭한다.
 // (헤더를 stank/tank로 그리던 문제를 막기 위해 헤더·안전밸브를 앞에서 잡는다)
 export function aiTypeOf(type) {
-  const s = String(type || '').toLowerCase();
+  const s = String(type || '').toLowerCase().trim();
+  // 프롬프트에 적힌 정식 type 이름(hx·vpump·bfly·stank…)이 그대로 오면 그대로 쓴다.
+  // 예전에는 'hx'가 어느 정규식에도 걸리지 않아 tank로 떨어졌다(열교환기가 드럼으로 그려짐).
+  if (EQUIP_TYPES[s]) return s;
   if (/header|헤더|매니폴드|manifold|분배기|분배관|collector|distributor/.test(s)) return 'header';
   if (/safety|relief|prv|안전밸브|안전변|감압밸브|감압변|방출밸브/.test(s)) return 'safety_valve';
   if (/heat|exchang|열교환/.test(s)) return 'hx';
