@@ -9,7 +9,7 @@
 export const AI_IMAGE_MAX = 6;       // Gemini 요청 한 번에 보내는 이미지 상한
 
 // 분석에 보낼 이미지 묶음 만들기 — 올린 사진을 그대로(자르지 않고) 순서대로 담는다.
-// 라벨은 사진이 여러 장일 때만 붙여, AI가 \"1번 정면 / 2번 측면\"처럼 구분하게 한다.
+// 라벨은 사진이 여러 장일 때만 붙여, AI가 "1번 정면 / 2번 측면"처럼 구분하게 한다.
 export async function buildAiImageParts(sources) {
   const raw = (Array.isArray(sources) ? sources : [sources])
     .filter((s) => s && (typeof s === 'string' ? s.length > 0 : !!s.src))
