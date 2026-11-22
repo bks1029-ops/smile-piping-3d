@@ -44,9 +44,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { aiResultToScene, sanitizeAiScene } from './js/store.js?v=54';
-import { buildScene } from './js/builders.js?v=54';
-import { buildZoomTiles, buildAiImageParts, ZOOM_FRACTION, TILE_MAX_SIDE } from './js/zoom.js?v=54';
+import { aiResultToScene, sanitizeAiScene } from './js/store.js?v=54&b=2';
+import { buildScene } from './js/builders.js?v=54&b=2';
+import { buildZoomTiles, buildAiImageParts, ZOOM_FRACTION, TILE_MAX_SIDE } from './js/zoom.js?v=54&b=2';
 
 const pass = (b) => `<span class="${b ? 'ok' : 'bad'}">${b ? 'OK' : '실패'}</span>`;
 const lines = [];
@@ -204,7 +204,7 @@ const headerFixed = (() => {
 // 배포 파일 상수 확인 (readImageFile 해상도 상향)
 let resOk = false;
 try {
-  const txt = await (await fetch('./js/main.js?v=54')).text();
+  const txt = await (await fetch('./js/main.js?v=54&b=2')).text();
   resOk = /const MAX_SIDE = 2048;/.test(txt) && /const QUALITY = 0\.86;/.test(txt);
 } catch (e) { resOk = false; }
 
