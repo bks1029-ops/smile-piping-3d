@@ -1032,6 +1032,8 @@ input[type="color"] {
   .hud { bottom: calc(70px + env(safe-area-inset-bottom)); }
   .modal-card { width: calc(100% - 20px); max-height: 82dvh; }
   .ai-photo-grid { grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  /* 손가락으로 누를 수 있는 크기 — 썸네일 × 버튼 */
+  .ai-photo-x { width: 28px; height: 28px; font-size: 15px; }
   /* 명령창은 모바일 화면 맨 아래 띠 — 3D 화면은 그 위를 그대로 쓴다 */
   .cmd-bar {
     left: 8px;
