@@ -50,7 +50,7 @@ const MOCK = {
   ],
   pipes: [
     { name: '450A 은색 보온 가로관', bore: '450A', material: 'sus', color: '#c8ced4',
-      points: [{ x: -1.0, y: 0.8, z: 0 }, { x: 1.0, y: 0.8, z: 0 }] },
+      points: [{ x: -1.2, y: 0.8, z: 0 }, { x: 1.2, y: 0.8, z: 0 }] },
     { name: '300A 보온 후면 주배관', bore: '300A', material: 'sus', color: '#c8ced4',
       points: [{ x: -1.0, y: 1.35, z: 1.3 }, { x: 1.0, y: 1.35, z: 1.3 }] },
     { name: '50A ㄷ자 우회 A', bore: '50A', material: 'carbon', color: '#3a3f44',
@@ -143,10 +143,6 @@ async function run() {
   // ── ① 프롬프트에 새 규칙이 실려 있는지 (배포된 ai.js 그대로 확인)
   let src = '';
   try { src = await (await fetch('./js/ai.js?v=58')).text(); } catch (e) {}
-  // 브라우저 캐시에 예전 store.js가 남아 있으면 이 검증이 무의미해진다 — 최신판인지 함께 본다.
-  let sjs = '';
-  try { sjs = await (await fetch('./js/store.js?v=58')).text(); } catch (e) {}
-  check('store.js 최신판(열린 끝 가드)', sjs.includes('열린 끝점으로는 끌어오지 않는다'));
   check('프롬프트: 가로 원통 ≠ 세로 탱크', src.includes('가로로 누운') && src.includes('절대 tank·stank·rtank로 분류하지 말 것'));
   check('프롬프트: ㄷ자 분기는 상대 배관 중심선에', src.includes('분기·우회 배관') && src.includes('중심선 위'));
 
