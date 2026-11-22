@@ -3334,7 +3334,8 @@ class App {
     }
     // 사진을 처음 올렸고 바닥에 깔 도면이 없다면 첫 사진을 도면으로도 쓴다(예전과 같은 동작).
     if (!this.state.floorPlan.src && photos[0]) this.applyPlanImage(photos[0]);
-    this.closeModal();
+    // 창은 닫지 않고 그대로 둔 채 내용만 ‘분석 중’으로 바뀐다 — 닫았다 열면
+    // 히스토리 항목(뒤로가기)이 어긋나 앞 페이지로 넘어갈 수 있다.
     await this.runAI(photos);
   }
 
@@ -3777,8 +3778,10 @@ class App {
   }
 
   // 창이 열려 있는 동안 히스토리 항목 하나만 깔아 둔다 (중복 push 없음).
+  // 돌려놓은 항목의 popstate가 아직 오지 않았으면(suppressPop>0) 새로 깔지 않는다 —
+  // back()과 pushState가 엇갈리면 우리 항목 대신 앞 페이지가 밀려 나갈 수 있다.
   syncOverlayEntry() {
-    if (!this.anyOverlayOpen() || this.overlayEntry) return;
+    if (!this.anyOverlayOpen() || this.overlayEntry || this.suppressPop > 0) return;
     try {
       history.pushState({ smileOverlay: 1 }, '');
       this.overlayEntry = true;
@@ -3789,6 +3792,8 @@ class App {
   releaseOverlayEntry() {
     if (!this.overlayEntry || this.anyOverlayOpen()) return;
     this.overlayEntry = false;
+    // 이미 back()을 건네고 그 popstate를 기다리는 중이면 또 back()하지 않는다.
+    if (this.suppressPop > 0) return;
     this.suppressPop += 1;
     try { history.back(); } catch (e) { this.suppressPop -= 1; }
   }
