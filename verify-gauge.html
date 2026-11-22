@@ -175,8 +175,15 @@ const gauges = equipment.filter((e) => e.type === 'gauge').map((g) => {
 // ── 검증 ④ Fusion 스크립트에 계기 축·바로 세운 좌표가 들어갔는지 ─────────
 const py = buildFusionScript(state);
 const pyOk = {
-  gaugeNormal: /'normal': build_gauge/.test(py) && /'normal':/.test(py),
-  gaugeNipple: /_Nipple/.test(py),
+  gaugeNormal: py.includes('"normal"') && py.includes('"rmat"'),
+  gaugeNipple: py.includes('_Nipple'),
+};
+
+// 화면 점검용 — 카메라를 바꾸고 상세 컷을 찍을 수 있게 열어 둔다.
+window.__setCam = (px, py2, pz, tx, ty, tz) => {
+  camera.position.set(px, py2, pz);
+  controls.target.set(tx, ty, tz);
+  controls.update();
 };
 
 const errors = window.__errors || [];
