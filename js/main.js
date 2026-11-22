@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
-} from './store.js?v=43';
-import { buildScene } from './builders.js?v=43';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=43';
-import { buildOBJ } from './obj.js?v=43';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=43';
-import { parseCommand, CMD_HELP } from './cmd.js?v=43';
-import { buildDimItems } from './dims.js?v=43';
+} from './store.js?v=44';
+import { buildScene } from './builders.js?v=44';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=44';
+import { buildOBJ } from './obj.js?v=44';
+import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=44';
+import { parseCommand, CMD_HELP } from './cmd.js?v=44';
+import { buildDimItems } from './dims.js?v=44';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -2026,6 +2026,7 @@ class App {
     const equipSeq = {};
     const notes = [];
     let prevDir = null;     // 이번 명령에서 마지막으로 그린 구간의 진행 방향
+    let equipDir = null;    // 명령 첫 부속의 진행 방향(뒤따르는 이동에서 미리 알아낸 것)
     let wantElbow = null;   // "엘보써서 위로 1000" — 다음 꺾임에 쓸 엘보
 
     const put = (p) => ({ x: r3(p.x), y: Math.max(0, r3(p.y)), z: r3(p.z) });
@@ -2086,7 +2087,7 @@ class App {
     const putEquip = (type, extra) => {
       const t = EQUIP_TYPES[type];
       // 지금 커서에 들어오는 배관의 진행 방향 — 인라인 부속은 이 벡터로 3D 회전을 맞춘다.
-      const dv = prevDir || this.lastDirV;
+      const dv = prevDir || equipDir || this.lastDirV;
       const dir = INLINE_TYPES.has(type) && dv
         ? [r3(dv.x), r3(dv.y), r3(dv.z)] : null;
       // bore — 밸브·피팅은 이 관경의 외경에 비례해 몸체·핸들 크기가 정해진다.
@@ -2258,7 +2259,11 @@ class App {
         // (`25a 볼벨브 위로 600` — 예전에는 직전 명령의 방향으로 놓여 배관에서 옆으로 비껴났다)
         if (inline && !prevDir) {
           const nx = this.nextMoveOp(ops, i);
-          if (nx && nx.axis) { axis = nx.axis; sign = nx.sign === -1 ? -1 : 1; }
+          if (nx && nx.axis) {
+            axis = nx.axis;
+            sign = nx.sign === -1 ? -1 : 1;
+            equipDir = { x: axis === 'x' ? sign : 0, y: axis === 'y' ? sign : 0, z: axis === 'z' ? sign : 0 };
+          }
         }
         // "단조 볼밸브"처럼 부속 앞에 단조/소켓/나사가 붙어 온 부속은 그것만 단조형으로 놓는다.
         const pieceConn = op.conn === 'forged' ? 'forged' : conn;
