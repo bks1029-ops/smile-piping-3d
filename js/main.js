@@ -7,14 +7,14 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=56';
-import { buildScene } from './builders.js?v=56';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=56';
-import { buildOBJ } from './obj.js?v=56';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=56';
-import { parseCommand, CMD_HELP } from './cmd.js?v=56';
-import { buildDimItems } from './dims.js?v=56';
-import { buildAiImageParts } from './zoom.js?v=56';
+} from './store.js?v=56&b=2';
+import { buildScene } from './builders.js?v=56&b=2';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=56&b=2';
+import { buildOBJ } from './obj.js?v=56&b=2';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=56&b=2';
+import { parseCommand, CMD_HELP } from './cmd.js?v=56&b=2';
+import { buildDimItems } from './dims.js?v=56&b=2';
+import { buildAiImageParts } from './zoom.js?v=56&b=2';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
