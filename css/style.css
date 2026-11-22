@@ -627,6 +627,9 @@ input[type="color"] {
 @keyframes spin { to { transform: rotate(360deg); } }
 .ai-result { background: #0f1419; border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px; font-size: 12px; color: var(--dim); }
 .ai-result b { color: var(--txt); }
+/* AI가 먼저 말로 정리한 구조(layoutPlan) — 좌표를 만들기 전의 1차 정리 */
+.ai-plan { margin-top: 10px; padding: 10px; border-radius: 8px; background: #12171d; border: 1px dashed var(--line-soft); font-size: 12px; line-height: 1.55; color: var(--dim); white-space: pre-wrap; }
+.ai-plan b { color: var(--txt); }
 
 /* ── AI 사진 첨부 (여러 장) ──────────────────────────────── */
 .ai-photo-box { margin-bottom: 10px; }

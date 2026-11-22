@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis } from './store.js?v=48';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, headerBody } from './store.js?v=49';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -95,6 +95,79 @@ function socketBoss(parent, pos, axis, r, bodyMat, beadMat, opt) {
 }
 
 const isForged = (spec) => !!spec && spec.conn === 'forged';
+
+// ── 스팀/배관 헤더 (가로 원통 분배기 + 볼트 플랜지 + 새들 지지 프레임) ────────
+// 현장 사진(2026-11-22)처럼 가로로 누운 원통에 위·아래로 수직 배관이 꽂히는 설비.
+// 위에서 아래로: 상부 노즐(수직 분기관 자리) — 원통 — 지지 새들 프레임.
+// 치수는 headerBody()가 정한다(spec.y = 바닥, 원통 중심은 stand + h/2).
+function buildHeader(spec) {
+  const g = new THREE.Group();
+  const H = headerBody(spec);
+  const R = H.R;
+  const L = H.L;
+  const cy = H.cy;
+  const stand = H.stand;
+
+  const shellMat = MAT(spec.color, 0.55, 0.45);
+  const bandMat = MAT(shade(spec.color, 0.86), 0.55, 0.5);
+  const steel = MAT('#9aa3ab', 0.4, 0.8);
+  const boltMat = MAT('#3f474e', 0.5, 0.85);
+  const saddleMat = MAT('#8b949c', 0.6, 0.55);
+
+  // 원통 본체 (X축) + 양단 접시형 경판
+  add(g, cyl(R, L, 40), shellMat, 0, cy, 0, 0, 0, Math.PI / 2);
+  [-1, 1].forEach((sx) => {
+    const cap = add(g, sphere(R, 28), shellMat, sx * (L / 2), cy, 0);
+    cap.scale.set(0.55, 1, 1);
+    add(g, cyl(R * 0.45, 0.03, 24), bandMat, sx * (L / 2 + R * 0.5), cy, 0, 0, 0, Math.PI / 2);
+  });
+
+  // 볼트 플랜지 2쌍 — 사진처럼 원통을 나눠 잇는 두꺼운 접합부
+  [-0.3, 0.3].forEach((f) => {
+    const x = L * f;
+    [-1, 1].forEach((sx) => {
+      add(g, cyl(R * 1.18, 0.05, 40), bandMat, x + sx * 0.026, cy, 0, 0, 0, Math.PI / 2);
+      for (let i = 0; i < 12; i += 1) {
+        const a = (Math.PI * 2 * i) / 12;
+        add(g, cyl(0.011, 0.13, 8), boltMat, x + sx * 0.026,
+          cy + Math.cos(a) * R * 1.02, Math.sin(a) * R * 1.02, 0, 0, Math.PI / 2);
+      }
+    });
+  });
+
+  // 위쪽 노즐 3개 (수직 분기관이 꽂히는 자리) + 볼트 플랜지
+  [-0.32, 0, 0.32].forEach((f) => {
+    const x = L * f;
+    add(g, cyl(R * 0.34, 0.14, 22), shellMat, x, cy + R + 0.06, 0);
+    add(g, cyl(R * 0.46, 0.026, 26), steel, x, cy + R + 0.14, 0);
+    for (let i = 0; i < 6; i += 1) {
+      const a = (Math.PI * 2 * i) / 6;
+      add(g, cyl(0.009, 0.05, 8), boltMat,
+        x + Math.cos(a) * R * 0.38, cy + R + 0.14, Math.sin(a) * R * 0.38);
+    }
+  });
+
+  // 아래쪽 드레인 노즐 2개
+  [-0.18, 0.18].forEach((f) => {
+    add(g, cyl(0.035, 0.16, 14), steel, L * f, cy - R - 0.06, 0);
+    add(g, cyl(0.05, 0.02, 16), steel, L * f, cy - R - 0.14, 0);
+  });
+
+  // 새들 지지 프레임 2개 — 바닥 보 + 두 기둥 + 원통 받침판
+  [-0.3, 0.3].forEach((f) => {
+    const x = L * f;
+    add(g, box(R * 2.2, 0.05, R * 2.6), saddleMat, x, 0.025, 0);
+    [-1, 1].forEach((sz) => {
+      add(g, box(0.08, stand, 0.08), saddleMat, x, stand / 2, sz * R * 0.72);
+      addTube(g, [x, 0.05, sz * R * 1.12], [x, stand * 0.62, sz * R * 0.72], 0.014, saddleMat, 8);
+    });
+    add(g, box(0.14, 0.07, R * 1.9), saddleMat, x, stand - 0.03, 0);
+  });
+
+  // 명판
+  add(g, box(Math.min(0.34, L * 0.16), 0.13, 0.015), MAT('#e4ebf1', 0.4, 0.3), 0, cy + R * 0.1, R + 0.008);
+  return g;
+}
 
 // ── 열교환기 (쉘앤튜브 + 새들 지지대) ─────────────────────────────────────────
 function buildHX(spec) {
@@ -500,7 +573,9 @@ function buildBall(spec) {
   });
   add(g, cyl(0.03, 0.04, 14), bodyMat, 0, 0.075, 0);
   add(g, cyl(0.024, 0.06, 12), steel, 0, 0.11, 0);
-  add(g, box(0.19, 0.02, 0.024), dark, 0.035, 0.145, 0);
+  // 레버 — 수직(세운) 밸브에서는 유로(X)를 따라가면 안 되므로 옆(Z)으로 뉘인다.
+  if (spec.axis === 'y') add(g, box(0.024, 0.02, 0.19), dark, 0, 0.145, 0.035);
+  else add(g, box(0.19, 0.02, 0.024), dark, 0.035, 0.145, 0);
   add(g, cyl(0.026, 0.03, 12), dark, 0, 0.148, 0);
 
   g.scale.set(spec.w / 0.234, spec.h / 0.34, spec.d / 0.24);
@@ -525,6 +600,44 @@ function buildCheck(spec) {
   add(g, cyl(0.02, 0.014, 10), dark, 0, 0.165, 0);
 
   g.scale.set(spec.w / 0.108, spec.h / 0.26, spec.d / 0.22);
+  return g;
+}
+
+// ── 안전·감압밸브 (세로 몸체 + 상부 스프링 보닛 + 측면 토출구) ────────────────
+// 현장 사진 오른쪽처럼 수직 배관 위에 서서, 위로 스프링 보닛이 솟고 옆으로 토출구가 나온다.
+// 로컬 기준: y=0이 부속 중심, 아래(−Y)가 입구(수직 배관에 접합), +X가 토출구.
+// 그래서 기본 방향(axis: 'y')에서 따로 돌리지 않아도 세로로 선다.
+function buildSafetyValve(spec) {
+  const g = new THREE.Group();
+  const bodyMat = MAT(spec.color, 0.42, 0.62);
+  const bonnetMat = MAT(shade(spec.color, 0.9), 0.45, 0.6);
+  const steel = MAT('#9aa3ab', 0.35, 0.85);
+  const dark = MAT('#2c3238', 0.65, 0.5);
+
+  // 입구 (아래) — 플랜지 + 목
+  add(g, cyl(0.085, 0.022, 24), steel, 0, -0.16, 0);
+  add(g, cyl(0.045, 0.09, 18), bodyMat, 0, -0.11, 0);
+  // 본체 (세로) + 중간 플랜지 2개
+  add(g, cyl(0.068, 0.15, 22), bodyMat, 0, -0.01, 0);
+  add(g, cyl(0.088, 0.02, 24), steel, 0, 0.065, 0);
+  add(g, cyl(0.082, 0.018, 24), steel, 0, -0.075, 0);
+  for (let i = 0; i < 8; i += 1) {
+    const a = (Math.PI * 2 * i) / 8;
+    add(g, cyl(0.008, 0.05, 8), dark, Math.cos(a) * 0.078, 0.065, Math.sin(a) * 0.078);
+  }
+  // 측면 토출구 (+X) + 플랜지
+  add(g, cyl(0.04, 0.16, 18), bodyMat, 0.1, -0.01, 0, 0, 0, Math.PI / 2);
+  add(g, cyl(0.065, 0.02, 20), steel, 0.185, -0.01, 0, 0, 0, Math.PI / 2);
+  // 보닛 · 스프링 하우징 · 캡 · 조정 나사
+  add(g, cyl2(0.048, 0.07, 0.05, 20), bonnetMat, 0, 0.1, 0);
+  add(g, cyl(0.056, 0.15, 22), bonnetMat, 0, 0.2, 0);
+  add(g, cyl(0.048, 0.03, 20), dark, 0, 0.29, 0);
+  add(g, cyl(0.014, 0.06, 10), steel, 0, 0.33, 0);
+  add(g, cyl(0.022, 0.025, 6), dark, 0, 0.365, 0);
+  // 터는 레버
+  add(g, box(0.09, 0.012, 0.02), steel, 0.055, 0.13, 0);
+
+  g.scale.set(spec.w / 0.22, spec.h / 0.52, spec.d / 0.22);
   return g;
 }
 
@@ -884,7 +997,8 @@ export function buildPipe(spec, equipments) {
   const m = MATERIALS[spec.material] || MATERIALS.carbon;
   const bore = BORES[spec.bore] || BORES['100A'];
   const r = bore.od / 2 + (m.jacket || 0);
-  const mat = MAT(m.color, m.roughness, m.metalness);
+  // 사진에서 읽은 관 색(적색 방청관·은색 아연도)이 있으면 재질색 대신 입힌다.
+  const mat = MAT(spec.color || m.color, m.roughness, m.metalness);
   const flangeMat = MAT('#6a737b', 0.55, 0.7);
 
   const pts = (spec.points || []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
@@ -946,10 +1060,16 @@ export function buildEquipment(spec) {
   const g = build(spec);
   g.position.set(spec.x, spec.y, spec.z);
   const elbowLike = spec.type === 'elbow' || spec.type === 'elbow45';
+  // 제 몸으로 이미 세로로 그려지는 부속 — 이들은 축 회전을 걸지 않는다.
+  const verticalNative = spec.type === 'safety_valve' || spec.type === 'gauge';
   // 진행 방향 벡터(dir)가 있으면 로컬 +X를 배관 축에 정확히 맞춘다 — 플랜지 원판이
   // 수직·좌우·45° 경사 어디서든 배관 중심축과 수직으로 반둥하게 맞물린다.
-  const hasDir = Array.isArray(spec.dir) && spec.dir.length === 3
+  const hasDir = !verticalNative && Array.isArray(spec.dir) && spec.dir.length === 3
     && Math.hypot(spec.dir[0], spec.dir[1], spec.dir[2]) > 1e-6;
+  const spin = (deg) => {
+    if (!deg) return;
+    g.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), D(deg));
+  };
   if (elbowLike && Array.isArray(spec.inDir) && Array.isArray(spec.outDir)) {
     // 진입·진출 벡터로 두 입구를 배관에 정확히 맞춘다 (XY·YZ·XZ 어느 평면이든)
     const b = elbowBasis(spec.inDir, spec.outDir);
@@ -969,6 +1089,23 @@ export function buildEquipment(spec) {
       0, 0, 0, 1,
     );
     g.quaternion.setFromRotationMatrix(m);
+  } else if (spec.axis === 'y' && !verticalNative) {
+    // 수직 배관 위에 세운 부속 — 유로(로컬 +X)를 월드 +Y로, 핸들(로컬 +Y)을 수평(+Z)으로.
+    // rot을 주면 세워진 채로 수직축 둘레로 핸들 방향을 돌린다.
+    const b = dirBasis([0, 1, 0]);
+    const m = new THREE.Matrix4().set(
+      b[0], b[1], b[2], 0,
+      b[3], b[4], b[5], 0,
+      b[6], b[7], b[8], 0,
+      0, 0, 0, 1,
+    );
+    g.quaternion.setFromRotationMatrix(m);
+    spin(spec.rot);
+  } else if (spec.type === 'gauge' && (spec.axis === 'x' || spec.axis === 'z')) {
+    // 계기를 배관 옆면에 붙일 때 — 스템(+Y)을 수평으로 눕히고 다이얼은 앞을 보게 둔다.
+    if (spec.axis === 'x') g.rotation.z = -Math.PI / 2;
+    else g.rotation.x = Math.PI / 2;
+    spin(spec.rot);
   } else {
     g.rotation.y = D(spec.rot);
   }
@@ -978,6 +1115,7 @@ export function buildEquipment(spec) {
 }
 
 const EQUIP_BUILDERS = {
+  header: buildHeader,
   hx: buildHX,
   pump: buildPump,
   vpump: buildVPump,
@@ -990,6 +1128,7 @@ const EQUIP_BUILDERS = {
   yvalve: buildYValve,
   ball: buildBall,
   check: buildCheck,
+  safety_valve: buildSafetyValve,
   bellows: buildBellows,
   elbow: buildElbow,
   tee: buildTee,

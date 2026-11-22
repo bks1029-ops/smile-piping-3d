@@ -66,6 +66,7 @@ export const SIZE_REF_BORE = '100A';
 // 관경을 따라 크기가 바뀌는 부속 — 밸브류 + 배관에 인라인으로 물리는 피팅·계기
 export const BORE_SIZED_TYPES = new Set([
   'valve', 'bfly', 'yvalve', 'ball', 'check',        // 밸브
+  'safety_valve',                                    // 안전·감압밸브
   'bellows', 'nipple', 'cap', 'union', 'flange',     // 피팅
   'flow',                                            // 유량계
 ]);
@@ -188,6 +189,12 @@ export const EQUIP_CATEGORIES = [
 // 표준 부속 라이브러리 (2026-11-20 현장 사진 기준)
 export const EQUIP_TYPES = {
   // ── 장비 ──
+  // 헤더 — 가로로 누운 원통형 배관 분배기. 위·아래로 여러 수직 배관이 꽂히는 설비.
+  // w = 원통 길이, h = 원통 지름, d = 원통 지름. 바닥 지지 프레임(새들)은 builders.js가 그린다.
+  header: {
+    cat: 'equip', label: '스팀/배관 헤더', short: 'HDR',
+    defaults: { w: 2.4, h: 0.4, d: 0.4 }, color: '#b04a35',
+  },
   hx: {
     cat: 'equip', label: '열교환기', short: 'HX',
     defaults: { w: 3.0, h: 0.75, d: 0.75 }, color: '#b9bfc6',
@@ -238,6 +245,11 @@ export const EQUIP_TYPES = {
   check: {
     cat: 'valve', label: '체크밸브 (웨이퍼)', short: 'CV',
     defaults: { w: 0.108, h: 0.26, d: 0.22 }, color: '#b9bfc6',
+  },
+  // 안전밸브·감압밸브 — 세로 몸체 + 상부 스프링 보닛 + 측면 토출구. 수직 배관 위에 서는 부속.
+  safety_valve: {
+    cat: 'valve', label: '안전·감압밸브', short: 'SV', vertical: true,
+    defaults: { w: 0.22, h: 0.52, d: 0.22 }, color: '#b9bfc6',
   },
 
   // ── 피팅 · 서포트 ──
@@ -300,6 +312,56 @@ export function typesByCategory(cat) {
   return Object.keys(EQUIP_TYPES).filter((k) => EQUIP_TYPES[k].cat === cat);
 }
 
+// ── 색상 힌트 — AI가 사진에서 읽은 색을 3D 메쉬에 그대로 입힌다 ─────────────
+// 사진 속 색(적색 스팀 헤더·은색 아연도·회색 안전밸브 등)을 hex로 넘기면 그 색으로,
+// 없거나 알아볼 수 없으면 장비 기본색을 쓴다.
+const NAMED_COLORS = {
+  '적색': '#b04a35', '빨강': '#b04a35', '빨간': '#b04a35', '레드': '#b04a35', red: '#b04a35',
+  '주황': '#c26a2e', orange: '#c26a2e',
+  '은색': '#c8ced4', '은회색': '#c8ced4', '아연': '#c8ced4', 'silver': '#c8ced4', galvanized: '#c8ced4',
+  '회색': '#9aa3ab', '그레이': '#9aa3ab', gray: '#9aa3ab', grey: '#9aa3ab',
+  '흰색': '#e8ecef', white: '#e8ecef',
+  '파랑': '#1f5fd0', '파란': '#1f5fd0', '청색': '#1f5fd0', blue: '#1f5fd0',
+  '초록': '#2e7d4f', '녹색': '#2e7d4f', green: '#2e7d4f',
+  '노랑': '#d8b02a', '황색': '#d8b02a', yellow: '#d8b02a',
+  '검정': '#3a3f44', '검은': '#3a3f44', black: '#3a3f44',
+};
+
+// hex(#rrggbb)·#rgb·색 이름 → '#rrggbb'. 알아볼 수 없으면 null.
+export function toHexColor(hint) {
+  if (typeof hint !== 'string') return null;
+  const s = hint.trim();
+  const m = /^#([0-9a-f]{6})$/i.exec(s);
+  if (m) return '#' + m[1].toLowerCase();
+  const m3 = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m3) return '#' + m3[1].split('').map((c) => c + c).join('').toLowerCase();
+  const key = s.toLowerCase().replace(/\s+/g, '');
+  if (NAMED_COLORS[key]) return NAMED_COLORS[key];
+  const found = Object.keys(NAMED_COLORS).find((k) => key.includes(k.toLowerCase()));
+  return found ? NAMED_COLORS[found] : null;
+}
+
+// 장비·배관 색 결정 — 힌트가 있으면 힌트, 없으면 기본값
+function colorOf(hint, fallback) {
+  return toHexColor(hint) || (toHexColor(fallback) || fallback);
+}
+
+// ── 축 방향 ────────────────────────────────────────────────────────────
+// x · z = 수평(누운) 배관, y = 수직(세운) 배관. 속성 패널·AI가 이 값으로 방향을 정한다.
+export const AXIS_LABELS = { x: '수평 (X)', z: '수평 (Z)', y: '수직 (Y)' };
+const AXIS_VALUES = new Set(['x', 'y', 'z']);
+
+// 세로로 세울 수 있는 부속 — 밸브·피팅·계기류
+// (엘보·티·레듀샤는 자기 두 다리 방향으로 그려지므로 여기에 넣지 않는다)
+export const VERTICAL_TYPES = new Set([
+  'valve', 'bfly', 'yvalve', 'ball', 'check', 'safety_valve',
+  'bellows', 'flow', 'union', 'flange', 'nipple', 'cap',
+]);
+
+export function isVerticalCapable(type) {
+  return VERTICAL_TYPES.has(type) || type === 'gauge';
+}
+
 let seq = 0;
 export function uid(prefix) {
   seq += 1;
@@ -325,11 +387,16 @@ export function makeEquipment(type, opts) {
     h: num(o.h, bs ? round3(t.defaults.h * bs.rise) : t.defaults.h),
     d: num(o.d, bs ? round3(t.defaults.d * bs.plan) : t.defaults.d),
     rot: num(o.rot, 0),
-    color: o.color || t.color,
+    // 색 — 사진에서 읽은 색 힌트(AI color)가 있으면 그 색, 없으면 장비 기본색
+    color: colorOf(o.color, t.color),
     // 연결 방식 — 플랜지(기본) / 단조형(소켓웰드·나사식). 기존 호출은 플랜지로 남는다.
     conn: o.conn === 'forged' ? 'forged' : 'flange',
   };
   if (bore) spec.bore = bore;
+  // 방향 — 밸브·피팅을 수직 배관에 세울 때 axis: 'y'.
+  // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
+  if (AXIS_VALUES.has(o.axis)) spec.axis = o.axis;
+  else if (t.vertical) spec.axis = 'y';
   // 배관 끝에 붙은 부속은 진행 방향 벡터를 기억한다 — 3D 회전을 이 벡터로 잡아
   // 플랜지 원판·밸브 바디가 어느 방향(수직·좌우·45° 경사)에서도 배관 축에 딱 맞는다.
   if (Array.isArray(o.dir) && o.dir.length === 3 && o.dir.every((v) => Number.isFinite(Number(v)))) {
@@ -358,7 +425,7 @@ export function makeEquipment(type, opts) {
 
 export function makePipe(opts) {
   const o = opts || {};
-  return {
+  const pipe = {
     id: uid('p'),
     kind: 'pipe',
     name: o.name || '배관',
@@ -368,11 +435,462 @@ export function makePipe(opts) {
     conn: o.conn === 'forged' ? 'forged' : 'flange',
     points: (o.points || []).map((p) => ({ x: num(p.x, 0), y: num(p.y, 0), z: num(p.z, 0) })),
   };
+  // 사진에서 읽은 관 색(적색 방청관·은색 아연도)이 있으면 재질색 대신 입힌다.
+  const pc = toHexColor(o.color);
+  if (pc) pipe.color = pc;
+  return pipe;
 }
 
 function num(v, d) {
   const n = typeof v === 'number' ? v : parseFloat(v);
   return Number.isFinite(n) ? n : d;
+}
+
+// ── 헤더(가로 원통 분배기) 치수 ────────────────────────────────────────
+// builders.js의 buildHeader와 AI 후처리 보정이 같은 식을 쓰도록 여기 한 곳에 모은다.
+//  · spec.y = 바닥(지지 프레임 밑면), stand = 바닥 → 원통 밑면
+//  · cy     = 원통 중심 높이 = stand + h/2,  top = 원통 윗면 = stand + h
+//  · along  = 원통이 눕는 수평축 ('x' 기본, rot 90°면 'z')
+//  기본 헤더(직경 0.4m)면 stand 0.6m · 중심 0.8m · 윗면 1.0m 다.
+export function headerStand(spec) {
+  const dia = Math.max(0.15, num(spec && spec.h, 0.4));
+  return Math.max(0.3, Math.min(1.2, dia * 1.5));
+}
+
+export function headerBody(spec) {
+  const dia = Math.max(0.15, num(spec && spec.h, 0.4));
+  const L = Math.max(0.6, num(spec && spec.w, 2.4));
+  const stand = headerStand(spec);
+  const r = ((Math.round(num(spec && spec.rot, 0)) % 360) + 360) % 360;
+  return {
+    dia,
+    R: dia / 2,
+    L,
+    stand,
+    cy: stand + dia / 2,
+    top: stand + dia,
+    along: (r === 90 || r === 270) ? 'z' : 'x',
+  };
+}
+
+// ── 장비 본체가 차지하는 공간 ────────────────────────────────────────
+// 밸브·피팅이 헤더·탱크 본체 안에 잠기는지 판정하는 데 쓴다.
+// 본체끼리는 서로를 밀어내지 않도록 BODY_LIKE로 따로 묶는다.
+export const BODY_LIKE = new Set(['header', 'hx', 'tank', 'stank', 'rtank', 'pump', 'vpump', 'panel']);
+
+// 장비 로컬 좌표(회전 전) — rot는 Y축 회전이다.
+function toLocal2D(spec, x, z) {
+  const th = num(spec && spec.rot, 0) * Math.PI / 180;
+  const c = Math.cos(th);
+  const s = Math.sin(th);
+  const dx = x - num(spec && spec.x, 0);
+  const dz = z - num(spec && spec.z, 0);
+  return { lx: dx * c - dz * s, lz: dx * s + dz * c };
+}
+
+// 본체의 수평 자리(평면 투영)에 (x, z)가 들어오는지 — 높이와 상관없이 본체 위인지 본다.
+// AI가 배관 끝·부속 높이를 헤더·탱크 윗면에 맞출 때 쓴다.
+export function insideFootprint(spec, x, z, margin) {
+  if (!spec) return false;
+  const m = margin || 0;
+  const { lx, lz } = toLocal2D(spec, x, z);
+  if (spec.type === 'header') {
+    const b = headerBody(spec);
+    const along = b.along === 'z' ? lz : lx;
+    const across = b.along === 'z' ? lx : lz;
+    return Math.abs(along) <= b.L / 2 + m && Math.abs(across) <= b.R + m;
+  }
+  if (spec.type === 'tank' || spec.type === 'stank') {
+    return Math.hypot(lx, lz) <= Math.max(0.12, num(spec.w, 0.6) / 2) + m;
+  }
+  if (spec.type === 'rtank') {
+    return Math.abs(lx) <= num(spec.w, 2.4) / 2 + m && Math.abs(lz) <= num(spec.d, 1.8) / 2 + m;
+  }
+  if (spec.type === 'hx') {
+    return Math.abs(lx) <= num(spec.w, 3) / 2 + m && Math.abs(lz) <= num(spec.h, 0.75) / 2 + m;
+  }
+  return false;
+}
+
+// 장비 하나의 본체 영역 → { top, bottom, contains(x, y, z, margin) } (없으면 null)
+export function equipBody(spec) {
+  if (!spec) return null;
+  const y0 = num(spec.y, 0);
+  if (spec.type === 'header') {
+    const b = headerBody(spec);
+    const cy = y0 + b.cy;
+    return {
+      top: y0 + b.top,
+      bottom: y0 + b.stand,
+      contains: (x, y, z, m) => {
+        const g = m || 0;
+        const { lx, lz } = toLocal2D(spec, x, z);
+        const along = b.along === 'z' ? lz : lx;
+        const across = b.along === 'z' ? lx : lz;
+        return Math.abs(along) <= b.L / 2 + g
+          && y >= y0 + b.stand - g && y <= y0 + b.top + g
+          && Math.hypot(across, y - cy) <= b.R + g;
+      },
+    };
+  }
+  if (spec.type === 'tank' || spec.type === 'stank') {
+    const r = Math.max(0.12, num(spec.w, 0.6) / 2);
+    const h = Math.max(0.2, num(spec.h, 0.9));
+    return {
+      top: y0 + h,
+      bottom: y0,
+      contains: (x, y, z, m) => {
+        const g = m || 0;
+        const { lx, lz } = toLocal2D(spec, x, z);
+        return Math.hypot(lx, lz) <= r + g && y >= y0 - g && y <= y0 + h + g;
+      },
+    };
+  }
+  if (spec.type === 'rtank') {
+    const hw = Math.max(0.2, num(spec.w, 2.4) / 2);
+    const hd = Math.max(0.2, num(spec.d, 1.8) / 2);
+    const h = Math.max(0.2, num(spec.h, 1.8));
+    return {
+      top: y0 + h,
+      bottom: y0,
+      contains: (x, y, z, m) => {
+        const g = m || 0;
+        const { lx, lz } = toLocal2D(spec, x, z);
+        return Math.abs(lx) <= hw + g && Math.abs(lz) <= hd + g && y >= y0 - g && y <= y0 + h + g;
+      },
+    };
+  }
+  if (spec.type === 'hx') {
+    const dia = Math.max(0.2, num(spec.h, 0.75));
+    const R = dia / 2;
+    const legH = Math.max(0.22, Math.min(0.55, dia * 0.62));
+    const half = Math.max(0.3, num(spec.w, 3) / 2);
+    const cy = y0 + legH + R;
+    return {
+      top: cy + R,
+      bottom: cy - R,
+      contains: (x, y, z, m) => {
+        const g = m || 0;
+        const { lx, lz } = toLocal2D(spec, x, z);
+        return Math.abs(lx) <= half + g && Math.hypot(lz, y - cy) <= R + g;
+      },
+    };
+  }
+  return null;
+}
+
+// 수직 배관 구간(위·아래로 뻗은 구간) 목록 — AI가 수직 방향을 빼먹은 밸브를 찾는 데 쓴다.
+function verticalRuns(state) {
+  const runs = [];
+  (state.pipes || []).forEach((p) => {
+    const pts = p.points || [];
+    for (let i = 1; i < pts.length; i += 1) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const dy = Math.abs(b.y - a.y);
+      const horiz = Math.hypot(b.x - a.x, b.z - a.z);
+      if (dy < 0.25 || horiz > dy * 0.35) continue; // 수직에서 20° 넘게 기운 구간은 뺀다
+      runs.push({ x: a.x, z: a.z, y0: Math.min(a.y, b.y), y1: Math.max(a.y, b.y), bore: p.bore });
+    }
+  });
+  return runs;
+}
+
+// 부속이 수직 배관 위에 있으면 자동으로 세우고(x·z를 배관 중심에 스냅) true
+export function standOnVerticalPipe(state, spec, radius) {
+  if (!spec || !VERTICAL_TYPES.has(spec.type)) return false;
+  if (spec.axis === 'y') return false;
+  const limit = radius == null ? 0.35 : radius;
+  let best = null;
+  let bestD = limit;
+  verticalRuns(state).forEach((r) => {
+    if (spec.y < r.y0 - 0.45 || spec.y > r.y1 + 0.45) return;
+    const d = Math.hypot(spec.x - r.x, spec.z - r.z);
+    if (d <= bestD) { bestD = d; best = r; }
+  });
+  if (!best) return false;
+  spec.axis = 'y';
+  spec.x = round3(best.x);
+  spec.z = round3(best.z);
+  if (BORES[best.bore] && isBoreSized(spec.type)) {
+    spec.bore = best.bore;
+    applyBoreSize(spec);
+  }
+  return true;
+}
+
+// 부속이 헤더·탱크 본체에 묻혔으면 본체 위로 올린다(반복해 다른 본체도 피한다).
+// y는 부속 중심이다 — 세워 놓았으면 배관 방향 길이(w)의 절반이 아래로 내려와 본체를 스친다.
+export function liftOutOfBodies(state, spec) {
+  if (!spec || BODY_LIKE.has(spec.type) || spec.type === 'support') return false;
+  const half = spec.axis === 'y'
+    ? Math.max(0.02, num(spec.w, 0.1) / 2)
+    : Math.max(0.02, num(spec.h, 0.1) / 2);
+  let moved = false;
+  for (let guard = 0; guard < 4; guard += 1) {
+    let hit = null;
+    (state.equipment || []).forEach((b) => {
+      if (b === spec || BODY_LIKE.has(b.type) === false) return;
+      const body = equipBody(b);
+      if (!body) return;
+      if (body.contains(spec.x, spec.y, spec.z, 0.01)) hit = body;
+    });
+    if (!hit) break;
+    // 본체 윗면에서 부속 반높이 + 2cm 위에 앉힌다 — 노즐자리에서 배관으로 이어진 것처럼 보인다.
+    spec.y = round3(hit.top + half + 0.02);
+    moved = true;
+  }
+  return moved;
+}
+
+// AI 결과 전체를 한 번에 보정한다 — 수직 배관 위 밸브 세우기 → 본체에 묻힌 부속 올리기.
+export function postProcessAi(state) {
+  const report = { stood: 0, lifted: 0 };
+  (state.equipment || []).forEach((spec) => {
+    if (standOnVerticalPipe(state, spec)) report.stood += 1;
+  });
+  (state.equipment || []).forEach((spec) => {
+    if (liftOutOfBodies(state, spec)) report.lifted += 1;
+  });
+  return report;
+}
+
+// ── AI 응답 → 장비 타입 이름 맞추기 ──────────────────────────────────────
+// Gemini는 자유 텍스트 타입을 돌려주기도 해서, 긴 이름부터 구체적으로 매칭한다.
+// (헤더를 stank/tank로 그리던 문제를 막기 위해 헤더·안전밸브를 앞에서 잡는다)
+export function aiTypeOf(type) {
+  const s = String(type || '').toLowerCase();
+  if (/header|헤더|매니폴드|manifold|분배기|분배관|collector|distributor/.test(s)) return 'header';
+  if (/safety|relief|prv|안전밸브|안전변|감압밸브|감압변|방출밸브/.test(s)) return 'safety_valve';
+  if (/heat|exchang|열교환/.test(s)) return 'hx';
+  if (/vertical|inline|입형|인라인/.test(s)) return 'vpump';
+  if (/pump|펌프/.test(s)) return 'pump';
+  if (/storage|저장탱크|원통|silo|vessel/.test(s)) return 'stank';
+  if (/rect|수조|저수조|사각/.test(s)) return 'rtank';
+  if (/tank|drum|탱크|드럼/.test(s)) return 'tank';
+  if (/panel|mcc|control|전기|제어/.test(s)) return 'panel';
+  if (/butterfly|버터플라이|bfly/.test(s)) return 'bfly';
+  if (/strainer|스트레이너|y[-_ ]?(type|valve|body)|y형|경사/.test(s)) return 'yvalve';
+  if (/ball|볼밸브/.test(s)) return 'ball';
+  if (/check|체크/.test(s)) return 'check';
+  if (/flow|유량|플로우/.test(s)) return 'flow';
+  if (/bellows|expansion|flex|신축|벨로우즈/.test(s)) return 'bellows';
+  if (/elbow\s*45|45\s*[°도]?\s*elbow|45도?\s*엘보|45°/.test(s)) return 'elbow45';
+  if (/elbow|엘보|90/.test(s)) return 'elbow';
+  if (/\btee\b|분기|티/.test(s)) return 'tee';
+  if (/reducer|레듀샤|이경|축소/.test(s)) return 'reducer';
+  if (/nipple|니쁠|니플/.test(s)) return 'nipple';
+  if (/end\s*cap|엔드캡|마개|\bcap\b|캡/.test(s)) return 'cap';
+  if (/union|유니온|소켓|커플링/.test(s)) return 'union';
+  if (/flange|플랜지/.test(s)) return 'flange';
+  if (/support|지지|서포|hanger|saddle/.test(s)) return 'support';
+  if (/gauge|압력계|온도계|계기|pg|tg/.test(s)) return 'gauge';
+  if (/valve|밸브/.test(s)) return 'valve';
+  return 'tank';
+}
+
+// ── 결정론적 기하 보정기 ────────────────────────────────────────────────
+// AI가 뽑은 JSON을 그대로 그리지 않고, 코드로 한 번 더 정밀하게 맞춘다.
+//  ① 헤더·탱크 위로 올라가는 수직 배관 끝을 본체 윗면에 정확히 앉힌다
+//  ② 직선 배관끼리 0.15m 안에서 어긋난 연결점은 서로 붙여 준다
+//  ③ 수직 배관(0.4m 이내)에 달린 밸브·피팅은 axis='y'로 세우고 배관 중심(x,z)에 스냅
+//  ④ 그 부속이 헤더·탱크 내부에 들어가면 본체 윗면 위로 끌어올림
+//  ⑤ 수직 배관 옆의 압력계는 배관 외벽 바깥으로 비켜 세워 관 속에 파묻히지 않게 한다
+// 원본 AI JSON(장비·배관 배열)을 받아 보정본을 돌려준다.
+const SNAP_WELD = 0.15;   // 배관 연결점 불이기 거리
+const SNAP_VERT = 0.4;    // 수직 배관에 달린 부속으로 보는 거리
+
+export function sanitizeAiScene(raw) {
+  const src = raw || {};
+  const equipment = (Array.isArray(src.equipment) ? src.equipment : [])
+    .filter((e) => e && typeof e === 'object')
+    .map((e) => ({
+      ...e,
+      type: aiTypeOf(e.type),
+      x: num(e.x, 0),
+      y: Math.max(0, num(e.y, 0)),
+      z: num(e.z, 0),
+    }));
+  const pipes = (Array.isArray(src.pipes) ? src.pipes : [])
+    .filter((p) => p && Array.isArray(p.points) && p.points.length >= 2)
+    .map((p, i) => ({
+      ...p,
+      name: p.name || `배관 ${i + 1}`,
+      points: p.points.map((q) => ({ x: num(q.x, 0), y: Math.max(0, num(q.y, 0)), z: num(q.z, 0) })),
+    }));
+  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0 };
+  const bodies = equipment
+    .map((e) => ({ spec: e, body: equipBody(e) }))
+    .filter((b) => b.body && (b.spec.type === 'header' || b.spec.type === 'tank'
+      || b.spec.type === 'stank' || b.spec.type === 'rtank' || b.spec.type === 'hx'));
+
+  // 본체 자리(수평 투영)에 들어오면 그 본체 윗면 높이를 돌려준다 (없으면 null).
+  const topAt = (x, z) => {
+    let top = null;
+    bodies.forEach((b) => {
+      if (!insideFootprint(b.spec, x, z, 0.05)) return;
+      top = top == null ? b.body.top : Math.max(top, b.body.top);
+    });
+    return top;
+  };
+
+  // ① 수직 배관 끝을 본체 윗면에 앉히기
+  pipes.forEach((p) => {
+    const pts = p.points;
+    const ends = [];
+    if (pts.length >= 2) {
+      const a = pts[0];
+      const b = pts[1];
+      if (Math.abs(b.y - a.y) > Math.abs(b.x - a.x) + Math.abs(b.z - a.z)) ends.push({ i: 0, inner: b });
+      const c = pts[pts.length - 2];
+      const d = pts[pts.length - 1];
+      if (Math.abs(d.y - c.y) > Math.abs(d.x - c.x) + Math.abs(d.z - c.z)) ends.push({ i: pts.length - 1, inner: c });
+    }
+    ends.forEach(({ i, inner }) => {
+      const pt = pts[i];
+      const top = topAt(pt.x, pt.z);
+      if (top == null) return;
+      // 공중에 뜬 끝·본체를 뚫은 끝 모두 본체 윗면에 맞춘다 (0.6m 안쪽만).
+      if (Math.abs(pt.y - top) > 0.6) return;
+      if (Math.abs(pt.y - top) < 0.001) return;
+      // 본체 축에 가까우면 수평 위치도 노이즐 자리로 맞춘다 (헤더는 Z, 탱크는 중심).
+      const near = bodies.find((b) => Math.abs(b.body.top - top) < 1e-6
+        && insideFootprint(b.spec, pt.x, pt.z, 0.6));
+      if (near) {
+        if (near.spec.type === 'header') {
+          if (Math.abs(pt.z - near.spec.z) < 0.45) pt.z = near.spec.z;
+        } else if (Math.abs(pt.x - near.spec.x) < 0.6 && Math.abs(pt.z - near.spec.z) < 0.6) {
+          pt.x = near.spec.x;
+          pt.z = near.spec.z;
+        }
+      }
+      pt.y = round3(top);
+      // 꺾임점이 너무 짧아지면(5cm 미만) 내부 점을 같은 높이로 끌어올림
+      if (Math.abs(inner.y - pt.y) < 0.05) inner.y = pt.y;
+      report.seated += 1;
+    });
+  });
+
+  // ② 직선 배관끼리 어긋난 연결점 불이기
+  const endsAll = [];
+  pipes.forEach((p, pi) => {
+    endsAll.push({ pi, i: 0, pt: p.points[0] });
+    endsAll.push({ pi, i: p.points.length - 1, pt: p.points[p.points.length - 1] });
+  });
+  for (let a = 0; a < endsAll.length; a += 1) {
+    for (let b = a + 1; b < endsAll.length; b += 1) {
+      const A = endsAll[a];
+      const B = endsAll[b];
+      if (A.pi === B.pi) continue;
+      const d = Math.hypot(A.pt.x - B.pt.x, A.pt.y - B.pt.y, A.pt.z - B.pt.z);
+      if (d > 1e-4 && d <= SNAP_WELD) {
+        B.pt.x = A.pt.x;
+        B.pt.y = A.pt.y;
+        B.pt.z = A.pt.z;
+        report.welded += 1;
+      }
+    }
+  }
+
+  // ③④ 수직 배관 위 밸브·피팅 — 세우기 + 본체 밖으로
+  equipment.forEach((e) => {
+    if (!VERTICAL_TYPES.has(e.type)) return;
+    let best = null;
+    let bestD = SNAP_VERT;
+    pipes.forEach((p) => {
+      const pts = p.points;
+      for (let i = 1; i < pts.length; i += 1) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        const dy = Math.abs(b.y - a.y);
+        if (dy < 0.3) continue;
+        if (dy <= Math.abs(b.x - a.x) + Math.abs(b.z - a.z)) continue;   // 수직 구간만
+        if (e.y < Math.min(a.y, b.y) - 0.5 || e.y > Math.max(a.y, b.y) + 0.5) continue;
+        const d = Math.hypot(e.x - a.x, e.z - a.z);
+        if (d <= bestD) { bestD = d; best = { x: a.x, z: a.z, bore: p.bore }; }
+      }
+    });
+    if (best) {
+      e.axis = 'y';
+      e.x = round3(best.x);
+      e.z = round3(best.z);
+      // 관경도 그 수직 배관을 따른다 (압력계는 제외 — 관경과 무관하게 그린다)
+      if (e.type !== 'gauge' && BORES[best.bore]) e.bore = best.bore;
+      report.stood += 1;
+    }
+    // 본체 안에 묻혔으면 윗면 위로 (세로로 세운 부속만)
+    const inside = bodies.some((b) => b.body.contains(e.x, e.y, e.z, 0.02));
+    const top = topAt(e.x, e.z);
+    if ((inside || (top != null && e.y < top - 0.01)) && best && top != null) {
+      e.y = round3(top + 0.12);
+      report.lifted += 1;
+    }
+  });
+
+  // ⑤ 수직 배관 옆 압력계 — 관 외벽 바깥으로 비켜 세우기
+  equipment.forEach((e) => {
+    if (e.type !== 'gauge') return;
+    let best = null;
+    let bestD = SNAP_VERT;
+    pipes.forEach((p) => {
+      const pts = p.points;
+      for (let i = 1; i < pts.length; i += 1) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        const dy = Math.abs(b.y - a.y);
+        if (dy < 0.3) continue;
+        if (dy <= Math.abs(b.x - a.x) + Math.abs(b.z - a.z)) continue;
+        if (e.y < Math.min(a.y, b.y) - 0.3 || e.y > Math.max(a.y, b.y) + 0.3) continue;
+        const d = Math.hypot(e.x - a.x, e.z - a.z);
+        if (d <= bestD) { bestD = d; best = { x: a.x, z: a.z, bore: p.bore }; }
+      }
+    });
+    if (!best) return;
+    // 배관 중심에서 벗어날 방향 — 이미 기운 방향을 살리고, 정중앙이면 +Z
+    let dx = e.x - best.x;
+    let dz = e.z - best.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.05) { dx = 0; dz = 1; } else { dx /= len; dz /= len; }
+    const off = boreOd(best.bore) / 2 + 0.11;
+    e.x = round3(best.x + dx * off);
+    e.z = round3(best.z + dz * off);
+    report.gauged += 1;
+  });
+
+  return { equipment, pipes, report, layoutPlan: typeof src.layoutPlan === 'string' ? src.layoutPlan : '' };
+}
+
+// ── AI 응답 → 씬 데이터 (앱과 검증 페이지가 같은 경로를 탄다) ────────────────
+// 1차 정리(layoutPlan·원본 JSON) → 기하 보정(sanitizeAiScene) → makeEquipment(방향·관경·색)
+// → 후처리(수직 세우기·묻힘 방지) — 이 순서가 앱과 검증 페이지에서 같다.
+export function aiResultToScene(result) {
+  const clean = sanitizeAiScene(result);
+  const equipment = clean.equipment
+    .map((e) => {
+      const spec = makeEquipment(aiTypeOf(e.type), {
+        name: e.name,
+        x: e.x, y: Math.max(0, Number(e.y) || 0), z: e.z,
+        w: e.w, h: e.h, d: e.d,
+        rot: e.rot, color: e.color,
+        bore: e.bore, bore1: e.bore1, bore2: e.bore2,
+        axis: e.axis, conn: e.conn,
+      });
+      // 계기는 배관 관경과 상관없이 알아보기 좋은 크기로 그린다.
+      if (spec.type === 'gauge') {
+        const t = EQUIP_TYPES.gauge;
+        spec.w = t.defaults.w;
+        spec.h = t.defaults.h;
+        spec.d = t.defaults.d;
+      }
+      return spec;
+    })
+    .filter((e) => Number.isFinite(e.x) && Number.isFinite(e.z));
+  const pipes = clean.pipes.map((p) => makePipe({
+    name: p.name, bore: p.bore, material: p.material, color: p.color, points: p.points,
+  }));
+  const state = { equipment, pipes };
+  const report = postProcessAi(state);
+  return { equipment, pipes, report: { ...clean.report, ...report }, layoutPlan: clean.layoutPlan };
 }
 
 export function emptyState() {
@@ -547,6 +1065,9 @@ export function normalizeState(raw) {
       // 밸브·피팅이 달린 배관 관경 — 저장된 값을 살린다.
       // (예전 도면은 관경을 기억하지 않으므로 비워 두고, 아래에서 붙어 있는 배관을 보고 채운다)
       if (isBoreSized(type) && BORES[e.bore]) item.bore = e.bore;
+      // 세워 놓은 방향(axis: 'y')도 그대로 살린다.
+      if (AXIS_VALUES.has(e.axis)) item.axis = e.axis;
+      else if (t.vertical) item.axis = 'y';
       // 진행 방향 벡터(배관 축)가 저장돼 있으면 그대로 살려 3D 회전을 다시 맞춘다.
       if (Array.isArray(e.dir) && e.dir.length === 3 && e.dir.every((v) => Number.isFinite(Number(v)))) {
         const d = e.dir.map((v) => round3(Number(v)));
@@ -582,6 +1103,7 @@ export function normalizeState(raw) {
         material: MATERIALS[p.material] ? p.material : 'carbon',
         conn: p.conn === 'forged' ? 'forged' : 'flange',
         points: p.points.map((pt) => ({ x: num(pt.x, 0), y: Math.max(0, num(pt.y, 0)), z: num(pt.z, 0) })),
+        ...(toHexColor(p.color) ? { color: toHexColor(p.color) } : {}),
       });
     });
   }

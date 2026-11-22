@@ -6,13 +6,14 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
-} from './store.js?v=48';
-import { buildScene } from './builders.js?v=48';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=48';
-import { buildOBJ } from './obj.js?v=48';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=48';
-import { parseCommand, CMD_HELP } from './cmd.js?v=48';
-import { buildDimItems } from './dims.js?v=48';
+  aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS,
+} from './store.js?v=49';
+import { buildScene } from './builders.js?v=49';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=49';
+import { buildOBJ } from './obj.js?v=49';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=49';
+import { parseCommand, CMD_HELP } from './cmd.js?v=49';
+import { buildDimItems } from './dims.js?v=49';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -79,7 +80,7 @@ const INLINE_TYPES = new Set([
   'valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'tee', 'reducer', 'flange',
   'nipple', 'elbow45', 'cap', 'union', 'flow',
 ]);
-const ON_FLOOR_TYPES = new Set(['hx', 'pump', 'vpump', 'tank', 'stank', 'rtank', 'panel', 'support']);
+const ON_FLOOR_TYPES = new Set(['header', 'hx', 'pump', 'vpump', 'tank', 'stank', 'rtank', 'panel', 'support']);
 
 function isQuotaError(e) {
   if (!e) return false;
@@ -1189,7 +1190,7 @@ class App {
   equipExit(spec) {
     const len = INLINE_TYPES.has(spec.type) ? (spec.w || 0) : 0;
     if (!len) return { x: spec.x, y: r3((spec.y || 0) + (spec.h || 0)), z: spec.z };
-    const d = Array.isArray(spec.dir) ? spec.dir : null;
+    const d = Array.isArray(spec.dir) ? spec.dir : (spec.axis === 'y' ? [0, 1, 0] : null);
     const dl = d ? Math.hypot(d[0], d[1], d[2]) : 0;
     if (dl > 1e-6) {
       const half = len / 2;
@@ -1230,7 +1231,7 @@ class App {
       return;
     }
     const h = this.headingFromRot(spec.rot);
-    const dv = Array.isArray(spec.dir) ? spec.dir : null;
+    const dv = Array.isArray(spec.dir) ? spec.dir : (spec.axis === 'y' ? [0, 1, 0] : null);
     if (dv && Math.hypot(dv[0], dv[1], dv[2]) > 1e-6) {
       // 배관 축 방향을 그대로 이어받는다 — 수직·경사 배관 끝에서도 같은 방향으로 계속 간다.
       const l = Math.hypot(dv[0], dv[1], dv[2]);
@@ -1396,6 +1397,7 @@ class App {
         <label class="field">이름<input type="text" data-f="name" value="${esc(spec.name)}"></label>
         ${this.boreFields(spec)}
         ${this.connField(spec)}
+        ${this.axisField(spec)}
         <div class="prop-section">위치 (m)</div>
         <div class="prop-grid3">
           <label class="field">X<input type="number" step="0.1" data-f="x" value="${fmt(spec.x)}"></label>
@@ -1511,6 +1513,21 @@ class App {
         <div class="field-row">
           <label class="field">연결<select data-f="conn">${opts}</select></label>
           <label class="field">도면 표시<span class="readonly">${cur === 'forged' ? '단조 · 플랜지 없음' : '플랜지 원판'}</span></label>
+        </div>`;
+  }
+
+  // 방향 선택 — 밸브·피팅을 수평 배관에 눕힐지, 수직 배관에 세울지.
+  // (수직으로 세우면 유로가 Y축, 핸들은 옆으로 나온다)
+  axisField(spec) {
+    if (!isVerticalCapable(spec.type)) return '';
+    const cur = spec.axis === 'y' || spec.axis === 'x' || spec.axis === 'z' ? spec.axis : 'x';
+    const opts = ['x', 'z', 'y'].map((a) =>
+      `<option value="${a}"${a === cur ? ' selected' : ''}>${AXIS_LABELS[a]}</option>`).join('');
+    return `
+        <div class="prop-section">방향</div>
+        <div class="field-row">
+          <label class="field">배관 축<select data-f="axis">${opts}</select></label>
+          <label class="field">지금<span class="readonly">${spec.axis === 'y' ? '세움 · 핸들 옆' : '눕힘 · 흐름 방향'}</span></label>
         </div>`;
   }
 
@@ -3363,6 +3380,7 @@ class App {
       const eq = Array.isArray(res.equipment) ? res.equipment : [];
       const pp = Array.isArray(res.pipes) ? res.pipes : [];
       if (!eq.length && !pp.length) throw new Error('이미지에서 장비·배관을 찾지 못했습니다. 다른 사진으로 시도해 보세요.');
+      const plan = typeof res.layoutPlan === 'string' ? res.layoutPlan.trim() : '';
       this.openModal({
         title: 'AI 분석 결과',
         body: `
@@ -3370,6 +3388,7 @@ class App {
             장비 <b>${eq.length}</b>개 · 배관 <b>${pp.length}</b>개를 찾았습니다.<br>
             ${res.notes ? `<span>${esc(res.notes)}</span>` : ''}
           </div>
+          ${plan ? `<div class="ai-plan"><b>구조 정리</b><br>${esc(plan)}</div>` : ''}
           <p class="hint">“씬 교체”를 누르면 지금 씬을 지우고 AI 배치로 바꿉니다. “추가”는 기존 씬에 덧붙입니다.</p>`,
         actions: [
           // keep: true — 열린 창을 먼저 정리한 뒤(closeOverlaysForResult) 배치를 적용한다.
@@ -3433,43 +3452,10 @@ class App {
   }
 
   applyAIResult(result, mode) {
-    // Gemini는 자유 텍스트 타입을 돌려주기도 해서, 긴 이름부터 구체적으로 매칭한다.
-    const typeMap = (t) => {
-      const s = String(t || '').toLowerCase();
-      if (/heat|exchang|열교환/.test(s)) return 'hx';
-      if (/vertical|inline|입형|인라인/.test(s)) return 'vpump';
-      if (/pump|펌프/.test(s)) return 'pump';
-      if (/storage|저장탱크|원통|silo|vessel/.test(s)) return 'stank';
-      if (/rect|수조|저수조|사각/.test(s)) return 'rtank';
-      if (/tank|drum|탱크|드럼/.test(s)) return 'tank';
-      if (/panel|mcc|control|전기|제어/.test(s)) return 'panel';
-      if (/butterfly|버터플라이|bfly/.test(s)) return 'bfly';
-      if (/strainer|스트레이너|y[-_ ]?(type|valve|body)|y형|경사/.test(s)) return 'yvalve';
-      if (/ball|볼밸브/.test(s)) return 'ball';
-      if (/check|체크/.test(s)) return 'check';
-      if (/flow|유량|플로우/.test(s)) return 'flow';
-      if (/bellows|expansion|flex|신축|벨로우즈/.test(s)) return 'bellows';
-      if (/elbow\s*45|45\s*[°도]?\s*elbow|45도?\s*엘보|45°/.test(s)) return 'elbow45';
-      if (/elbow|엘보|90/.test(s)) return 'elbow';
-      if (/\btee\b|분기|티/.test(s)) return 'tee';
-      if (/reducer|레듀샤|이경|축소/.test(s)) return 'reducer';
-      if (/nipple|니쁠|니플/.test(s)) return 'nipple';
-      if (/end\s*cap|엔드캡|마개|\bcap\b|캡/.test(s)) return 'cap';
-      if (/union|유니온|소켓|커플링/.test(s)) return 'union';
-      if (/flange|플랜지/.test(s)) return 'flange';
-      if (/support|지지|서포|hanger|saddle/.test(s)) return 'support';
-      if (/gauge|압력계|온도계|계기|pg|tg/.test(s)) return 'gauge';
-      if (/valve|밸브/.test(s)) return 'valve';
-      return 'tank';
-    };
-    const eq = (result.equipment || []).map((e) => makeEquipment(typeMap(e.type), {
-      name: e.name, x: e.x, y: Math.max(0, Number(e.y) || 0), z: e.z,
-      w: e.w, h: e.h, d: e.d, rot: e.rot, color: e.color,
-      bore: e.bore, bore1: e.bore1, bore2: e.bore2,
-    })).filter((e) => Number.isFinite(e.x) && Number.isFinite(e.z));
-    const pipes = (result.pipes || [])
-      .filter((p) => p && Array.isArray(p.points) && p.points.length >= 2)
-      .map((p) => makePipe({ name: p.name, bore: p.bore, material: p.material, points: p.points }));
+    // 1차 정리(layoutPlan) → 기하 보정(Sanitize) → 장비·배관 생성 → 후처리 보정.
+    // 이 경로는 store.js aiResultToScene() 하나만 타므로, 검증 페이지도 같은 코드를 검증한다.
+    const { equipment: eq, pipes, report } = aiResultToScene(result);
+    if (!eq.length && !pipes.length) throw new Error('채울 장비·배관이 없습니다.');
 
     this.pushUndo('AI 배치');
     if (mode === 'replace') {
@@ -3481,7 +3467,16 @@ class App {
     }
     this.selection = null;
     this.rebuild();
-    this.toast(`AI 배치 완료 · 장비 ${eq.length} / 배관 ${pipes.length}`, { action: '되돌리기', onAction: () => this.undo() });
+    // 보정한 내용을 짧게 알려 준다 — 무엇이 자동으로 바로잡혔는지 보이게.
+    const notes = [];
+    if (report.stood) notes.push(`수직 배관 밸브 ${report.stood}개 세움`);
+    if (report.seated) notes.push(`배관 끝 ${report.seated}곳 헤더 윗면에 맞춤`);
+    if (report.lifted) notes.push(`묻힌 부속 ${report.lifted}개 올림`);
+    if (report.gauged) notes.push(`계기 ${report.gauged}개 관 밖으로`);
+    if (report.welded) notes.push(`배관 이음 ${report.welded}곳 붙임`);
+    const extra = notes.length ? ` · ${notes.join(' · ')}` : '';
+    this.toast(`AI 배치 완료 · 장비 ${eq.length} / 배관 ${pipes.length}${extra}`,
+      { action: '되돌리기', onAction: () => this.undo() });
   }
 
   // ── UI 바인딩 ───────────────────────────────────────────
@@ -3519,8 +3514,8 @@ class App {
     // 장비 버튼 (카테고리별)
     const grid = $('#equipGrid');
     const icons = {
-      hx: '▭', pump: '◉', vpump: '⊕', tank: '▮', stank: '▯', rtank: '▣', panel: '▤',
-      valve: '✳', bfly: '⊗', yvalve: '⊘', ball: '⊙', check: '◑',
+      header: '▬', hx: '▭', pump: '◉', vpump: '⊕', tank: '▮', stank: '▯', rtank: '▣', panel: '▤',
+      valve: '✳', bfly: '⊗', yvalve: '⊘', ball: '⊙', check: '◑', safety_valve: '⌂',
       bellows: '≡', elbow: '⌐', tee: '┳', reducer: '◁', flange: '◎', support: '⊥', gauge: '◐',
       nipple: '⬡', elbow45: '◜', cap: '◕', union: '⋈', flow: '⏲',
     };
@@ -3594,6 +3589,14 @@ class App {
         spec.w = d.face;
         spec.h = d.r * 2;
         spec.d = d.r * 2;
+        this.refreshScene();
+        this.renderProps();
+        return;
+      }
+      // 방향(수평·수직)을 바꾸면 배관 축 벡터보다 이 선택을 우선한다.
+      if (t.dataset.f === 'axis') {
+        spec.axis = t.value === 'y' ? 'y' : (t.value === 'z' ? 'z' : 'x');
+        delete spec.dir;
         this.refreshScene();
         this.renderProps();
         return;

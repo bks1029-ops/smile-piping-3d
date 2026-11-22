@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>검증 · 헤더 + 수직 밸브</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f13; color: #dfe6ee;
+    font-family: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', system-ui, sans-serif; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #report { position: fixed; left: 14px; top: 14px; padding: 12px 14px; border-radius: 10px;
+    background: rgba(12, 17, 22, .88); border: 1px solid #24303c; font-size: 13px; line-height: 1.6;
+    max-width: 430px; white-space: pre-wrap; }
+  #report b { color: #ffd166; }
+  .ok { color: #7ee2a8; }
+  .bad { color: #ff7b72; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="report">검증 준비 중…</div>
+<script type="importmap">
+{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { aiResultToScene, equipBody, VERTICAL_TYPES, BORES } from './js/store.js?v=49';
+import { buildScene } from './js/builders.js?v=49';
+import { buildFusionScript } from './js/fusion.js?v=49';
+
+// ── 현장 사진(30474)을 AI가 읽었을 때의 응답을 흉내 낸 mock ─────────────
+// 일부러 틀린 값을 섞었다 — 코드 보정(sanitizeAiScene)이 고치는지 보려고.
+const MOCK = {
+  layoutPlan: `1) 메인 설비: 적색 스팀 헤더 HDR-101(2.4m × 지름 0.4m, 바닥 y=0, 윗면 1.0m)가 좌우로 놓인다.
+2) 분기: 헤더 윗면 x=-0.8 / 0 / 0.8 세 곳에서 100A 수직관이 3.0m까지 올라간다.
+3) 밸브: 세 수직관에 파란 기어 버터플라이·빨간 게이트밸브, 오른쪽 관에 회색 안전밸브.
+4) 계기: 수직관 옆에 압력계 2개, 관 중심에서 옆으로 비켜 단다.`,
+  equipment: [
+    // rot 0 · 가로 헤더 (적색 도장)
+    { type: 'header', name: 'HDR-101 스팀 헤더', x: 0, y: 0, z: 0, w: 2.4, h: 0.4, d: 0.4, rot: 0, color: '#b04a35' },
+    // axis를 빼먹고 헤더 몸통 높이(y=0.9)에 놓은 버터플라이 → 세우고 끌어올려야 한다
+    { type: 'bfly', name: 'BF-101 기어 버터플라이', x: -0.8, y: 0.9, z: 0, bore: '100A', color: '#1f5fd0' },
+    // axis: y를 제대로 준 게이트밸브
+    { type: 'gate_valve', name: 'GV-101 게이트밸브', x: 0, y: 1.7, z: 0, bore: '100A', axis: 'y', color: '#b04a35' },
+    // 수직관 위 안전밸브 (기본이 세로) — 회색
+    { type: 'safety_valve', name: 'SV-101 안전밸브', x: 0.8, y: 2.15, z: 0, bore: '100A', color: '#9aa3ab' },
+    // 수직관 중심에 그대로 놓인 압력계 → 관 밖으로 비켜야 한다
+    { type: 'gauge', name: 'PG-101 압력계', x: -0.8, y: 1.9, z: 0 },
+    { type: 'gauge', name: 'PG-102 압력계', x: 0.8, y: 1.5, z: 0 },
+    // 헤더 옆 바닥 서포트
+    { type: 'support', name: 'SP-101 서포트', x: 1.5, y: 0, z: 0.9, h: 0.85 }
+  ],
+  pipes: [
+    // 가운데 관은 윗면보다 살짝 뜬 y=1.12에서 시작 → 윗면(1.0)에 앉혀야 한다
+    { name: '100A 수직 분기 A', bore: '100A', material: 'carbon', color: '#b04a35',
+      points: [{ x: -0.8, y: 1.0, z: 0 }, { x: -0.8, y: 3.0, z: 0 }] },
+    { name: '100A 수직 분기 B (SUS)', bore: '100A', material: 'sus',
+      points: [{ x: 0, y: 1.12, z: 0 }, { x: 0, y: 3.0, z: 0 }] },
+    { name: '100A 수직 분기 C', bore: '100A', material: 'carbon', color: '#b04a35',
+      points: [{ x: 0.8, y: 1.0, z: 0 }, { x: 0.8, y: 3.0, z: 0 }] },
+    // 상부 연결 (수평) — 끝점이 0.12m 어긋나 있음 → 붙여야 한다
+    { name: '상부 연결 헤더', bore: '100A', material: 'sus',
+      points: [{ x: -0.8, y: 3.0, z: 0 }, { x: 0.68, y: 3.0, z: 0 }] }
+  ],
+  notes: '적색 스팀 헤더 + 수직 분기 3줄 · 버터플라이·게이트·안전밸브·압력계'
+};
+
+const { equipment, pipes, report } = aiResultToScene(MOCK);
+const state = { equipment, pipes, floorPlan: { visible: false } };
+
+// ── 렌더러 ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0b0f13');
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new THREE.RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 1.5, 0);
+camera.position.set(3.6, 3.0, 4.8);
+controls.update();
+
+scene.add(new THREE.HemisphereLight('#dfe9f4', '#1b232b', 0.55));
+const sun = new THREE.DirectionalLight('#fff6e8', 1.6);
+sun.position.set(4, 7, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -8;
+sun.shadow.camera.right = 8;
+sun.shadow.camera.top = 8;
+sun.shadow.camera.bottom = -8;
+scene.add(sun);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshStandardMaterial({ color: '#1a2027', roughness: 0.95, metalness: 0.05 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(40, 40, 0x2b3742, 0x1d262e);
+grid.position.y = 0.002;
+scene.add(grid);
+
+const root = buildScene(state);
+scene.add(root);
+
+// ── 검증 항목 ─────────────────────────────────────────────────────────
+const headerSpec = equipment.find((e) => e.type === 'header');
+const headerBodies = equipment.map((e) => ({ spec: e, body: equipBody(e) })).filter((b) => b.body);
+
+// ① 헤더가 가로 원통(길이 > 지름)으로 잡혔는지 + 씬에 실제로 그려졌는지
+const headerGroup = root.children.find((o) => o.userData && o.userData.spec
+  && o.userData.spec.type === 'header');
+const headerOk = !!(headerSpec && headerSpec.w > headerSpec.h * 2 && headerGroup);
+// 헤더가 지지 프레임을 포함해 가로로 긴 원통인지 — 메시 바운딩 박스로 확인
+let headerBox = null;
+if (headerGroup) {
+  const bb = new THREE.Box3().setFromObject(headerGroup);
+  headerBox = { w: +(bb.max.x - bb.min.x).toFixed(2), h: +(bb.max.y - bb.min.y).toFixed(2), d: +(bb.max.z - bb.min.z).toFixed(2) };
+}
+
+// ② 수직 배관 밸브가 세로(유로 = 월드 Y)로 서고 핸들이 옆으로 나오는지
+const vertFittings = equipment.filter((e) => VERTICAL_TYPES.has(e.type));
+const vertChecks = vertFittings.map((spec) => {
+  const obj = root.children.find((o) => o.userData && o.userData.pick
+    && o.userData.pick.id === spec.id);
+  if (!obj) return { name: spec.name, axis: spec.axis, ok: false, flowY: 0 };
+  const flow = new THREE.Vector3(1, 0, 0).applyQuaternion(obj.quaternion);   // 유로(로컬 +X)
+  const handle = new THREE.Vector3(0, 1, 0).applyQuaternion(obj.quaternion); // 핸들(로컬 +Y)
+  const native = spec.type === 'safety_valve';
+  return {
+    name: spec.name,
+    type: spec.type,
+    axis: spec.axis || null,
+    flowY: +Math.abs(flow.y).toFixed(2),
+    handleY: +Math.abs(handle.y).toFixed(2),
+    ok: native ? true : (spec.axis === 'y' && Math.abs(flow.y) > 0.9 && Math.abs(handle.y) < 0.2),
+  };
+});
+
+// ③ 헤더·탱크 본체에 묻힌 부속 0건
+const buried = equipment.filter((e) => {
+  if (e.type === 'header' || e.type === 'support') return false;
+  return headerBodies.some((b) => b.spec !== e && b.body.contains(e.x, e.y, e.z, 0));
+});
+
+// ④ 수직관 위에 제대로 앉았는지 (배관 중심과 x·z 일치)
+const onPipe = vertFittings.filter((v) => v.axis === 'y').map((v) => ({
+  name: v.name, x: v.x, z: v.z,
+}));
+
+// ⑤ Fusion 스크립트에 header·safety_valve·수직 정렬이 들어갔는지
+const py = buildFusionScript(state);
+const pyOk = {
+  header: /'header': build_header/.test(py) && /def build_header/.test(py),
+  safety: /def build_safety_valve/.test(py),
+  vertical: /rmat/.test(py) && py.includes('"axis": "y"') || py.includes('"axis":"y"'),
+};
+
+const errors = window.__errors || [];
+window.__verify = {
+  counts: { equipment: equipment.length, pipes: pipes.length },
+  report,
+  header: { ok: headerOk, box: headerBox, spec: headerSpec ? { w: headerSpec.w, h: headerSpec.h, d: headerSpec.d } : null },
+  vertical: vertChecks,
+  buried: buried.map((e) => e.name),
+  gauges: equipment.filter((e) => e.type === 'gauge').map((g) => ({ name: g.name, x: g.x, z: g.z })),
+  pipes: pipes.map((p) => ({ name: p.name, color: p.color || null, first: p.points[0], last: p.points[p.points.length - 1] })),
+  fusion: pyOk,
+  errors
+};
+
+const pass = (b) => `<span class="${b ? 'ok' : 'bad'}">${b ? 'OK' : '실패'}</span>`;
+const lines = [];
+lines.push(`<b>AI mock → 보정 → 3D</b>  장비 ${equipment.length} · 배관 ${pipes.length}`);
+lines.push(`보정: 세움 ${report.stood} · 헤더 윗면 ${report.seated} · 올림 ${report.lifted} · 계기 ${report.gauged} · 이음 ${report.welded}`);
+lines.push(`① 헤더 가로 원통 ${pass(headerOk)}  ${headerBox ? `박스 ${headerBox.w}×${headerBox.h}×${headerBox.d}m` : ''}`);
+vertChecks.forEach((v) => lines.push(`② ${v.name} (${v.type}/${v.axis || '수평'}) ${pass(v.ok)}  유로↑${v.flowY} 핸들↑${v.handleY}`));
+lines.push(`③ 본체에 묻힌 부속 ${buried.length}건 ${pass(buried.length === 0)}`);
+lines.push(`④ 계기 위치: ${equipment.filter((e) => e.type === 'gauge').map((g) => `(${g.x}, ${g.z})`).join(' ')}`);
+lines.push(`⑤ Fusion 내보내기 header ${pass(pyOk.header)} safety ${pass(pyOk.safety)} 수직 ${pass(!!pyOk.vertical)}`);
+lines.push(`⑥ 콘솔 오류 ${errors.length}건 ${pass(errors.length === 0)}`);
+document.getElementById('report').innerHTML = lines.join('\n');
+
+window.__errors = [];
+window.addEventListener('error', (e) => window.__errors.push('error: ' + (e.message || e.error)));
+window.addEventListener('unhandledrejection', (e) => window.__errors.push('promise: ' + ((e.reason && e.reason.message) || e.reason)));
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+});
+
+function tick() {
+  requestAnimationFrame(tick);
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+</script>
+</body>
+</html>

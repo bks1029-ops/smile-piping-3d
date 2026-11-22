@@ -1,6 +1,24 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis } from './store.js?v=48';
+import { elbowBasis, dirBasis } from './store.js?v=49';
+
+// 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
+// rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
+function verticalMatrix(rot) {
+  const b = dirBasis([0, 1, 0]);
+  const th = (Number(rot) || 0) * Math.PI / 180;
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  if (!th) return b.map(round6);
+  const c = Math.cos(th);
+  const s = Math.sin(th);
+  const r0 = [b[0], b[1], b[2]];
+  const r2 = [b[6], b[7], b[8]];
+  return [
+    c * r0[0] + s * r2[0], c * r0[1] + s * r2[1], c * r0[2] + s * r2[2],
+    b[3], b[4], b[5],
+    -s * r0[0] + c * r2[0], -s * r0[1] + c * r2[1], -s * r0[2] + c * r2[2],
+  ].map(round6);
+}
 
 function pyString(text) {
   // JSON을 파이썬 raw 삼중 문자열로 안전하게 담기
@@ -14,7 +32,7 @@ export function buildFusionScript(state) {
     equipment: state.equipment.map((e) => {
       const item = {
         type: e.type, name: e.name, x: e.x, y: e.y, z: e.z,
-        w: e.w, h: e.h, d: e.d, rot: e.rot,
+        w: e.w, h: e.h, d: e.d, rot: e.rot, axis: e.axis || null,
         bore1: e.bore1 || null, bore2: e.bore2 || null,
         conn: e.conn === 'forged' ? 'forged' : 'flange',
       };
@@ -37,6 +55,12 @@ export function buildFusionScript(state) {
       if (!item.rmat && Array.isArray(e.dir) && e.dir.length === 3) {
         item.dir = e.dir;
         item.rmat = dirBasis(e.dir).map((v) => Math.round(v * 1e6) / 1e6);
+      }
+      // 수직 배관 위에 세운 부속(axis: 'y')도 웹앱과 같은 자세로 놓는다.
+      // (안전밸브·계기는 제 몸으로 세로·수평을 잡으므로 제외)
+      if (!item.rmat && item.axis === 'y'
+          && e.type !== 'gauge' && e.type !== 'safety_valve') {
+        item.rmat = verticalMatrix(e.rot);
       }
       return item;
     }),
@@ -221,6 +245,52 @@ BORES = {
 JACKET = {'insulated': 0.035}
 
 
+def build_header(comp, e, tag):
+    """스팀/배관 헤더 — 가로 원통 분배기 + 볼트 플랜지 + 새들 지지 프레임"""
+    made = 0
+    L = max(0.6, e.get('w', 2.4))
+    dia = max(0.15, e.get('h', 0.4))
+    R = dia / 2.0
+    stand = max(0.3, min(1.2, dia * 1.5))
+    cy = stand + R
+    rot = e.get('rot', 0)
+    if add_cylinder(comp, local_to_world(e, (-L / 2, cy, 0)),
+                    local_to_world(e, (L / 2, cy, 0)), R, tag + '_Shell'):
+        made += 1
+    for sx in (-1, 1):
+        if add_cylinder(comp, local_to_world(e, (sx * L / 2, cy, 0)),
+                        local_to_world(e, (sx * (L / 2 + R * 0.5), cy, 0)), R * 0.92, tag + '_Head'):
+            made += 1
+    # 원통을 나누는 볼트 플랜지 2쌍
+    for f in (-0.3, 0.3):
+        for sx in (-1, 1):
+            a = L * f + sx * 0.01
+            b = L * f + sx * 0.04
+            if add_cylinder(comp, local_to_world(e, (a, cy, 0)),
+                            local_to_world(e, (b, cy, 0)), R * 1.18, tag + '_Flange'):
+                made += 1
+    # 상부 노즐 3개 (수직 분기관 자리) + 플랜지
+    for f in (-0.32, 0.0, 0.32):
+        x = L * f
+        if add_cylinder(comp, local_to_world(e, (x, cy + R, 0)),
+                        local_to_world(e, (x, cy + R + 0.14, 0)), R * 0.34, tag + '_Nozzle'):
+            made += 1
+        if add_cylinder(comp, local_to_world(e, (x, cy + R + 0.12, 0)),
+                        local_to_world(e, (x, cy + R + 0.17, 0)), R * 0.46, tag + '_NozzleFlange'):
+            made += 1
+    # 하부 드레인
+    for f in (-0.18, 0.18):
+        if add_cylinder(comp, local_to_world(e, (L * f, cy - R, 0)),
+                        local_to_world(e, (L * f, cy - R - 0.14, 0)), 0.035, tag + '_Drain'):
+            made += 1
+    # 새들 지지 프레임
+    for f in (-0.3, 0.3):
+        w = local_to_world(e, (L * f, 0, 0))
+        if add_box(comp, w[0], w[1], w[2], 0.08, stand, R * 2.2, rot, tag + '_Saddle'):
+            made += 1
+    return made
+
+
 def build_heat_exchanger(comp, e, tag):
     made = 0
     L = max(0.6, e.get('w', 3.0))
@@ -329,6 +399,37 @@ def build_valve(comp, e, tag):
         made += 1
     # 핸드휠 (원판)
     if add_cylinder(comp, P(0, 0.38, 0), P(0, 0.41, 0), 0.17 * sx, tag + '_Handwheel'):
+        made += 1
+    return made
+
+
+def build_safety_valve(comp, e, tag):
+    """안전·감압밸브 — 세로 몸체 + 상부 스프링 보닛 + 측면 토출구 (수직 배관 위에 선다)"""
+    made = 0
+    sx, sy, sz = _scaled(e, 0.22, 0.52, 0.22)
+
+    def P(lx, ly, lz):
+        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+
+    if add_cylinder(comp, P(0, -0.17, 0), P(0, -0.14, 0), 0.085 * sx, tag + '_InletFlange'):
+        made += 1
+    if add_cylinder(comp, P(0, -0.16, 0), P(0, -0.06, 0), 0.045 * sx, tag + '_Neck'):
+        made += 1
+    if add_cylinder(comp, P(0, -0.085, 0), P(0, 0.065, 0), 0.068 * sx, tag + '_Body'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.055, 0), P(0, 0.075, 0), 0.088 * sx, tag + '_MidFlange'):
+        made += 1
+    if add_cylinder(comp, P(0.04, -0.01, 0), P(0.185, -0.01, 0), 0.04 * sx, tag + '_Outlet'):
+        made += 1
+    if add_cylinder(comp, P(0.175, -0.01, 0), P(0.2, -0.01, 0), 0.065 * sx, tag + '_OutletFlange'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.075, 0), P(0, 0.125, 0), 0.06 * sz, tag + '_Bonnet'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.125, 0), P(0, 0.275, 0), 0.056 * sz, tag + '_SpringHousing'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.275, 0), P(0, 0.305, 0), 0.048 * sz, tag + '_Cap'):
+        made += 1
+    if add_cylinder(comp, P(0, 0.305, 0), P(0, 0.365, 0), 0.014 * sz, tag + '_AdjustScrew'):
         made += 1
     return made
 
@@ -891,6 +992,7 @@ def build_pipe(comp, p, tag):
 
 def build(comp, scene, report):
     builders = {
+        'header': build_header,
         'hx': build_heat_exchanger,
         'pump': build_pump,
         'vpump': build_vpump,
@@ -903,6 +1005,7 @@ def build(comp, scene, report):
         'yvalve': build_yvalve,
         'ball': build_ball,
         'check': build_check,
+        'safety_valve': build_safety_valve,
         'bellows': build_bellows,
         'elbow': build_elbow,
         'tee': build_tee,
