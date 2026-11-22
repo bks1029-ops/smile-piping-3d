@@ -238,9 +238,11 @@ scene.add(new THREE.HemisphereLight('#dfe9f4', '#1b232b', 0.55));
 const sun = new THREE.DirectionalLight('#fff6e8', 1.6);
 sun.position.set(4, 7, 5);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -8; sun.shadow.camera.right = 8;
-sun.shadow.camera.top = 8; sun.shadow.camera.bottom = -8;
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
+sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -26;
+sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 60;
+// 그림자 범위를 바닥 전체로 넓힌다 — 범위 밖 바닥에 그림자가 번져 검은 얼룩처럼 보이던 것 방지
 scene.add(sun);
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160),
