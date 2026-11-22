@@ -3970,10 +3970,12 @@ class App {
     // 우리가 방금 건 history.back()이 만든 이벤트는 무시
     if (this.suppressPop > 0) { this.suppressPop -= 1; return; }
     this.overlayEntry = false; // 뒤로가기가 우리 항목을 소비했다
+    // 지금 열려 있는 창을 하나씩 닫는다 — 모달 → 속성 창 → 펼친 보기 바 → 도구 서랍.
+    // 방향 조이스틱은 화면에 늘 떠 있는 도구라 창으로 치지 않는다( 여기서 먼저 닫으면
+    // 서랍이 열려 있어도 뒤로가기가 조이스틱만 꺼 버려 창이 안 닫히던 원인).
     if (!$('#modalRoot').hidden) this.closeModal();
     else if (!$('#props').hidden) this.clearSelection();
     else if (this.viewbarOpen) this.setViewbar(false);
-    else if (this.padOpen) this.setPadOpen(false);
     else if ($('#drawer').classList.contains('open')) this.setDrawerOpen(false);
     // 다른 창이 아직 열려 있으면 항목을 다시 깔아, 다음 뒤로가기도 페이지를 지키게 한다.
     this.syncOverlayEntry();
