@@ -978,6 +978,8 @@ function buildGauge(spec) {
   // 스템 · 육각 소켓
   add(g, cyl(0.012, 0.1, 12), steel, 0, 0.05, 0);
   add(g, cyl(0.024, 0.03, 6), steel, 0, 0.115, 0);
+  // 옆에서 붙은 계기 — 배관 쪽(−Z)으로 짧은 니쁠을 내밀어 관에 매달린 모양을 만든다
+  if (spec.mount === 'side') add(g, cyl(0.011, 0.14, 10), steel, 0, 0.02, -0.06, Math.PI / 2, 0, 0);
   // 다이얼 케이스 (면이 +Z 방향)
   add(g, cyl(0.085, 0.04, 28), caseMat, 0, 0.22, 0, Math.PI / 2, 0, 0);
   add(g, torus(0.085, 0.011), steel, 0, 0.22, 0.002, 0, 0, 0);

@@ -397,6 +397,8 @@ export function makeEquipment(type, opts) {
   // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
   if (AXIS_VALUES.has(o.axis)) spec.axis = o.axis;
   else if (t.vertical) spec.axis = 'y';
+  // 옆에서 니쁠로 달린 계기 — builders.js가 연결 니쁠을 그린다
+  if (o.mount === 'side') spec.mount = 'side';
   // 배관 끝에 붙은 부속은 진행 방향 벡터를 기억한다 — 3D 회전을 이 벡터로 잡아
   // 플랜지 원판·밸브 바디가 어느 방향(수직·좌우·45° 경사)에서도 배관 축에 딱 맞는다.
   if (Array.isArray(o.dir) && o.dir.length === 3 && o.dir.every((v) => Number.isFinite(Number(v)))) {
@@ -827,7 +829,7 @@ export function sanitizeAiScene(raw) {
     }
   });
 
-  // ⑤ 수직 배관 옆 압력계 — 관 외벽 바깥으로 비켜 세우기
+  // ⑤ 수직 배관 옆 압력계 — 관 외벽 바깥으로 비켜 세우고, 다이얼은 관 반대쪽을 보게
   equipment.forEach((e) => {
     if (e.type !== 'gauge') return;
     let best = null;
@@ -854,6 +856,10 @@ export function sanitizeAiScene(raw) {
     const off = boreOd(best.bore) / 2 + 0.11;
     e.x = round3(best.x + dx * off);
     e.z = round3(best.z + dz * off);
+    // 다이얼이 관 바깥(사람 쪽)을 보게 돌린다 — 세워 않은 계기가 관을 등지는 모양을 괴한다.
+    e.rot = dz >= 0 && Math.abs(dz) >= Math.abs(dx) ? 0 : (dx > 0 ? 90 : 270);
+    if (dz < -0.5) e.rot = 180;
+    e.mount = 'side';   // 옆에서 니쁠로 붙은 계기 — builders.js가 연결 니쁠을 그린다
     report.gauged += 1;
   });
 
@@ -873,7 +879,7 @@ export function aiResultToScene(result) {
         w: e.w, h: e.h, d: e.d,
         rot: e.rot, color: e.color,
         bore: e.bore, bore1: e.bore1, bore2: e.bore2,
-        axis: e.axis, conn: e.conn,
+        axis: e.axis, conn: e.conn, mount: e.mount,
       });
       // 계기는 배관 관경과 상관없이 알아보기 좋은 크기로 그린다.
       if (spec.type === 'gauge') {
@@ -889,8 +895,11 @@ export function aiResultToScene(result) {
     name: p.name, bore: p.bore, material: p.material, color: p.color, points: p.points,
   }));
   const state = { equipment, pipes };
-  const report = postProcessAi(state);
-  return { equipment, pipes, report: { ...clean.report, ...report }, layoutPlan: clean.layoutPlan };
+  const pp = postProcessAi(state);
+  const report = { ...clean.report };
+  report.stood += pp.stood;
+  report.lifted += pp.lifted;
+  return { equipment, pipes, report, layoutPlan: clean.layoutPlan };
 }
 
 export function emptyState() {
@@ -1068,6 +1077,7 @@ export function normalizeState(raw) {
       // 세워 놓은 방향(axis: 'y')도 그대로 살린다.
       if (AXIS_VALUES.has(e.axis)) item.axis = e.axis;
       else if (t.vertical) item.axis = 'y';
+      if (e.mount === 'side') item.mount = 'side';
       // 진행 방향 벡터(배관 축)가 저장돼 있으면 그대로 살려 3D 회전을 다시 맞춘다.
       if (Array.isArray(e.dir) && e.dir.length === 3 && e.dir.every((v) => Number.isFinite(Number(v)))) {
         const d = e.dir.map((v) => round3(Number(v)));

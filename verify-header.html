@@ -196,7 +196,9 @@ const lines = [];
 lines.push(`<b>AI mock → 보정 → 3D</b>  장비 ${equipment.length} · 배관 ${pipes.length}`);
 lines.push(`보정: 세움 ${report.stood} · 헤더 윗면 ${report.seated} · 올림 ${report.lifted} · 계기 ${report.gauged} · 이음 ${report.welded}`);
 lines.push(`① 헤더 가로 원통 ${pass(headerOk)}  ${headerBox ? `박스 ${headerBox.w}×${headerBox.h}×${headerBox.d}m` : ''}`);
-vertChecks.forEach((v) => lines.push(`② ${v.name} (${v.type}/${v.axis || '수평'}) ${pass(v.ok)}  유로↑${v.flowY} 핸들↑${v.handleY}`));
+vertChecks.forEach((v) => lines.push(v.type === 'safety_valve'
+  ? `② ${v.name} (safety_valve) ${pass(v.ok)}  세로 몸체 · 스프링 보닛 위`
+  : `② ${v.name} (${v.type}/${v.axis || '수평'}) ${pass(v.ok)}  유로↑${v.flowY} 핸들↑${v.handleY}`));
 lines.push(`③ 본체에 묻힌 부속 ${buried.length}건 ${pass(buried.length === 0)}`);
 lines.push(`④ 계기 위치: ${equipment.filter((e) => e.type === 'gauge').map((g) => `(${g.x}, ${g.z})`).join(' ')}`);
 lines.push(`⑤ Fusion 내보내기 header ${pass(pyOk.header)} safety ${pass(pyOk.safety)} 수직 ${pass(!!pyOk.vertical)}`);
