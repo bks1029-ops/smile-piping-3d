@@ -6,13 +6,13 @@ import {
   BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
-} from './store.js?v=44';
-import { buildScene } from './builders.js?v=44';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=44';
-import { buildOBJ } from './obj.js?v=44';
-import { analyzeImage, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=44';
-import { parseCommand, CMD_HELP } from './cmd.js?v=44';
-import { buildDimItems } from './dims.js?v=44';
+} from './store.js?v=45';
+import { buildScene } from './builders.js?v=45';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=45';
+import { buildOBJ } from './obj.js?v=45';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=45';
+import { parseCommand, CMD_HELP } from './cmd.js?v=45';
+import { buildDimItems } from './dims.js?v=45';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -102,6 +102,7 @@ class App {
     this.planSrc = null;
     this.planTexture = null;
     this.pendingAi = false;
+    this.aiPhotos = [];   // AI 분석 창에 첨부한 사진들(최대 6장)
     this.aiRunning = false;
     this.wakeLock = null;
     // 한 줄 명령 상태 — 커서(마지막 끝점)와 직전 관경·재질을 이어 쓴다.
@@ -3190,6 +3191,10 @@ class App {
     return saved || DEFAULT_MODEL;
   }
 
+  // 사진은 최대 6장 · 원본 20MB까지 — 넘으면 안내하고 건너뛴다.
+  aiPhotoLimit() { return 6; }
+  aiPhotoMaxBytes() { return 20 * 1024 * 1024; }
+
   async startAI() {
     if (this.aiRunning) {
       this.toast('AI 분석이 아직 진행 중입니다. 끝나면 결과를 알려 드립니다.');
@@ -3200,28 +3205,155 @@ class App {
       this.openSettings('AI 자동 분석을 쓰려면 Google Gemini API 키를 먼저 입력하세요. 키가 없어도 수동 편집과 도면 깔기는 그대로 쓸 수 있습니다.');
       return;
     }
-    if (!this.state.floorPlan.src) {
-      this.pendingAi = true;
-      $('#aiFile').click();
+    this.openAiPhotos();
+  }
+
+  // ── AI 사진 첨부 창 (여러 장) ─────────────────────────────
+  // 바닥에 깔린 도면이 있으면 첫 사진으로 넣어 두고, 사진을 더 붙일 수 있게 한다.
+  openAiPhotos() {
+    if (!Array.isArray(this.aiPhotos)) this.aiPhotos = [];
+    const plan = this.state.floorPlan && this.state.floorPlan.src;
+    if (plan && !this.aiPhotos.length) {
+      this.aiPhotos.push({ src: plan, name: '바닥에 깔린 도면', size: 0 });
+    }
+    this.openModal({
+      title: 'AI 자동 분석 · 사진 첨부',
+      body: `
+        <div class="ai-photo-box">
+          <div class="ai-photo-grid" id="aiPhotoGrid"></div>
+          <p class="hint" id="aiPhotoHint"></p>
+          <div class="ai-photo-btns">
+            <button class="btn" id="aiPhotoAdd" type="button">📷 사진 추가</button>
+            <button class="btn ghost small" id="aiPhotoClear" type="button">전체 비우기</button>
+          </div>
+          <input type="file" id="aiPhotos" accept="image/*" multiple hidden>
+        </div>
+        <p class="hint">현장 사진·도면·손그림을 최대 6장까지 올릴 수 있습니다. 여러 각도의 사진을 함께 올리면 한 장면으로 종합해 배치합니다.</p>`,
+      actions: [
+        { label: 'AI 분석 시작', cls: 'accent', keep: true, onClick: () => this.runAiFromPhotos() },
+        { label: '닫기' },
+      ],
+    });
+    const add = $('#aiPhotoAdd', $('#modalRoot'));
+    const clear = $('#aiPhotoClear', $('#modalRoot'));
+    const input = $('#aiPhotos', $('#modalRoot'));
+    const grid = $('#aiPhotoGrid', $('#modalRoot'));
+    if (add && input) add.addEventListener('click', () => input.click());
+    if (clear) clear.addEventListener('click', () => { this.aiPhotos = []; this.renderAiPhotos(); });
+    if (input) input.addEventListener('change', async (e) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      e.target.value = ''; // 같은 사진을 다시 골라도 change가 오도록
+      await this.addAiPhotos(files);
+    });
+    // 썸네일의 × — 누른 사진만 지운다.
+    if (grid) grid.addEventListener('click', (e) => {
+      const x = e.target && e.target.closest ? e.target.closest('.ai-photo-x') : null;
+      if (x) {
+        const i = Number(x.dataset.i);
+        if (Number.isInteger(i) && i >= 0) { this.aiPhotos.splice(i, 1); this.renderAiPhotos(); }
+        return;
+      }
+    });
+    this.renderAiPhotos();
+  }
+
+  async addAiPhotos(files) {
+    if (!Array.isArray(this.aiPhotos)) this.aiPhotos = [];
+    const max = this.aiPhotoLimit();
+    const maxBytes = this.aiPhotoMaxBytes();
+    let added = 0;
+    for (let i = 0; i < files.length; i += 1) {
+      const f = files[i];
+      if (this.aiPhotos.length >= max) {
+        this.toast(`사진은 최대 ${max}장까지만 올릴 수 있습니다.`, { type: 'err' });
+        break;
+      }
+      if (!f || !/^image\//.test(f.type)) {
+        this.toast(`${f && f.name ? f.name : '선택한 파일'}: 이미지(JPG/PNG)만 올릴 수 있습니다.`, { type: 'err' });
+        continue;
+      }
+      if (f.size > maxBytes) {
+        this.toast(`${f.name}: 사진 용량이 너무 큽니다. 20MB 이하 사진을 써 주세요.`, { type: 'err' });
+        continue;
+      }
+      if (this.aiPhotos.some((p) => p.name === f.name && p.size === f.size)) {
+        this.toast(`${f.name}은(는) 이미 올린 사진입니다.`, { type: 'err' });
+        continue;
+      }
+      const src = await this.readImageFileAsync(f);
+      if (!src) continue;
+      this.aiPhotos.push({ src, name: f.name || `사진 ${this.aiPhotos.length + 1}`, size: f.size });
+      added += 1;
+      this.renderAiPhotos();
+    }
+    if (added > 0) this.toast(`사진 ${added}장을 추가했습니다. (${this.aiPhotos.length}/${max})`);
+  }
+
+  // readImageFile은 콜백식인데 오류 때 콜백이 오지 않을 수 있어, 기다림에 한도를 둔다.
+  readImageFileAsync(file) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v || null); } };
+      const timer = setTimeout(() => finish(null), 8000);
+      try {
+        this.readImageFile(file, (src) => { clearTimeout(timer); finish(src); });
+      } catch (e) {
+        clearTimeout(timer);
+        finish(null);
+      }
+    });
+  }
+
+  renderAiPhotos() {
+    const grid = $('#aiPhotoGrid', $('#modalRoot'));
+    if (!grid) return;
+    const photos = Array.isArray(this.aiPhotos) ? this.aiPhotos : [];
+    const max = this.aiPhotoLimit();
+    grid.innerHTML = photos.length
+      ? photos.map((p, i) => `
+          <div class="ai-photo" title="${esc(p.name || '')}">
+            <img src="${p.src}" alt="${esc(p.name || `사진 ${i + 1}`)}">
+            <span class="ai-photo-no">${i + 1}</span>
+            <button class="ai-photo-x" type="button" data-i="${i}" title="이 사진 빼기" aria-label="${i + 1}번 사진 빼기">×</button>
+          </div>`).join('')
+      : `<div class="ai-photo-empty">아직 사진이 없습니다.<br><b>📷 사진 추가</b>를 눌러 도면·현장 사진을 올려 주세요.</div>`;
+    const hint = $('#aiPhotoHint', $('#modalRoot'));
+    if (hint) {
+      hint.textContent = photos.length
+        ? `사진 ${photos.length}장 / 최대 ${max}장 — 여러 각도의 사진을 함께 올리면 하나의 3D 씬으로 종합합니다.`
+        : `사진을 한 장만 올려도 되고, 현장을 여러 각도에서 찍어 함께 올리면 더 정확합니다. (최대 ${max}장)`;
+    }
+  }
+
+  // 첨부한 사진들을 한 번에 Gemini로 보낸다.
+  async runAiFromPhotos() {
+    const photos = (Array.isArray(this.aiPhotos) ? this.aiPhotos : []).map((p) => p.src).filter(Boolean);
+    if (!photos.length) {
+      this.toast('분석할 사진을 먼저 올려 주세요.', { type: 'err' });
       return;
     }
-    await this.runAI(this.state.floorPlan.src);
+    // 사진을 처음 올렸고 바닥에 깔 도면이 없다면 첫 사진을 도면으로도 쓴다(예전과 같은 동작).
+    if (!this.state.floorPlan.src && photos[0]) this.applyPlanImage(photos[0]);
+    this.closeModal();
+    await this.runAI(photos);
   }
 
   async runAI(dataUrl) {
     if (this.aiRunning) return; // 한 번에 하나만 — 진행 중인 분석을 다른 창으로 덮어쓰지 않는다.
+    const images = (Array.isArray(dataUrl) ? dataUrl : [dataUrl]).filter(Boolean);
+    if (!images.length) return;
     this.aiRunning = true;
     this.acquireWakeLock(); // 분석하는 동안 폰 화면이 꺼지지 않게 (지원하지 않으면 조용히 무시)
     this.showAiProgress();
     this.openModal({
       title: 'AI 자동 분석',
-      body: `<p><span class="loader"></span>사진에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>
+      body: `<p><span class="loader"></span>사진 ${images.length}장에서 장비와 배관을 읽는 중입니다. 잠시만 기다려 주세요.</p>
              <p class="hint">분석은 화면을 닫아도 계속됩니다. 결과가 나오면 다시 알려 드립니다.</p>`,
       actions: [],
     });
     try {
       const asked = this.model();
-      const { data: res, model: usedModel } = await analyzeImage({ apiKey: this.apiKey(), model: asked, dataUrl });
+      const { data: res, model: usedModel } = await analyzeImages({ apiKey: this.apiKey(), model: asked, dataUrls: images });
       if (usedModel && usedModel !== asked) {
         // 구형 모델이 막혀 다른 모델로 성공한 경우 — 다음에도 같은 문제를 겪지 않게 저장해 둔다.
         try { localStorage.setItem(KEY_MODEL, usedModel); localStorage.setItem(KEY_MODEL_MIGRATED, '1'); } catch (e) { /* ignore */ }
@@ -3239,8 +3371,9 @@ class App {
           </div>
           <p class="hint">“씬 교체”를 누르면 지금 씬을 지우고 AI 배치로 바꿉니다. “추가”는 기존 씬에 덧붙입니다.</p>`,
         actions: [
-          { label: '씬 교체', cls: 'accent', onClick: () => { this.closeModal(); this.applyAIResult(res, 'replace'); } },
-          { label: '추가', onClick: () => { this.closeModal(); this.applyAIResult(res, 'append'); } },
+          // keep: true — 열린 창을 먼저 정리한 뒤(closeOverlaysForResult) 배치를 적용한다.
+          { label: '씬 교체', cls: 'accent', keep: true, onClick: () => this.applyAiAndClose(res, 'replace') },
+          { label: '추가', keep: true, onClick: () => this.applyAiAndClose(res, 'append') },
           { label: '취소' },
         ],
       });
@@ -3260,6 +3393,42 @@ class App {
       this.releaseWakeLock();
       this.hideAiProgress();
     }
+  }
+
+  // AI 결과를 적용하기 전에 열린 창(분석 결과 모달·모바일 도구 서랍·속성 창·보기 바)을
+  // 모두 닫고, 적용한 뒤에는 새 배치에 맞춰 등각으로 화면을 맞춘다.
+  // — 창이 3D 화면을 가리고 있어 결과 그림이 안 보이는 문제를 막는 부분.
+  applyAiAndClose(result, mode) {
+    try { this.closeOverlaysForResult(); } catch (e) { /* 이미 닫힌 경우 */ }
+    let ok = true;
+    try {
+      this.applyAIResult(result, mode);
+    } catch (e) {
+      ok = false;
+      this.toast(`AI 배치를 적용하지 못했습니다: ${e && e.message ? e.message : e}`, { type: 'err' });
+    }
+    if (ok) this.setView('iso'); // 새로 들어온 장비가 화면 안에 꽉 차게
+    return ok;
+  }
+
+  // 히스토리 항목은 한 번만 되돌린다(창마다 되돌리면 페이지가 뒤로 갈 수 있다).
+  closeOverlaysForResult() {
+    const modal = $('#modalRoot');
+    if (modal) modal.hidden = true;
+    const body = $('#modalBody');
+    if (body) body.innerHTML = '';
+    const actions = $('#modalActions');
+    if (actions) actions.innerHTML = '';
+    const props = $('#props');
+    if (props && !props.hidden) {
+      props.hidden = true;
+      this.selection = null;
+    }
+    const drawer = $('#drawer');
+    if (drawer) drawer.classList.remove('open');
+    if (this.viewbarOpen) this.setViewbar(false);
+    this.hideAiProgress();
+    this.releaseOverlayEntry();
   }
 
   applyAIResult(result, mode) {
@@ -3561,16 +3730,6 @@ class App {
     // AI
     $('#btnAi').addEventListener('click', () => this.startAI());
     $('#btnAi2').addEventListener('click', () => this.startAI());
-    $('#aiFile').addEventListener('change', (e) => {
-      const f = e.target.files && e.target.files[0];
-      e.target.value = '';
-      if (!f) { this.pendingAi = false; return; }
-      this.readImageFile(f, (src) => {
-        this.applyPlanImage(src);
-        this.pendingAi = false;
-        this.runAI(src);
-      });
-    });
 
     // 한 줄 배관 명령 (mm)
     const cmdForm = $('#cmdForm');

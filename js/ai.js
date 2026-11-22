@@ -23,6 +23,13 @@ const API_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
 const PROMPT = `너는 배관설비(플랜트) 현장 사진과 2D 도면, 손그림을 3D 배관 레이아웃 데이터로 변환하는 설비 엔지니어다.
 첨부된 이미지를 분석해서 아래 JSON 스키마에 맞는 객체 하나만 출력하라. 설명 문장은 넣지 말 것.
 
+[사진이 여러 장일 때]
+- 첨부된 사진들은 같은 현장(또는 같은 도면)을 다른 각도·다른 구역에서 찍은 것으로 보고, 하나의 일관된 3D 장면으로 종합하라.
+- 같은 장비·배관이 여러 사진에 나오면 이름과 위치를 기준으로 하나로 합쳐라. 사진마다 같은 장비를 복제하지 말 것.
+- 서로 다른 구역을 찍은 사진들은 사진에 보이는 연결 관계·배관 흐름대로 이어 붙여라. 겹치는 부분은 위치를 맞춰라.
+- 평면 도면과 현장 사진이 섞여 있으면 도면의 배치·치수·분기 구조를 우선하고, 사진은 장비 모양·색·부속 확인에 써라.
+- 사진마다 확실한 정보가 다르므로, 한 사진에서 본 부속을 다른 사진의 같은 배관 위치에 붙여도 된다.
+
 [좌표계]
 - 단위: 미터(m). 바닥면 y = 0.
 - X: 화면 오른쪽(+), Z: 화면 앞쪽(+), Y: 높이(+).
@@ -111,18 +118,21 @@ function modelRetryable(status, detail) {
   return /high demand|overloaded|temporarily unavailable|try again|resource_exhausted|quota|rate limit/i.test(s);
 }
 
-async function callModel({ apiKey, model, text, mimeType, base64 }) {
+async function callModel({ apiKey, model, text, mimeType, base64, images }) {
   const url = `${API_ROOT}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  // 사진 여러 장이면 parts에 텍스트 한 번 + 이미지 N장을 담아 한 번의 요청으로 보낸다.
+  const parts = [{ text }];
+  const list = Array.isArray(images) && images.length ? images : (base64 ? [{ mimeType, base64 }] : []);
+  list.forEach((im) => {
+    if (im && im.base64) parts.push({ inlineData: { mimeType: im.mimeType || 'image/jpeg', data: im.base64 } });
+  });
   let res;
   try {
     res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: base64 ? [{ text }, { inlineData: { mimeType, data: base64 } }] : [{ text }],
-        }],
+        contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.15, responseMimeType: 'application/json', maxOutputTokens: 16384 },
       }),
     });
@@ -198,7 +208,7 @@ function versionScore(name) {
 }
 
 // 모델 폴백(고른 모델 → 기본 → 이 키에서 쓸 수 있는 모델 목록)을 한 곳에 모아 둔다.
-async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
+async function requestWithFallback({ apiKey, model, text, mimeType, base64, images }) {
   const tried = new Set();
   const queue = [];
   const push = (id) => {
@@ -220,7 +230,7 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
     const current = queue.shift();
     attempts++;
     try {
-      const raw = await callModel({ apiKey, model: current, text, mimeType, base64 });
+      const raw = await callModel({ apiKey, model: current, text, mimeType, base64, images });
       return { raw, model: current };
     } catch (e) {
       lastErr = e;
@@ -256,14 +266,27 @@ async function requestWithFallback({ apiKey, model, text, mimeType, base64 }) {
   throw lastErr || new Error('Gemini 모델을 찾지 못했습니다. 설정에서 모델을 다시 골라 주세요.');
 }
 
-export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
+// data URL → {mimeType, base64}. 여러 장을 받을 때는 한 장씩 여기서 꺼낸다.
+function splitDataUrl(dataUrl) {
   const m = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl || '');
   if (!m) throw new Error('이미지를 읽을 수 없습니다. JPG/PNG 파일을 올려주세요.');
-  const mimeType = m[1];
-  const base64 = m[2];
+  return { mimeType: m[1], base64: m[2] };
+}
+
+// 사진 여러 장(도면·현장 사진·손그림)을 한 번에 분석한다.
+// 한 장만 올렸을 때도 같은 경로를 쓴다 — 예전 analyzeImage는 이 함수를 감싼 것이다.
+export async function analyzeImages({ apiKey, model, dataUrls, extraNote }) {
+  const list = (Array.isArray(dataUrls) ? dataUrls : [dataUrls]).filter(Boolean);
+  if (!list.length) throw new Error('분석할 사진을 한 장 이상 올려주세요.');
+  if (list.length > 6) throw new Error('사진은 한 번에 최대 6장까지 분석할 수 있습니다.');
+  const images = list.map(splitDataUrl);
   const text = extraNote ? `${PROMPT}\n\n[현장 메모]\n${extraNote}` : PROMPT;
-  const { raw, model: used } = await requestWithFallback({ apiKey, model, text, mimeType, base64 });
-  return { data: parseResult(raw), model: used };
+  const { raw, model: used } = await requestWithFallback({ apiKey, model, text, images });
+  return { data: parseResult(raw), model: used, count: images.length };
+}
+
+export async function analyzeImage({ apiKey, model, dataUrl, extraNote }) {
+  return analyzeImages({ apiKey, model, dataUrls: [dataUrl], extraNote });
 }
 
 // ── 자유로운 말 → 명령 (로컬 파서가 못 알아들었을 때만) ─────────────────────
