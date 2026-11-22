@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=56&b=2">
+<link rel="stylesheet" href="./css/style.css?v=57">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -182,21 +182,23 @@
         <p class="hint">올린 이미지가 3D 바닥에 반투명으로 깔립니다. 그 위를 따라 장비와 배관을 놓으세요.</p>
 
         <div class="plan-controls" id="planControls">
-          <label class="switch"><input type="checkbox" id="planVisible" checked> 바닥에 표시</label>
-          <label class="field range">투명도<span class="val" id="planOpacityVal">55%</span>
-            <input type="range" id="planOpacity" min="0.05" max="1" step="0.05" value="0.55">
-          </label>
-          <label class="field range">가로 크기<span class="val" id="planWidthVal">12 m</span>
-            <input type="range" id="planWidth" min="2" max="40" step="0.5" value="12">
-          </label>
-          <label class="field range">회전<span class="val" id="planRotVal">0°</span>
-            <input type="range" id="planRot" min="-180" max="180" step="5" value="0">
-          </label>
-          <div class="field-row">
-            <label class="field">X 위치<input type="number" id="planX" step="0.5" value="0"></label>
-            <label class="field">Z 위치<input type="number" id="planZ" step="0.5" value="0"></label>
+          <label class="switch"><input type="checkbox" id="planVisible" checked aria-controls="planOptions" aria-expanded="true"> 바닥에 표시<span class="switch-note">(도면, 사진을 바닥에 표시함)</span></label>
+          <div class="plan-options" id="planOptions">
+            <label class="field range">투명도<span class="val" id="planOpacityVal">55%</span>
+              <input type="range" id="planOpacity" min="0.05" max="1" step="0.05" value="0.55">
+            </label>
+            <label class="field range">가로 크기<span class="val" id="planWidthVal">12 m</span>
+              <input type="range" id="planWidth" min="2" max="40" step="0.5" value="12">
+            </label>
+            <label class="field range">회전<span class="val" id="planRotVal">0°</span>
+              <input type="range" id="planRot" min="-180" max="180" step="5" value="0">
+            </label>
+            <div class="field-row">
+              <label class="field">X 위치<input type="number" id="planX" step="0.5" value="0"></label>
+              <label class="field">Z 위치<input type="number" id="planZ" step="0.5" value="0"></label>
+            </div>
+            <button class="btn small ghost" id="btnPlanClear">도면 지우기</button>
           </div>
-          <button class="btn small ghost" id="btnPlanClear">도면 지우기</button>
         </div>
         <div class="plan-empty" id="planEmpty">아직 올린 도면이 없습니다.</div>
 
@@ -263,6 +265,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=56&b=2"></script>
+<script type="module" src="./js/main.js?v=57"></script>
 </body>
 </html>

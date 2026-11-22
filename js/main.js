@@ -7,14 +7,14 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=56&b=2';
-import { buildScene } from './builders.js?v=56&b=2';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=56&b=2';
-import { buildOBJ } from './obj.js?v=56&b=2';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=56&b=2';
-import { parseCommand, CMD_HELP } from './cmd.js?v=56&b=2';
-import { buildDimItems } from './dims.js?v=56&b=2';
-import { buildAiImageParts } from './zoom.js?v=56&b=2';
+} from './store.js?v=57';
+import { buildScene } from './builders.js?v=57';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=57';
+import { buildOBJ } from './obj.js?v=57';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=57';
+import { parseCommand, CMD_HELP } from './cmd.js?v=57';
+import { buildDimItems } from './dims.js?v=57';
+import { buildAiImageParts } from './zoom.js?v=57';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -3211,6 +3211,7 @@ class App {
     $('#planControls').hidden = !has;
     $('#planEmpty').hidden = has;
     $('#planVisible').checked = !!p.visible;
+    this.syncPlanOptions(!!p.visible);
     $('#planOpacity').value = String(p.opacity);
     $('#planOpacityVal').textContent = Math.round(p.opacity * 100) + '%';
     $('#planWidth').value = String(p.width);
@@ -3220,6 +3221,15 @@ class App {
     $('#planX').value = fmt(p.x);
     $('#planZ').value = fmt(p.z);
     $('#btnPlanUpload').textContent = has ? '다른 도면 올리기' : '도면·현장 사진 올리기';
+  }
+
+  // '바닥에 표시'가 꺼져 있으면 그 아래 투명도·크기·회전·위치·도면 지우기를 접는다.
+  // (체크하면 다시 펼침 — 페이지 초기 로드·씬 복원 때도 syncPlanInputs가 상태에 맞춰 준다)
+  syncPlanOptions(visible) {
+    const box = $('#planOptions');
+    const cb = $('#planVisible');
+    if (box) box.hidden = !visible;
+    if (cb) cb.setAttribute('aria-expanded', visible ? 'true' : 'false');
   }
 
   // 휴대폰 고해상도 사진은 긴 변 2048px · JPEG 0.86로 줄여서 넘긴다.
@@ -3823,6 +3833,7 @@ class App {
     });
     $('#planVisible').addEventListener('change', (e) => {
       this.state.floorPlan.visible = e.target.checked;
+      this.syncPlanOptions(!!e.target.checked);
       this.applyPlan();
       this.scheduleSave();
     });

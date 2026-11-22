@@ -480,6 +480,10 @@ input[type="color"] {
 }
 .switch { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--dim); margin-bottom: 12px; cursor: pointer; }
 .switch input { accent-color: var(--accent); width: 16px; height: 16px; }
+/* 체크박스 옆 부가 설명 — 작고 은은하게 */
+.switch-note { margin-left: -3px; font-size: 11.5px; font-weight: 400; color: var(--dim2); letter-spacing: -0.1px; }
+/* 체크 해제 시 아래 조절 항목을 접는다 */
+.plan-options[hidden] { display: none; }
 
 .stack { display: flex; flex-direction: column; gap: 7px; }
 .divider { height: 1px; background: var(--line-soft); margin: 14px 0; }
