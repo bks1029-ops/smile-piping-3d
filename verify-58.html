@@ -49,9 +49,9 @@ const MOCK = {
     { type: 'gauge', name: 'PG-201 압력계', x: 0.25, y: 1.7, z: 0.2 },
   ],
   pipes: [
-    { name: '450A 은색 보온 가로관', bore: '450A', material: 'insulated', color: '#c8ced4',
+    { name: '450A 은색 보온 가로관', bore: '450A', material: 'sus', color: '#c8ced4',
       points: [{ x: -1.6, y: 0.8, z: 0 }, { x: 1.6, y: 0.8, z: 0 }] },
-    { name: '300A 보온 후면 주배관', bore: '300A', material: 'insulated', color: '#c8ced4',
+    { name: '300A 보온 후면 주배관', bore: '300A', material: 'sus', color: '#c8ced4',
       points: [{ x: -1.4, y: 1.35, z: 1.3 }, { x: 1.4, y: 1.35, z: 1.3 }] },
     { name: '50A ㄷ자 우회 A', bore: '50A', material: 'carbon', color: '#3a3f44',
       points: [
@@ -93,10 +93,12 @@ function touchesOther(pipes, pi, pt) {
   return pipes.some((p, k) => k !== pi && distToPipe(p, pt) <= 0.05);
 }
 
-// 다른 배관 0.6m 안에 있으면서도 닿지 않은 끝 = 허공에 뜬 분기 끝 (고쳐야 할 것)
+// 다른 배관 0.6m 안에 있으면서도 닿지 않은 분기관(꺾임이 있는 배관) 끝 = 허공에 뜬 분기 끝
+// (주배관처럼 곱게 뻗은 두 점 배관의 끝은 화면 밖으로 나가는 정상 끝이라 보지 않는다)
 function floatingNear(pipes) {
   let n = 0;
   pipes.forEach((p, pi) => {
+    if (p.points.length < 3) return;
     [0, p.points.length - 1].forEach((i) => {
       const pt = p.points[i];
       if (touchesOther(pipes, pi, pt)) return;
@@ -175,11 +177,11 @@ async function run() {
   app.applyAIResult(MOCK, 'replace');
   app.setView('iso', true);
   try { app.setDrawerOpen(false); app.setDims(false); } catch (e) {}
-  // 연결부(ㄷ자)가 화면 가운데 오게 3/4 시점으로
+  // 등각 자동 맞춤에서 조금 당겨 ㄷ자 연결부를 크게
   try {
-    app.controls.target.set(0.5, 1.35, 0.6);
-    app.camera.position.set(0.5 + 2.0, 2.5, 0.6 + 2.6);
-    app.camera.lookAt(app.controls.target);
+    const t = app.controls.target.clone();
+    const off = app.camera.position.clone().sub(t).multiplyScalar(0.82);
+    app.camera.position.copy(t.clone().add(off));
     app.controls.update();
   } catch (e) {}
   const st = JSON.parse(JSON.stringify(app.state));
@@ -187,6 +189,7 @@ async function run() {
   const appFloating = (() => {
     let n = 0;
     st.pipes.forEach((p, pi) => {
+      if (p.points.length < 3) return;
       [0, p.points.length - 1].forEach((i) => {
         const pt = p.points[i];
         if (touchesOther(st.pipes, pi, pt)) return;
