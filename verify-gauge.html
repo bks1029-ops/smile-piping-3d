@@ -196,7 +196,7 @@ window.__verify = {
 const pass = (b) => `<span class="${b ? 'ok' : 'bad'}">${b ? 'OK' : '실패'}</span>`;
 const lines = [];
 lines.push(`<b>AI mock → 기하 보정 → 3D</b>  장비 ${equipment.length} · 배관 ${pipes.length}`);
-lines.push(`보정: 기운 수직관 ${report.straightened}곳 · 게기 ${report.gauged}개 · 세움 ${report.stood} · 헤더 윗면 ${report.seated} · 이음 ${report.welded}`);
+lines.push(`보정: 기운 수직관 ${report.straightened}곳 · 계기 ${report.gauged}개 · 세움 ${report.stood} · 헤더 윗면 ${report.seated} · 이음 ${report.welded}`);
 straight.forEach((s) => lines.push(s.wasTilted
   ? `① ${s.name} ${pass(s.ok)}  수평편차 ${s.horizBefore}m → ${s.horizAfter}m`
   : `① ${s.name}  수직(검사 대상 아님)`));
