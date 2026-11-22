@@ -153,6 +153,7 @@ class App {
     this.setupDims();
     this.setupHand();
     this.setupHandDim();
+    this.setupZoomGuard();
     this.setupVoice();
     this.bindUI();
     this.bindPad();
@@ -416,6 +417,64 @@ class App {
       vv.addEventListener('scroll', keep);
     }
     window.addEventListener('scroll', () => { if (this.handDimItem) this.positionHandDim(); }, { passive: true });
+  }
+
+  // ── 화면 확대 방지 ──────────────────────────────────────
+  // 휴대폰에서 두 손가락으로 화면 전체를 확대하면 속성(설정) 창까지 같이 커져 화면 밖으로 잘린다.
+  // 확대·이동은 3D 화면(카메라)에서만 되게 하고, 브라우저가 그래도 확대해 버린 경우에는
+  // 속성 창·서랍을 지금 눈에 보이는 영역 안으로 다시 앉혀 잘리지 않게 한다.
+  setupZoomGuard() {
+    // iOS Safari: 페이지 핀치 확대·회전 제스처 자체를 막는다 (meta를 무시하는 경우 대비).
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((type) => {
+      document.addEventListener(type, (ev) => { ev.preventDefault(); }, { passive: false });
+    });
+    // 3D 화면 바깥(패널·툴바)에서 시작한 두 손가락 움직임은 페이지 확대에 쓰지 않는다.
+    document.addEventListener('touchmove', (ev) => {
+      if (ev.touches && ev.touches.length > 1) {
+        const t = ev.target;
+        if (!(t && t.closest && t.closest('#viewport'))) ev.preventDefault();
+      }
+    }, { passive: false });
+    // 입력칸을 두 번 톡톡 — 더블탭 확대가 남는 브라우저에서도 페이지가 커지지 않게.
+    document.addEventListener('dblclick', (ev) => {
+      const t = ev.target;
+      if (t && t.closest && t.closest('input, textarea, select')) return;
+      ev.preventDefault();
+    }, { passive: false });
+    const fit = () => this.fitPanelsToView();
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', fit);
+      vv.addEventListener('scroll', fit);
+    }
+    window.addEventListener('resize', fit);
+  }
+
+  // 확대된 채로 들어온 경우(브라우저 '강제 확대'·접근성 설정, 예전 캐시)에도 속성 창·서랍이
+  // 화면 밖으로 잘리지 않게, 지금 보이는 영역(visualViewport) 크기로 줄여 그 안에 붙인다.
+  // 확대가 풀리면(scale 1) 인라인 값을 지워 원래 CSS 배치로 되돌린다.
+  fitPanelsToView() {
+    const vv = window.visualViewport;
+    const mobile = window.matchMedia('(max-width: 860px)').matches;
+    const zoomed = !!(vv && vv.scale > 1.01) && mobile;
+    [$('#props'), $('#drawer')].forEach((el) => {
+      if (!el) return;
+      const shown = !el.hidden && (el.id !== 'drawer' || el.classList.contains('open'));
+      if (!zoomed || !shown) {
+        ['left', 'right', 'top', 'bottom', 'width', 'max-height'].forEach((k) => el.style.removeProperty(k));
+        return;
+      }
+      const vw = Math.max(160, Math.round(vv.width));
+      const vh = Math.max(220, Math.round(vv.height));
+      const maxH = Math.round(vh * 0.92);
+      el.style.left = `${Math.round(vv.offsetLeft)}px`;
+      el.style.right = 'auto';
+      el.style.width = `${vw}px`;
+      el.style.maxHeight = `${maxH}px`;
+      el.style.bottom = 'auto';
+      const h = Math.min(el.offsetHeight || Math.round(vh * 0.6), maxH);
+      el.style.top = `${Math.round(vv.offsetTop + vh - h)}px`;
+    });
   }
 
   setHandMode(on, quiet) {
@@ -1463,6 +1522,8 @@ class App {
           <button class="btn small danger" data-act="del">배관 삭제</button>
         </div>`;
     }
+    // 화면이 확대된 상태에서 창을 열어도 잘리지 않게 보이는 영역에 맞춘다.
+    this.fitPanelsToView();
   }
 
   // 레듀샤·티는 1차/2차 관경을 속성 패널에서 바꿀 수 있다 (바꾸면 길이도 실제 관경에 맞춰 다시 잡는다).
@@ -3820,6 +3881,8 @@ class App {
     const el = $('#drawer');
     if (!el) return;
     el.classList.toggle('open', !!on);
+    // 화면이 확대된 상태에서도 서랍이 화면 밖으로 잘리지 않게 보이는 영역에 맞춘다.
+    this.fitPanelsToView();
     if (on) this.syncOverlayEntry();
     else this.releaseOverlayEntry();
   }

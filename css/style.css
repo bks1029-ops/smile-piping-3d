@@ -28,6 +28,21 @@ html, body {
   font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   font-size: 14px;
+  /* 페이지 전체 확대는 막는다 — 두 손가락 확대·이동은 3D 화면(#viewport)에서만.
+     (두 손가락 더블탭 확대도 함께 꺼진다) */
+  touch-action: manipulation;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* 패널·툴바 위에서 시작한 두 손가락도 페이지를 확대하지 않게 한다.
+   pan-x pan-y = 안쪽 세로/가로 스크롤은 그대로, 핀치 확대와 더블탭 확대만 끈다.
+   (브라우저가 user-scalable=no를 무시하는 '강제 확대' 설정에서도 확대가 패널에서 시작되지 않게) */
+#topbar, #topbar .btn, #drawer, #props, .viewbar, .viewbar .vbtn,
+.cmd-bar, .cmd-bar .btn, .dir-pad, .dir-pad .pad-btn,
+#modalRoot, .modal-card, #handDim, .hand-badge, .overlay-note, .hud, #aiProgress {
+  touch-action: pan-x pan-y;
 }
 
 #app { display: flex; flex-direction: column; height: 100dvh; }
@@ -143,7 +158,10 @@ html, body {
 
 /* ── 스테이지 ───────────────────────────────────────────── */
 #stage { position: relative; flex: 1 1 auto; min-height: 0; }
-#viewport { position: absolute; inset: 0; }
+#viewport { position: absolute; inset: 0; touch-action: none; overflow: hidden; }
+/* 3D 화면의 두 손가락 확대·이동은 Three.js(카메라)가 직접 받는다 — 브라우저 페이지 확대는 막는다 */
+#viewport canvas,
+#viewport .dim-layer { touch-action: none; }
 #scene { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
 
 /* ── 배관 치수 라벨 (3D 좌표를 화면에 투영해 얹는 오버레이) ── */
@@ -330,6 +348,7 @@ html, body {
 
 /* ── 패널 공통 ──────────────────────────────────────────── */
 .panel {
+  max-width: 100vw;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1087,3 +1106,22 @@ input[type="color"] {
   #btnAi { padding: 6px 8px; font-size: 11.5px; }
   #btnSettings { padding: 6px 8px; font-size: 14px; }
 }
+
+/* ── 휴대폰 입력칸 — 자동 확대 방지 ──────────────────────────
+   iOS Safari·삼성 인터넷은 글자가 16px보다 작은 입력칸에 포커스를 주면 화면을 저절로
+   확대한다. 배관 속성(설정) 창·명령창·설정 창의 입력칸을 16px 이상으로 맞춰 원천 차단. */
+@media (max-width: 860px), (pointer: coarse) {
+  #topbar input, #drawer input, #drawer select, #drawer textarea,
+  #props input, #props select, #props textarea,
+  #modalRoot input, #modalRoot select, #modalRoot textarea,
+  .hud input, #handDim input, #cmdInput, .cmd-input {
+    font-size: 16px;
+  }
+  /* 글자가 커진 만큼 숫자칸은 조금 넓히고, 패널은 가로로 넘치지 않게 */
+  .hud-label input { width: 78px; }
+  .pt-row input { padding: 6px 4px; }
+  #props, #drawer { overflow-x: hidden; }
+}
+
+/* 속성 창 안쪽도 가로 스크롤이 생기지 않게 (값이 길어도 줄 안에서 줄바꿈) */
+#props .prop-body { overflow-x: hidden; }
