@@ -22,9 +22,19 @@
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script>
+<script>
+  window.__errors = window.__errors || [];
+  window.addEventListener('error', (e) => window.__errors.push('error: ' + (e.message || e.error)));
+  window.addEventListener('unhandledrejection', (e) => window.__errors.push('promise: ' + ((e.reason && e.reason.message) || e.reason)));
+  window.addEventListener('load', () => setTimeout(() => {
+    const el = document.getElementById('report');
+    if (el && !window.__verify) el.innerHTML = '<span class="bad">스크립트 오류: ' + window.__errors.join(' | ') + '</span>';
+  }, 1200));
+</script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { aiResultToScene, equipBody, VERTICAL_TYPES, BORES } from './js/store.js?v=49';
 import { buildScene } from './js/builders.js?v=49';
 import { buildFusionScript } from './js/fusion.js?v=49';
@@ -82,7 +92,7 @@ renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#0b0f13');
 const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new THREE.RoomEnvironment(), 0.04).texture;
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
 const controls = new OrbitControls(camera, canvas);
