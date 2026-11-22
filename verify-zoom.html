@@ -302,8 +302,9 @@ const fitInfo = (() => {
       });
     });
   });
-  const dir = new THREE.Vector3(0.85, 0.95, -0.9).normalize();
-  const pad = 0.9;   // 화면 가장자리에서 10% 여백
+  // 뒤쪽 3/4 시점 — 앞줄 설비에 가려지지 않고 네 대의 이격 간격이 다 보이는 각도
+  const dir = new THREE.Vector3(0.9, 1.0, -0.75).normalize();
+  const pad = 0.95;   // 화면 가장자리에서 약 5% 여백
   let dist = Math.max(3, box.getSize(new THREE.Vector3()).length());
   let maxAbs = 0;
   for (let it = 0; it < 30; it += 1) {
