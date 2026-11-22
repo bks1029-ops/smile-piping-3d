@@ -1694,6 +1694,8 @@ class App {
     const copy = makeEquipment(spec.type, {
       ...spec, x: spec.x + 0.8, name: spec.name + ' (복제)',
     });
+    // 복제한 계기도 배관 외벽에 다시 붙인다(니쁠이 허공을 향하지 않게).
+    if (copy.type === 'gauge') attachGaugeToPipe(this.state.pipes, copy);
     this.state.equipment.push(copy);
     this.selection = { kind: 'equipment', id: copy.id };
     this.rebuild();
