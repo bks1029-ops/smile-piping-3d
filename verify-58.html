@@ -177,10 +177,12 @@ async function run() {
   app.applyAIResult(MOCK, 'replace');
   app.setView('iso', true);
   try { app.setDrawerOpen(false); app.setDims(false); } catch (e) {}
-  // 등각 자동 맞춤에서 조금 당겨 ㄷ자 연결부를 크게
+  // 등각 자동 맞춤에서 당겨 ㄷ자 연결부를 크게, 화면 위 검증 패널을 피해 조금 아래로
   try {
     const t = app.controls.target.clone();
-    const off = app.camera.position.clone().sub(t).multiplyScalar(0.72);
+    const off = app.camera.position.clone().sub(t).multiplyScalar(0.61);
+    t.y += 0.4;
+    app.controls.target.copy(t);
     app.camera.position.copy(t.clone().add(off));
     app.controls.update();
   } catch (e) {}
