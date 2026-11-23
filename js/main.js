@@ -1521,6 +1521,56 @@ class App {
     this.toast(`📍 ${NOZZLE_LABELS[n.dir]} 노즐 ${n.bore}에서 이어 그립니다 · 커서 (${fmt(n.tip.x)}, ${fmt(n.tip.y)}, ${fmt(n.tip.z)})m`);
   }
 
+  // 손가락으로 장비의 노즐 끝을 직접 눌렀는가 — 32px 안이고, 그 장비 본체 중심보다 그 노즐에
+  // 더 가까운 경우에만 노즐 터치로 본다(본체를 눌러 장비를 고른 것과 구분).
+  // equipNozzles()를 쓰는 장비 6종(펌프·열교환기·헤더·탱크·대형 원통탱크·사각 탱크)이 모두 같은 길을 쓴다.
+  nozzlePickAt(ev, radiusPx) {
+    if (!this.root) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const screen = (p) => {
+      const v = new THREE.Vector3(p.x, p.y, p.z).project(this.camera);
+      return { x: (v.x * 0.5 + 0.5) * rect.width, y: (-v.y * 0.5 + 0.5) * rect.height, z: v.z };
+    };
+    let best = null;
+    this.state.equipment.forEach((e) => {
+      const list = equipNozzles(e);
+      if (!list.length) return;
+      // 본체 중심 — nearestPick이 장비를 고를 때 쓰는 자리와 같다.
+      const body = screen({ x: e.x, y: (e.y || 0) + Math.min(0.4, (e.h || 0.3) * 0.5), z: e.z });
+      if (body.z > 1 || body.z < -1) return;
+      const bodyD = Math.hypot(body.x - px, body.y - py);
+      list.forEach((n) => {
+        const s = screen(n.tip);
+        if (s.z > 1 || s.z < -1) return;
+        const d = Math.hypot(s.x - px, s.y - py);
+        if (d > radiusPx || d >= bodyD) return;
+        if (!best || d < best.d) best = { kind: 'equipment', id: e.id, nozzle: n, d };
+      });
+    });
+    return best;
+  }
+
+  // 노즐 끝을 직접 눌렀을 때 — 그 장비를 고르고 그 노즐에서 바로 이어 그린다.
+  // select()가 기본 노즐(펌프 OUT·나머지 첫 방향)로 잡은 커서를 aimAtNozzle()이 그 노즐 끝으로 덮는다.
+  selectNozzle(id, n) {
+    if (!n) return;
+    this.selection = { kind: 'equipment', id };
+    this.refreshHighlight();
+    this.renderProps();
+    this.renderLists();
+    // 바로 조이스틱·명령으로 이어 그릴 수 있게 속성 창은 접어 둔다(모바일에서 64dvh를 가리지 않게).
+    const panel = $('#props');
+    if (panel) panel.hidden = true;
+    this.releaseOverlayEntry();
+    this.aimAtNozzle(n);
+    if (window.innerWidth <= 860) this.setDrawerOpen(false);
+    const c = this.cmdCursor;
+    this.toast(`📍 ${NOZZLE_LABELS[n.dir]} 노즐 ${n.bore}에서 이어 그립니다 · 커서 (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})m`);
+  }
+
   // 손가락 터치가 작은 부속을 빗나가도 화면 기준 32px 안의 가장 가까운 것을 고른다.
   nearestPick(ev, radiusPx) {
     if (!this.root) return null;
@@ -1768,7 +1818,7 @@ class App {
         <div class="noz-grid">${cells}</div>
         <p class="noz-tip">노즐 끝 높이 · ${coords}</p>
         ${btns ? `<div class="prop-actions noz-actions">${btns}</div>` : ''}
-        <p class="hint">✏️ 손 그리기로 노즐 끝을 누르면 그 높이·관경 그대로 배관이 이어집니다. 📍는 명령·조이스틱으로 이어 그릴 자리를 잡아 줍니다.</p>`;
+        <p class="hint">✏️ 손 그리기로 노즐 끝을 누르면 그 높이·관경 그대로 배관이 이어집니다. 3D에서 노즐 끝을 손가락으로 톡 눌러도 그 노즐로 커서·관경이 바로 바뀝니다. 📍는 명령·조이스틱으로 이어 그릴 자리를 잡아 줍니다.</p>`;
   }
 
   updatePipeSummary() {
@@ -3170,6 +3220,11 @@ class App {
       if (hits.length) this.addDraftPoint(hits[0].point);
       return;
     }
+
+    // 장비 노즐 끝을 직접 눌렀으면 그 노즐에서 이어 그린다 — 본체를 눌러 기본 노즐로
+    // 잡히던 자리(노즐 목이 본체 픽에 걸리는 자리)도 노즐 터치가 먼저 가져간다.
+    const noz = this.nozzlePickAt(ev, 32);
+    if (noz) { this.selectNozzle(noz.id, noz.nozzle); return; }
 
     const hits = ray.intersectObjects(this.root.children, true);
     for (const h of hits) {
