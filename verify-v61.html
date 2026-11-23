@@ -10,11 +10,19 @@
   .ok { color: #6ee7a0; }
   .ng { color: #ff8a7a; }
   b { color: #ffd479; }
+  #shotBox { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; }
+  #shot { display: block; border: 1px solid #2b3440; }
+  #cap { align-self: flex-start; background: #f5a623; color: #14181d; border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 700; cursor: pointer; }
 </style>
 </head>
 <body>
 <iframe id="fr" src="./index.html?v=61" width="390" height="844"></iframe>
 <pre id="log">검증 준비 중...</pre>
+<div id="shotBox">
+  <button id="cap" hidden>📸 390×844 캡처</button>
+  <div id="capInfo"></div>
+  <img id="shot" alt="">
+</div>
 <script type="module">
 const results = [];
 const logEl = document.getElementById('log');
@@ -222,31 +230,55 @@ async function ready() {
     await sleep(80);
     app.addEquipment('hx');
     const hxd = app.state.equipment[0];
-    Object.assign(hxd, { x: -1.9, z: -0.4, w: 3.4, h: 0.8, rot: 0, nozzles: { up: '100A', down: '50A', left: '80A', right: '80A' } });
+    Object.assign(hxd, { x: -2.4, z: -0.5, w: 3.4, h: 0.8, rot: 0, nozzles: { up: '100A', down: '50A', left: '80A', right: '80A' } });
     app.addEquipment('pump');
     const pumpd = app.state.equipment[app.state.equipment.length - 1];
-    Object.assign(pumpd, { x: 2.1, z: 1.9, rot: 0, nozzles: { in: '200A', out: '150A' } });
+    Object.assign(pumpd, { x: 1.9, z: 1.7, rot: 0, nozzles: { in: '200A', out: '150A' } });
     app.refreshScene();
     await sleep(80);
-    // 열교환기 위 노즐에서 조이스틱으로 1.2m → 오른쪽 1.6m (엘보 자동)
-    app.select('equipment', hxd.id);
-    await sleep(40);
-    doc.querySelector('#propBody [data-act="from"]').click();
-    app.padDraw({ op: 'seg', axis: 'y', sign: 1 }, 1.2);
-    app.padDraw({ op: 'seg', axis: 'x', sign: 1 }, 1.6);
-    // 펌프 OUT 노즐에서 위로 1.0m → 왼쪽 1.4m
-    app.select('equipment', pumpd.id);
-    await sleep(40);
-    doc.querySelector('#propBody [data-act="noz"][data-dir="out"]').click();
-    app.padDraw({ op: 'seg', axis: 'y', sign: 1 }, 1.0);
-    app.padDraw({ op: 'seg', axis: 'x', sign: -1 }, 1.4);
+    const drawAt = async (spec, dir, segs) => {
+      app.select('equipment', spec.id);
+      await sleep(40);
+      const b = doc.querySelector(`#propBody [data-act="noz"][data-dir="${dir}"]`);
+      if (!b) return;
+      b.click();
+      segs.forEach((s) => app.padDraw(s, s.m));
+    };
+    // 열교환기 위 100A: 위 1.0 → 오른쪽 1.6 (꺾임에 엘보 자동)
+    await drawAt(hxd, 'up', [{ op: 'seg', axis: 'y', sign: 1, m: 1.0 }, { op: 'seg', axis: 'x', sign: 1, m: 1.6 }]);
+    // 열교환기 오른쪽 80A: 오른쪽 1.4
+    await drawAt(hxd, 'right', [{ op: 'seg', axis: 'x', sign: 1, m: 1.4 }]);
+    // 펌프 OUT 150A: 위 1.1 → 왼쪽 1.3
+    await drawAt(pumpd, 'out', [{ op: 'seg', axis: 'y', sign: 1, m: 1.1 }, { op: 'seg', axis: 'x', sign: -1, m: 1.3 }]);
+    // 펌프 IN 200A: 앞 1.2
+    await drawAt(pumpd, 'in', [{ op: 'seg', axis: 'z', sign: 1, m: 1.2 }]);
     app.setDims(false);
     app.setView('iso', true);
     await sleep(120);
-    // 마지막으로 열교환기를 선택해 커서를 위 노즐 끝에 세워 둔다(스크린샷의 주인공)
-    app.select('equipment', hxd.id);
+    // 펌프를 고르면 커서가 OUT 노즐 끝에 — 패널은 닫아 3D를 가리지 않게
+    app.select('equipment', pumpd.id);
+    await sleep(150);
+    const shotCursor = fmtP(app.cmdCursor);
+    app.clearSelection();
     await sleep(250);
-    say(true, '시연 씬 준비 완료', `장비 ${app.state.equipment.length}개 · 배관 ${app.state.pipes.length}개 · 커서 ${fmtP(app.cmdCursor)}`);
+    say(true, '시연 씬 준비 완료', `장비 ${app.state.equipment.length}개 · 배관 ${app.state.pipes.length}개 · 커서 ${shotCursor}`);
+
+    // 📸 버튼 — 캔버스 픽셀을 <img>로 복사(iframe 캔버스는 일반 화면 캡처에 안 담겨서)
+    const capBtn = document.getElementById('cap');
+    const shotBox = document.getElementById('shotBox');
+    capBtn.hidden = false;
+    capBtn.addEventListener('click', () => {
+      const c = app.renderer.domElement;
+      app.renderer.render(app.scene, app.camera);
+      const r = c.getBoundingClientRect();
+      const img = document.getElementById('shot');
+      img.src = c.toDataURL('image/png');
+      img.width = Math.round(r.width);
+      img.height = Math.round(r.height);
+      document.getElementById('capInfo').textContent =
+        `canvas ${Math.round(r.width)}×${Math.round(r.height)} · 화면 ${W.innerWidth}×${W.innerHeight} · canvas top ${Math.round(r.top)}`;
+      shotBox.scrollIntoView({ block: 'nearest' });
+    });
 
     const fails = results.filter((r) => !r.ok).length;
     window.__results = results;
