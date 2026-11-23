@@ -740,6 +740,10 @@ const SNAP_JOINT = 0.25;  // 살짝 뜬 배관 끝을 이어 붙이는 거리 (�
 const SNAP_BRANCH = 0.6;  // 허공에 뜬 분기 배관 끝을 다른 배관 중심선에 이어 붙이는 거리
 const SNAP_TOUCH = 0.05;  // 이미 닿아 있는 것으로 보는 거리 (이어진 배관은 건드리지 않는다)
 const SNAP_VERT = 0.4;    // 수직 배관에 달린 부속으로 보는 거리
+// 도면(drawing) 입력에서만 허용하는 초근접 정렬 스냅 — 도면에 그려진 끝을 억지로 잇지 않기 위해
+// 0.25m·0.6m 보정을 끄고 이 거리 안의 사실상 같은 점만 맞춘다.
+const SNAP_DRAWING = 0.12;
+const NOZZLE_MAX = 0.4;  // 장비 노즐로 보는 배관 길이 한계(m) — 이보다 짧고 장비에 붙은 배관은 노즐이다
 const EQUIP_GAP = 0.15;   // 대형 장비끼리 최소 여백(m)
 // 서로 밀어내는 대형 설비 — 앞뒤 거리감(Z)이 무너지는 걸 막는 대상
 const MAIN_BODY_TYPES = new Set(['tank', 'pump', 'hx', 'panel', 'stank', 'rtank']);
@@ -757,6 +761,53 @@ function closestOnSegment(p, a, b) {
   return { d: Math.hypot(p.x - x, p.y - y, p.z - z), x, y, z };
 }
 
+// 장비에 붙은 짧은 배관(0.4m 이하)의 '자유 끝' = 장비 노즐 끝.
+// 노즐은 플랜지로 짧게 마감되는 것이 정상이라, 다른 배관·다른 노즐로 끌어당겨 꺾어 붙이면
+// 도면·사진과 다른 그림이 된다. 한쪽 끝이 장비 본체(담는 범위 0.2m)나 본체 윗면에 앉은 끝이면 노즐로 본다.
+function nozzleFreeEnds(pipes, bodies, seatedEnds) {
+  const out = new Set();
+  (pipes || []).forEach((p, pi) => {
+    const pts = (p && p.points) || [];
+    if (pts.length < 2) return;
+    let len = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
+    }
+    if (len > NOZZLE_MAX) return;
+    const last = pts.length - 1;
+    [0, last].forEach((i) => {
+      if (seatedEnds.has(`${pi}:${i}`)) return;
+      const q = pts[i === 0 ? 1 : last - 1];
+      const mounts = (bodies || []).some((b) => b.body.contains(q.x, q.y, q.z, 0.2));
+      if (mounts) out.add(`${pi}:${i}`);
+    });
+  });
+  return out;
+}
+
+// 도면대로 열린 채 둔 배관 끝 개수 — 다른 배관에 닿지도, 장비 본체에 붙지도 않은 끝
+function countDrawnOpenEnds(pipes, bodies) {
+  let n = 0;
+  (pipes || []).forEach((p, pi) => {
+    const pts = (p && p.points) || [];
+    [0, pts.length - 1].forEach((i) => {
+      const q = pts[i];
+      if (!q) return;
+      if ((bodies || []).some((b) => b.body.contains(q.x, q.y, q.z, 0.15))) return;
+      let touch = false;
+      (pipes || []).forEach((o, oi) => {
+        if (touch || oi === pi) return;
+        const q2 = o.points || [];
+        for (let k = 1; k < q2.length && !touch; k += 1) {
+          if (closestOnSegment(q, q2[k - 1], q2[k]).d <= SNAP_TOUCH) touch = true;
+        }
+      });
+      if (!touch) n += 1;
+    });
+  });
+  return n;
+}
+
 // ②-c 허공에 뜬 분기 배관 끝을 0.6m 안의 다른 배관 중심선에 이어 붙인다.
 // AI가 현장 사진의 ㄷ자·ㄱ자 분기를 "대충 근처"로 적어 주면 끝점이 도착 배관에서 0.3~0.6m
 // 떨어진 공중에 남는다. ②-b(0.25m)로도 못 붙인 끝을 골라, 가장 가까운 상대 배관 선분의
@@ -766,7 +817,8 @@ function closestOnSegment(p, a, b) {
 //   · 끝이 향하는 **뒤쪽**에 있는 배관으로는 끌어오지 않는다 — 화면 밖으로 나가는 주배관 끝이
 //     옆 분기 끝에 끌려가 주배관이 꺾이는 것을 막는 검사
 //   · 내려오는(올라가는) 수직 구간은 기울이지 않는다 — 끝점과 위 꺾임점의 (x, z)를 같이 옮긴다
-function connectOpenEnds(pipes, seatedEnds) {
+function connectOpenEnds(pipes, seatedEnds, nozzleEnds) {
+  const keep = nozzleEnds || new Set();
   let n = 0;
   const ends = [];
   pipes.forEach((p, pi) => {
@@ -791,6 +843,8 @@ function connectOpenEnds(pipes, seatedEnds) {
     const pt = pts[A.i];
     if (!pt) return;
     if (seatedEnds.has(`${A.pi}:${A.i}`)) return;
+    // 장비 노즐(짧은 배관)의 끝은 끌어다 붙이지 않는다 — 플랜지 마감을 유지한다
+    if (keep.has(`${A.pi}:${A.i}`)) return;
     if (touchesOther(A.pi, pt)) return;
     // 가장 가까운 상대 배관 중심선 위의 점
     //   상대 배관의 **열린 끝점**으로는 끌어오지 않는다 — 둘 다 주인 없는 끝이라 어느 쪽이
@@ -1000,6 +1054,11 @@ export function alignGauges(state) {
 
 export function sanitizeAiScene(raw) {
   const src = raw || {};
+  // 도면(drawing)이면 "도면에 그려진 그대로"가 최우선이다 — 없는 배관을 상상해 잇지 않는다.
+  // photo(현장 사진)는 지금까지처럼 가려진 연결을 자연스럽게 보완한다.
+  const drawing = src.inputKind === 'drawing';
+  const weldD = drawing ? SNAP_DRAWING : SNAP_WELD;
+  const jointD = drawing ? SNAP_DRAWING : SNAP_JOINT;
   const equipment = (Array.isArray(src.equipment) ? src.equipment : [])
     .filter((e) => e && typeof e === 'object')
     .map((e) => ({
@@ -1016,7 +1075,7 @@ export function sanitizeAiScene(raw) {
       name: p.name || `배관 ${i + 1}`,
       points: p.points.map((q) => ({ x: num(q.x, 0), y: Math.max(0, num(q.y, 0)), z: num(q.z, 0) })),
     }));
-  const report = { seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0, snapped: 0, branched: 0, spread: 0 };
+  const report = { inputKind: drawing ? 'drawing' : 'photo', seated: 0, welded: 0, stood: 0, gauged: 0, lifted: 0, straightened: 0, snapped: 0, branched: 0, spread: 0, nozzleKept: 0, drawHeld: 0 };
   // ⑥ 대형 장비 이격을 먼저 한다 — 배관을 앉히고 붙이는 단계가 최종 장비 위치를 보게 하려는 것이다.
   report.spread = separateMainBodies(equipment);
   const bodies = equipment
@@ -1072,6 +1131,8 @@ export function sanitizeAiScene(raw) {
       if (top == null) return;
       // 공중에 뜬 끝·본체를 뚫은 끝 모두 본체 윗면에 맞춘다 (0.6m 안쪽만).
       if (Math.abs(pt.y - top) > 0.6) return;
+      // 도면에서는 본체 위로 짧게 솟은 노즐을 본체에 눌러 앉히지 않는다 — 도면에 그린 노즐 길이를 지킨다.
+      if (drawing && pt.y > top + 0.02) return;
       if (Math.abs(pt.y - top) < 0.001) return;
       // 본체 축에 가까우면 수평 위치도 노이즐 자리로 맞춘다 (헤더는 Z, 탱크는 중심).
       const near = bodies.find((b) => Math.abs(b.body.top - top) < 1e-6
@@ -1092,6 +1153,9 @@ export function sanitizeAiScene(raw) {
     });
   });
 
+  // 노즐(장비에 붙은 0.4m 이하 배관)의 자유 끝 — 아래 ②·②-b·②-c가 끌어당기지 않게 한다.
+  const nozzleEnds = nozzleFreeEnds(pipes, bodies, seatedEnds);
+
   // ② 직선 배관끼리 어긋난 연결점 불이기
   const endsAll = [];
   pipes.forEach((p, pi) => {
@@ -1104,7 +1168,7 @@ export function sanitizeAiScene(raw) {
       const B = endsAll[b];
       if (A.pi === B.pi) continue;
       const d = Math.hypot(A.pt.x - B.pt.x, A.pt.y - B.pt.y, A.pt.z - B.pt.z);
-      if (d > 1e-4 && d <= SNAP_WELD) {
+      if (d > 1e-4 && d <= weldD) {
         B.pt.x = A.pt.x;
         B.pt.y = A.pt.y;
         B.pt.z = A.pt.z;
@@ -1135,12 +1199,14 @@ export function sanitizeAiScene(raw) {
     const pa = pipes[A.pi].points[A.i];
     if (!pa) return;
     if (seatedEnds.has(`${A.pi}:${A.i}`)) return;   // 장비 노즐 자리는 그대로
+    // 짧은 장비 노즐(0.4m 이하)의 끝은 다른 배관·노즐로 끌어다 꺾지 않는다 — 플랜지 마감을 유지한다
+    if (nozzleEnds.has(`${A.pi}:${A.i}`)) { report.nozzleKept += 1; return; }
     let best = null;
     endRefs.forEach((B) => {
       if (B.pi === A.pi) return;
       const pb = pipes[B.pi].points[B.i];
       const d = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z);
-      if (d > 1e-4 && d <= SNAP_JOINT && (!best || d < best.d)) {
+      if (d > 1e-4 && d <= jointD && (!best || d < best.d)) {
         best = { d, x: pb.x, y: pb.y, z: pb.z, how: 'end' };
       }
     });
@@ -1148,7 +1214,7 @@ export function sanitizeAiScene(raw) {
       if (pi === A.pi) return;
       for (let i = 1; i < p.points.length; i += 1) {
         const hit = closestOnSegment(pa, p.points[i - 1], p.points[i]);
-        if (hit.d > 1e-4 && hit.d <= SNAP_JOINT && (!best || hit.d < best.d)) {
+        if (hit.d > 1e-4 && hit.d <= jointD && (!best || hit.d < best.d)) {
           best = { d: hit.d, x: hit.x, y: hit.y, z: hit.z, how: 'seg' };
         }
       }
@@ -1173,8 +1239,10 @@ export function sanitizeAiScene(raw) {
 
   // ②-c 허공에 뜬 분기 배관 끝 자동 연결 (0.25~0.6m) — ㄷ자·ㄱ자 우회 배관의 도착점.
   //    ②-b까지 지나도 다른 배관에 닿지 않은 끝을 상대 배관 중심선 위의 투영점으로 끌어온다.
+  //    도면(drawing)에서는 이 단계를 건너뛴다 — 도면대로 끊어 놓은 짧은 노즐·스터브 끝이
+  //    옆 배관이나 다른 노즐에 억지로 붙으면 도면과 다른 그림이 된다(0.12m 초근접 스냅만 위 ②·②-b가 처리).
   //    끝점이 바뀌었으므로 아래 ③④가 새 좌표 기준으로 밸브·피팅을 다시 맞춘다.
-  report.branched = connectOpenEnds(pipes, seatedEnds);
+  report.branched = drawing ? 0 : connectOpenEnds(pipes, seatedEnds, nozzleEnds);
 
   // ③④ 수직 배관 위 밸브·피팅 — 세우기 + 본체 밖으로
   equipment.forEach((e) => {
@@ -1219,7 +1287,9 @@ export function sanitizeAiScene(raw) {
     if (attachGaugeToPipe(pipes, e)) report.gauged += 1;
   });
 
-  return { equipment, pipes, report, layoutPlan: typeof src.layoutPlan === 'string' ? src.layoutPlan : '' };
+  if (drawing) report.drawHeld = countDrawnOpenEnds(pipes, bodies);
+
+  return { equipment, pipes, inputKind: drawing ? 'drawing' : 'photo', report, layoutPlan: typeof src.layoutPlan === 'string' ? src.layoutPlan : '' };
 }
 
 // ── AI 응답 → 씬 데이터 (앱과 검증 페이지가 같은 경로를 탄다) ────────────────
@@ -1255,7 +1325,7 @@ export function aiResultToScene(result) {
   const report = { ...clean.report };
   report.stood += pp.stood;
   report.lifted += pp.lifted;
-  return { equipment, pipes, report, layoutPlan: clean.layoutPlan };
+  return { equipment, pipes, report, layoutPlan: clean.layoutPlan, inputKind: clean.inputKind };
 }
 
 export function emptyState() {

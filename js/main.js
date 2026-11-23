@@ -7,14 +7,14 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=58';
-import { buildScene } from './builders.js?v=58';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=58';
-import { buildOBJ } from './obj.js?v=58';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=58';
-import { parseCommand, CMD_HELP } from './cmd.js?v=58';
-import { buildDimItems } from './dims.js?v=58';
-import { buildAiImageParts } from './zoom.js?v=58';
+} from './store.js?v=59';
+import { buildScene } from './builders.js?v=59';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=59';
+import { buildOBJ } from './obj.js?v=59';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=59';
+import { parseCommand, CMD_HELP } from './cmd.js?v=59';
+import { buildDimItems } from './dims.js?v=59';
+import { buildAiImageParts } from './zoom.js?v=59';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -3558,6 +3558,7 @@ class App {
           <div class="ai-result">
             장비 <b>${eq.length}</b>개 · 배관 <b>${pp.length}</b>개를 찾았습니다.<br>
             <span>사진 ${photos.length}장(고해상도 원본)으로 읽었습니다.</span><br>
+            ${res.inputKind === 'drawing' ? '<span>도면으로 인식 — 도면에 그려진 것만 배치합니다(자동 연결 없음).</span><br>' : ''}
             ${res.notes ? `<span>${esc(res.notes)}</span>` : ''}
           </div>
           ${plan ? `<div class="ai-plan"><b>구조 정리</b><br>${esc(plan)}</div>` : ''}
@@ -3649,6 +3650,7 @@ class App {
     if (report.welded) notes.push(`배관 이음 ${report.welded}곳 붙임`);
     if (report.snapped) notes.push(`끊긴 배관 끝 ${report.snapped}곳 이어 붙임`);
     if (report.branched) notes.push(`허공에 뜬 배관 끝 ${report.branched}곳 연결`);
+    if (report.inputKind === 'drawing') notes.push(`도면 그대로 · 열린 끝 ${report.drawHeld || 0}곳 유지`);
     if (report.spread) notes.push(`겹친 장비 ${report.spread}대 띄움`);
     const extra = notes.length ? ` · ${notes.join(' · ')}` : '';
     this.toast(`AI 배치 완료 · 장비 ${eq.length} / 배관 ${pipes.length}${extra}`,
