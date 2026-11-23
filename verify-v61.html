@@ -73,12 +73,12 @@ async function ready() {
     // ── ① 6종 장비: 선택만 해도 커서가 실제 노즐 끝에 붙는가 ────────────────
     // (plan: pump·hx·header·tank·stank·rtank — 펌프는 OUT 우선, 나머지는 첫 활성 노즐)
     const cases = [
-      { type: 'pump', label: '원심펌프', cfg: { x: -1.6, z: 0, w: 1.15, h: 0.85, d: 0.6, rot: 0, nozzles: { in: '200A', out: '150A' } }, want: 'out' },
-      { type: 'hx', label: '열교환기', cfg: { x: -1.6, z: 0, w: 3.0, h: 0.75, rot: 0, nozzles: { up: '100A', down: '50A', left: '80A', right: '80A' } }, want: 'up' },
-      { type: 'header', label: '헤더', cfg: { x: -1.6, z: 0, w: 2.4, h: 0.4, rot: 0, nozzles: { up: '150A', down: '50A' } }, want: 'up' },
-      { type: 'tank', label: '탱크/드럼', cfg: { x: -1.6, z: 0, w: 0.6, h: 0.9, rot: 0, nozzles: { up: '25A', left: '50A' } }, want: 'up' },
-      { type: 'stank', label: '대형 저장탱크', cfg: { x: -1.6, z: 0, w: 2.0, h: 3.0, rot: 0, nozzles: { up: '100A', left: '100A' } }, want: 'up' },
-      { type: 'rtank', label: '사각 탱크', cfg: { x: -1.6, z: 0, w: 2.4, h: 1.8, d: 1.8, rot: 0, nozzles: { left: '150A', right: '100A' } }, want: 'left' },
+      { type: 'pump', label: '원심펌프', word: '위로', turn: '오른쪽으로', cfg: { x: -1.6, z: 0, w: 1.15, h: 0.85, d: 0.6, rot: 0, nozzles: { in: '200A', out: '150A' } }, want: 'out' },
+      { type: 'hx', label: '열교환기', word: '위로', turn: '오른쪽으로', cfg: { x: -1.6, z: 0, w: 3.0, h: 0.75, rot: 0, nozzles: { up: '100A', down: '50A', left: '80A', right: '80A' } }, want: 'up' },
+      { type: 'header', label: '헤더', word: '위로', turn: '앞으로', cfg: { x: -1.6, z: 0, w: 2.4, h: 0.4, rot: 0, nozzles: { up: '150A', down: '50A' } }, want: 'up' },
+      { type: 'tank', label: '탱크/드럼', word: '위로', turn: '오른쪽으로', cfg: { x: -1.6, z: 0, w: 0.6, h: 0.9, rot: 0, nozzles: { up: '25A', left: '50A' } }, want: 'up' },
+      { type: 'stank', label: '대형 저장탱크', word: '위로', turn: '왼쪽으로', cfg: { x: -1.6, z: 0, w: 2.0, h: 3.0, rot: 0, nozzles: { up: '100A', left: '100A' } }, want: 'up' },
+      { type: 'rtank', label: '사각 탱크', word: '왼쪽으로', turn: '위로', cfg: { x: -1.6, z: 0, w: 2.4, h: 1.8, d: 1.8, rot: 0, nozzles: { left: '150A', right: '100A' } }, want: 'left' },
     ];
 
     for (const c of cases) {
@@ -123,19 +123,31 @@ async function ready() {
         start1 ? `${fmtP(start1)} · 차이 ${(dist(start1, want.tip) * 1000).toFixed(2)}mm` : '배관 없음');
       say(!!p1 && p1.bore === want.bore, `${c.label} 조이스틱 배관 관경 = 노즐 관경`, p1 ? p1.bore : '-');
 
-      // (d) 명령창 "1000" — 시작점이 같은 노즐 끝
+      // (d) 명령창 — 그 노즐이 뻗는 방향으로 1000mm: 배관 시작점이 노즐 끝
       app.select('equipment', spec.id);
       await sleep(50);
       const fromBtn2 = doc.querySelector('#propBody [data-act="from"]');
       fromBtn2.click();
       await sleep(50);
       const before2 = app.state.pipes.length;
-      app.runCommandLine('위로 1000');
+      app.runCommandLine(`${c.word} 1000`);
       await sleep(50);
       const p2 = lastPipe();
       const start2 = p2 && app.state.pipes.length > before2 ? p2.points[0] : null;
-      say(!!start2 && near1mm(start2, want.tip), `${c.label} 명령(위로 1000) 배관 시작점 = 노즐 끝`,
+      say(!!start2 && near1mm(start2, want.tip), `${c.label} 명령(${c.word} 1000) 배관 시작점 = 노즐 끝`,
         start2 ? `${fmtP(start2)} · 차이 ${(dist(start2, want.tip) * 1000).toFixed(2)}mm` : '배관 없음');
+
+      // (e) 노즐에서 바로 꺾는 명령 — 엘보가 노즐 끝에 정확히 앉고 배관이 그 면에서 시작
+      app.select('equipment', spec.id);
+      await sleep(50);
+      doc.querySelector('#propBody [data-act="from"]').click();
+      await sleep(50);
+      const eqBefore = app.state.equipment.filter((e) => e.type === 'elbow').length;
+      app.runCommandLine(`${c.turn} 1000`);
+      await sleep(50);
+      const elbows = app.state.equipment.filter((e) => e.type === 'elbow');
+      const elb = elbows.length > eqBefore ? elbows[elbows.length - 1] : null;
+      say(!!elb && near1mm(elb, want.tip), `${c.label} 노즐에서 꺾는 명령 — 엘보가 노즐 끝에`, elb ? `${fmtP(elb)} · 차이 ${(dist(elb, want.tip) * 1000).toFixed(2)}mm` : '엘보 없음');
     }
 
     // ── ② 📍 위/아래/왼쪽/오른쪽 · IN/OUT 버튼이 각각 그 노즐 끝으로 ─────────
