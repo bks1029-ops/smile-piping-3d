@@ -146,7 +146,7 @@ async function run() {
   check('프롬프트: 도면 충실도·상상 금지', src.includes('도면 충실도 절대 원칙') && src.includes('상상·추측 금지'));
   check('프롬프트: 단품 노즐 0.15~0.35m 마감', src.includes('0.15~0.35m'));
   check('프롬프트: photo 모드 자연 연결 유지', src.includes('inputKind: \\"photo\\"') || src.includes('■ inputKind: "photo"'));
-  check('프롬프트: 출력 JSON에 inputKind', src.includes('\\"inputKind\\":\\"photo\\"'));
+  check('프롬프트: 출력 JSON에 inputKind', src.includes('[출력 형식 — inputKind를 맨 앞') && src.includes('inputKind'));
 
   // ── ② 도면(drawing): 노즐 끝을 그대로 둔다
   const dc = sanitizeAiScene(DRAWING);

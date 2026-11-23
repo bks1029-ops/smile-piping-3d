@@ -778,7 +778,7 @@ function nozzleFreeEnds(pipes, bodies, seatedEnds) {
     [0, last].forEach((i) => {
       if (seatedEnds.has(`${pi}:${i}`)) return;
       const q = pts[i === 0 ? 1 : last - 1];
-      const mounts = (bodies || []).some((b) => b.body.contains(q.x, q.y, q.z, 0.2));
+      const mounts = (bodies || []).some((b) => b.body.contains(q.x, q.y, q.z, 0.12));
       if (mounts) out.add(`${pi}:${i}`);
     });
   });
@@ -1131,8 +1131,9 @@ export function sanitizeAiScene(raw) {
       if (top == null) return;
       // 공중에 뜬 끝·본체를 뚫은 끝 모두 본체 윗면에 맞춘다 (0.6m 안쪽만).
       if (Math.abs(pt.y - top) > 0.6) return;
-      // 도면에서는 본체 위로 짧게 솟은 노즐을 본체에 눌러 앉히지 않는다 — 도면에 그린 노즐 길이를 지킨다.
-      if (drawing && pt.y > top + 0.02) return;
+      // 본체 위로 0.4m 이하로 솟은 수직 끝은 노즐이다(도면의 N1·N2, 사진의 짧은 플랜지 노즐) —
+      // 윗면에 눌러 앉히면 노즐이 사라지므로 그대로 둔다. 도면에서는 0.4m보다 길어도 그린 길이를 지킨다.
+      if (pt.y > top + 0.02 && (drawing || Math.abs(pt.y - inner.y) <= NOZZLE_MAX)) return;
       if (Math.abs(pt.y - top) < 0.001) return;
       // 본체 축에 가까우면 수평 위치도 노이즐 자리로 맞춘다 (헤더는 Z, 탱크는 중심).
       const near = bodies.find((b) => Math.abs(b.body.top - top) < 1e-6
