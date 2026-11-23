@@ -1332,8 +1332,41 @@ class App {
     return { axis: 'x', sign: 1 };
   }
 
-  // 부속의 출구(길이 방향 끝면) — 인라인 부속은 배관이 이어지는 자리, 설비는 윗면 중심.
+  // 이어 그리기를 시작할 노즐 — 펌프는 토출(OUT) 먼저(없으면 흡입 IN),
+  // 나머지 장비는 equipNozzles() 순서(위→아래→왼쪽→오른쪽)의 첫 번째 활성 노즐.
+  // 노즐 없는 부속·장비면 null.
+  equipAimNozzle(spec) {
+    if (!spec) return null;
+    const list = equipNozzles(spec);
+    if (!list.length) return null;
+    if (spec.type === 'pump') {
+      return list.find((n) => n.dir === 'out') || list.find((n) => n.dir === 'in') || list[0];
+    }
+    return list[0];
+  }
+
+  // 노즐 하나를 이어 그리는 자리로 삼는다 — 커서를 끝(플랜지 면)에, 방향은 노즐이 뻗는 쪽으로,
+  // 관경은 그 노즐 관경으로. nozContinue(📍 위/아래/…·IN/OUT)와 aimAt(선택·📍 여기서)이 함께 쓴다.
+  aimAtNozzle(n) {
+    if (!n) return null;
+    // 노즐이 뻗는 바깥 방향을 그대로 이어 그리는 방향으로 삼는다(수직 노즐이면 위로).
+    const ax = Math.abs(n.axis.y) > Math.max(Math.abs(n.axis.x), Math.abs(n.axis.z)) ? 'y'
+      : (Math.abs(n.axis.x) >= Math.abs(n.axis.z) ? 'x' : 'z');
+    const sgn = (ax === 'x' ? n.axis.x : ax === 'z' ? n.axis.z : n.axis.y) < 0 ? -1 : 1;
+    this.cmdAxis = ax;
+    this.cmdSign = sgn;
+    this.cmdRot = this.cmdRotFor(ax, sgn);
+    this.lastDirV = { x: n.axis.x, y: n.axis.y, z: n.axis.z };
+    this.setCmdBore(n.bore, true);
+    this.setCmdCursor({ x: n.tip.x, y: Math.max(0, n.tip.y), z: n.tip.z }, true);
+    return n;
+  }
+
+  // 부속의 출구 — 인라인 부속은 배관이 이어지는 자리,
+  // 노즐이 있는 장비(펌프·열교환기·헤더·탱크)는 실제 노즐 끝(플랜지 면), 나머지 설비는 윗면 중심.
   equipExit(spec) {
+    const n = this.equipAimNozzle(spec);
+    if (n) return { x: n.tip.x, y: Math.max(0, n.tip.y), z: n.tip.z };
     const len = INLINE_TYPES.has(spec.type) ? (spec.w || 0) : 0;
     if (!len) return { x: spec.x, y: r3((spec.y || 0) + (spec.h || 0)), z: spec.z };
     const d = Array.isArray(spec.dir) ? spec.dir : (spec.axis === 'y' ? [0, 1, 0] : null);
@@ -1376,6 +1409,9 @@ class App {
       this.setCmdCursor({ x: p.x, y: p.y, z: p.z }, true);
       return;
     }
+    // 노즐이 있는 장비 — 허공의 본체 윗면이 아니라 실제 노즐 끝에 커서를 붙인다.
+    const noz = this.equipAimNozzle(spec);
+    if (noz) { this.aimAtNozzle(noz); return; }
     const h = this.headingFromRot(spec.rot);
     const dv = Array.isArray(spec.dir) ? spec.dir : (spec.axis === 'y' ? [0, 1, 0] : null);
     if (dv && Math.hypot(dv[0], dv[1], dv[2]) > 1e-6) {
@@ -1428,9 +1464,11 @@ class App {
     } else {
       this.state.equipment.forEach((e) => {
         if (op.type && !(op.type === 'valve' ? VALVE_TYPES.has(e.type) : e.type === op.type)) return;
-        consider(this.equipExit(e), e.name);
-        // 노즐이 있는 장비는 노즐 끝도 연결 후보 — 그 노즐 관경을 그대로 이어받는다.
-        equipNozzles(e).forEach((n) => consider(n.tip, `${e.name} ${NOZZLE_LABELS[n.dir] || ''} 노즐`, n.bore));
+        // 노즐이 있는 장비는 노즐 끝만 연결 후보 — 그 노즐 관경을 그대로 이어받는다.
+        // (노즐이 없을 때만 본체 출구를 후보로 둔다)
+        const noz = equipNozzles(e);
+        if (!noz.length) consider(this.equipExit(e), e.name);
+        noz.forEach((n) => consider(n.tip, `${e.name} ${NOZZLE_LABELS[n.dir] || ''} 노즐`, n.bore));
       });
     }
     return best;
@@ -1455,9 +1493,19 @@ class App {
   fromHere() {
     const spec = this.getSelectedSpec();
     if (!spec) return;
+    const noz = this.equipAimNozzle(spec);
+    // 노즐이 있는 장비인데 켜둔 노즐이 없으면 어디서 시작할지 알려 준다.
+    if (!noz && nozzleDirsOf(spec.type).length) {
+      this.toast('켜둔 노즐이 없습니다. 속성 패널의 노즐(관경)에서 이어 그릴 방향을 먼저 고르세요.', { type: 'err' });
+      return;
+    }
     this.aimAt(spec);
     this.clearSelection();
     const c = this.cmdCursor;
+    if (noz) {
+      this.toast(`📍 ${NOZZLE_LABELS[noz.dir]} 노즐 ${noz.bore} 끝에서 이어 그립니다 · 커서 (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})m`);
+      return;
+    }
     this.toast(`📍 여기서 이어 그립니다 · ${this.cmdBore} · 커서 (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})m`);
   }
 
@@ -1468,16 +1516,7 @@ class App {
     if (!spec || !dir) return;
     const n = equipNozzles(spec).find((x) => x.dir === dir);
     if (!n) { this.toast('그 방향에는 노즐이 없습니다. 관경을 먼저 고르세요.', { type: 'err' }); return; }
-    // 노즐이 뻗는 바깥 방향을 그대로 이어 그리는 방향으로 삼는다(수직 노즐이면 위로).
-    const ax = Math.abs(n.axis.y) > Math.max(Math.abs(n.axis.x), Math.abs(n.axis.z)) ? 'y'
-      : (Math.abs(n.axis.x) >= Math.abs(n.axis.z) ? 'x' : 'z');
-    const sgn = (ax === 'x' ? n.axis.x : ax === 'z' ? n.axis.z : n.axis.y) < 0 ? -1 : 1;
-    this.cmdAxis = ax;
-    this.cmdSign = sgn;
-    this.cmdRot = this.cmdRotFor(ax, sgn);
-    this.lastDirV = { x: n.axis.x, y: n.axis.y, z: n.axis.z };
-    this.setCmdBore(n.bore, true);
-    this.setCmdCursor({ x: n.tip.x, y: n.tip.y, z: n.tip.z }, true);
+    this.aimAtNozzle(n);
     this.clearSelection();
     this.toast(`📍 ${NOZZLE_LABELS[n.dir]} 노즐 ${n.bore}에서 이어 그립니다 · 커서 (${fmt(n.tip.x)}, ${fmt(n.tip.y)}, ${fmt(n.tip.z)})m`);
   }
