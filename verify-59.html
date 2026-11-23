@@ -211,9 +211,14 @@ async function run() {
   app.setView('iso', true);
   try { app.setDrawerOpen(false); app.setDims(true); } catch (e) {}
   try {
+    const qp = new URLSearchParams(location.search);
+    const zf = parseFloat(qp.get('z') || '1.02');
+    const dy = parseFloat(qp.get('dy') || '0.22');
+    const dx = parseFloat(qp.get('dx') || '0');
     const t = app.controls.target.clone();
-    const off = app.camera.position.clone().sub(t).multiplyScalar(0.72);
-    t.y -= 0.1;
+    const off = app.camera.position.clone().sub(t).multiplyScalar(zf);
+    t.y += dy;
+    t.x += dx;
     app.controls.target.copy(t);
     app.camera.position.copy(t.clone().add(off));
     app.controls.update();
