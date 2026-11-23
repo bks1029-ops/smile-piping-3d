@@ -2094,13 +2094,35 @@ class App {
   }
 
   // ── mm 한 줄 배관 명령 ──────────────────────────────────
+  // 노란 커서 — 작은 반투명 점 + 얇은 링 + 정확한 위치를 짚는 작은 심.
+  // 예전에는 반지름 70mm(지름 140mm) 공 하나라서 50A(외경 60.5mm) 배관 끝과 플랜지를
+  // 통째로 가렸다(2026-11-23 사용자 지적). 크기는 화면에서 늘 비슷하게 보이도록
+  // 카메라 거리에 비례해 줄이고(updateCmdMarkerScale), 뒤 형상은 점 사이로 비쳐 보인다.
   setupCmdCursor() {
-    this.cmdMarker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.07, 14, 10),
-      new THREE.MeshBasicMaterial({ color: 0xf5a623, transparent: true, opacity: 0.95, depthTest: false }),
+    const g = new THREE.Group();
+    // 뒤 형상이 비치는 반투명 점
+    this.cmdDot = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 14, 10),
+      new THREE.MeshBasicMaterial({ color: 0xf5a623, transparent: true, opacity: 0.34, depthTest: false, depthWrite: false }),
     );
-    this.cmdMarker.renderOrder = 998;
-    this.cmdMarker.visible = false;
+    this.cmdDot.renderOrder = 998;
+    g.add(this.cmdDot);
+    // 정확한 커서 위치를 짚는 작은 심 (불투명)
+    this.cmdPin = new THREE.Mesh(
+      new THREE.SphereGeometry(0.34, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xf5a623, depthTest: false, depthWrite: false }),
+    );
+    this.cmdPin.renderOrder = 999;
+    g.add(this.cmdPin);
+    // 얇은 링 — 점이 작아도 한눈에 찾아지게 (늘 카메라를 본다)
+    this.cmdRing = new THREE.Mesh(
+      new THREE.RingGeometry(1.5, 1.9, 32),
+      new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    this.cmdRing.renderOrder = 1000;
+    g.add(this.cmdRing);
+    g.visible = false;
+    this.cmdMarker = g;
     this.scene.add(this.cmdMarker);
     this.updateCmdMarker();
   }
@@ -2111,6 +2133,18 @@ class App {
     this.cmdMarker.position.set(c.x, c.y, c.z);
     // 손 그리기 중에는 시작점 표시(handAnchorDot)가 그 자리를 보여 주므로 주황 커서는 숨긴다.
     this.cmdMarker.visible = !!this.cmdMarked && !this.handMode;
+    this.updateCmdMarkerScale();
+  }
+
+  // 커서 크기 — 보는 거리에 맞춰 늘 화면에서 ~14px 지름(링 ~27px)이 되게 한다.
+  // 가까이 확대해도 커서가 커지지 않아 소구경 배관 끝·플랜지·밸브를 가리지 않는다.
+  updateCmdMarkerScale() {
+    if (!this.cmdMarker || !this.cmdMarker.visible) return;
+    const d = this.camera.position.distanceTo(this.cmdMarker.position);
+    const R = Math.min(0.11, Math.max(0.01, d * 0.0075));
+    this.cmdMarker.scale.setScalar(R);
+    this.cmdMarker.quaternion.copy(this.camera.quaternion);   // 링이 배관이 아니라 화면을 향한다
+    this.cmdMarker.userData.R = R;                               // 검증용
   }
 
   setCmdCursor(p, mark) {
@@ -3272,6 +3306,7 @@ class App {
     this.renderer.setAnimationLoop(() => {
       this.updateCamAnim();
       this.controls.update();
+      this.updateCmdMarker();   // 커서 위치·크기·링 방향·표시 규칙을 매 프레임 화면 기준으로 유지
       this.updateDims();
       // 방금 그은 구간의 치수 창은 배관을 따라간다 — 화면을 돌려도 자리를 잃지 않는다.
       if (this.handDimItem) this.positionHandDim();

@@ -972,6 +972,10 @@ function buildGauge(spec) {
 }
 
 // ── 배관 (파이프 + 엘보 조인트 + 플랜지) ─────────────────────────────────────
+// 배관을 이으면 그 접합면에 배관 쪽 플랜지 한 장이 맞물리는 부속 — 실물에서 볼트 플랜지로
+// 체결하는 밸브·신축관·유량계·플랜지. (엘보·티·레듀샤는 용접, 장비는 제 노즐 플랜지가 있다)
+const FLANGE_MATE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'flow', 'flange']);
+
 export function buildPipe(spec, equipments) {
   const g = new THREE.Group();
   const m = MATERIALS[spec.material] || MATERIALS.carbon;
@@ -992,6 +996,48 @@ export function buildPipe(spec, equipments) {
   const jointAt = (p) => joints.some((e) => Math.hypot((e.x || 0) - p.x, (e.y || 0) - p.y, (e.z || 0) - p.z) < 0.28
     || equipNozzles(e).some((n) => Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z) < 0.09));
 
+  // 플랜지로 체결하는 부속 — 배관을 이으면 그 접합면에 배관 쪽 플랜지가 한 장 더 붙어
+  // 실물처럼 두 장이 볼트로 맞물린다(2026-11-23 사용자 요청: "플랜지 밸브 이어그리기 시 맞물리는 플랜지 자동 적용").
+  // 단조형(소켓웰드·나사식) 부속은 플랜지가 없으므로 그대로 용접 이음으로 둔다.
+  // 부속의 유로 축 — 배관이 이 축으로 빠져나가는 면만 접합면이다(본체 옆면·위는 다른 자리).
+  const flowAxis = (e) => {
+    if (Array.isArray(e.dir) && e.dir.length === 3) {
+      const l = Math.hypot(e.dir[0], e.dir[1], e.dir[2]);
+      if (l > 1e-6) return { x: e.dir[0] / l, y: e.dir[1] / l, z: e.dir[2] / l };
+    }
+    if (e.axis === 'y') return { x: 0, y: 1, z: 0 };
+    const rot = ((Number(e.rot) || 0) % 360 + 360) % 360;
+    if (rot === 90) return { x: 0, y: 0, z: 1 };
+    if (rot === 270) return { x: 0, y: 0, z: -1 };
+    if (rot === 180) return { x: -1, y: 0, z: 0 };
+    return { x: 1, y: 0, z: 0 };
+  };
+  const mateJoint = (p) => {
+    for (const e of joints) {
+      if (!FLANGE_MATE_TYPES.has(e.type)) continue;
+      if ((e.conn || 'flange') === 'forged') continue;
+      const dx = p.x - (e.x || 0), dy = p.y - (e.y || 0), dz = p.z - (e.z || 0);
+      const half = Math.abs(Number(e.w) || 0) / 2;
+      if (!(half > 0)) continue;
+      const ax = flowAxis(e);
+      const axial = dx * ax.x + dy * ax.y + dz * ax.z;          // 유로 축 방향 거리
+      const lx = dx - ax.x * axial, ly = dy - ax.y * axial, lz = dz - ax.z * axial;
+      const lateral = Math.hypot(lx, ly, lz);                    // 축에서 벗어난 거리
+      // 면간거리(w/2)에 닿은 접합면인가 — 배관이 살짝 물려 있어 ±60mm 허용, 옆으로는 50mm 안
+      if (Math.abs(Math.abs(axial) - half) > 0.06) continue;
+      if (lateral > 0.05) continue;
+      return e;
+    }
+    return null;
+  };
+  // 맞물림 플랜지 — 부속 플랜지 면에 바짝 붙여 배관 쪽으로 한 장(두께 40mm).
+  // 배관 끝은 부속 면에서 4mm쯤 물려 있으므로, 배관 속(inward)으로 20mm 들어가게 놓아
+  // 판이 정확히 두 플랜지의 면 사이에서 바깥으로 한 장 더 서게 한다.
+  const mateFlange = (p, inward) => {
+    const c = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.02);
+    addFlange(g, c, inward, r, flangeMat);
+  };
+
   for (let i = 1; i < pts.length; i += 1) {
     const a = pts[i - 1];
     const b = pts[i];
@@ -1011,8 +1057,14 @@ export function buildPipe(spec, equipments) {
       if (forged) socketBoss(g, [p.x, p.y, p.z], [out.x, out.y, out.z], radius, mat, flangeMat, { collar: 1.42, hex: 1.56 });
       else addFlange(g, p, out, radius, flangeMat);
     };
-    if (i === 1 && !jointAt(a)) endBoss(a, dir.clone().negate(), r);
-    if (i === pts.length - 1 && !jointAt(b)) endBoss(b, dir, r);
+    // 플랜지식 밸브 끝에서 이어 그린 배관은 그 밸브 플랜지에 맞물리는 배관 플랜지를 한 장 세운다.
+    const endJoint = (p, out, inward) => {
+      const mate = mateJoint(p);
+      if (mate) { mateFlange(p, inward); return; }
+      if (!jointAt(p)) endBoss(p, out, r);
+    };
+    if (i === 1) endJoint(a, dir.clone().negate(), dir.clone().normalize());
+    if (i === pts.length - 1) endJoint(b, dir, dir.clone().normalize().negate());
   }
 
   // 엘보 조인트 (구관 — 엘보 부속을 안 놓은 꼭짓점만. 엘보 관 안에 잠기도록 배관과 같은 반지름)
