@@ -277,7 +277,7 @@ async function ready() {
         const t0 = app.controls.target.clone();
         app.controls.target.copy(target);
         cam.position.copy(target).addScaledVector(dir, dist);
-        cam.lookAt(target);
+        app.controls.update();   // 카메라가 target을 바라보게 (lookAt 직접 호출 대신)
         app.renderer.render(app.scene, cam);
         const img = document.getElementById(imgId);
         img.src = c.toDataURL('image/png');
@@ -293,7 +293,7 @@ async function ready() {
       img.width = Math.round(r.width);
       img.height = Math.round(r.height);
       // ② 노즐 끝에 커서가 붙은 자리 확대 (핀치 줌과 같은 구도)
-      zoomShot('shot2', { x: 2.02, y: 0.9, z: 1.7 }, 4.4);
+      zoomShot('shot2', { x: 2.02, y: 1.05, z: 1.7 }, 3.8);
       document.getElementById('capInfo').textContent =
         `canvas ${Math.round(r.width)}×${Math.round(r.height)} · 화면 ${W.innerWidth}×${W.innerHeight} · canvas top ${Math.round(r.top)}`;
       shotBox.scrollIntoView({ block: 'nearest' });
