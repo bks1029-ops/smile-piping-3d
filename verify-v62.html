@@ -79,6 +79,11 @@ async function ready() {
       return { x: (v.x * 0.5 + 0.5) * r.width + r.left, y: (-v.y * 0.5 + 0.5) * r.height + r.top, z: v.z };
     };
     // 3D 화면을 손가락으로 톡 누르는 것과 같은 포인터 이벤트
+    // 합성 포인터에는 브라우저가 아는 '진짜 손가락'이 없어 OrbitControls의 setPointerCapture가
+    // NotFoundError를 던진다(실제 터치에서는 나지 않는 검사 도구의 부작용). 그 한 줄만 무력화하고,
+    // 실제 터치(진짜 포인터)로는 아래 '진짜 클릭' 검사에서 따로 확인한다.
+    canvas.setPointerCapture = () => {};
+    canvas.releasePointerCapture = () => {};
     const tap = async (pt, off) => {
       const s = toScreen(pt);
       const x = Math.round(s.x + ((off && off.x) || 0));
@@ -124,6 +129,18 @@ async function ready() {
       say(list.length === Object.keys(dev.nz).length, `${dev.label} 노즐 ${list.length}곳 활성`,
         list.map((n) => `${S.NOZZLE_LABELS[n.dir]} ${n.bore} ${fmtP(n.tip)}`).join(' / '));
 
+      // ── 본체 터치: 기존처럼 기본 노즐(펌프 OUT · 나머지 첫 방향) + 속성 창 열기 ──
+      // (배관을 그리기 전에 한다 — 배관이 본체 위를 지나면 그 배관이 먼저 잡히는 게 맞는 동작)
+      const want = dev.type === 'pump' ? (list.find((n) => n.dir === 'out') || list[0]) : list[0];
+      app.clearSelection();
+      await sleep(60);
+      await tap({ x: spec.x, y: (spec.y || 0) + Math.min(0.4, (spec.h || 0.3) * 0.5), z: spec.z });
+      const bcur = { ...app.cmdCursor };
+      say(near1mm(bcur, want.tip) && app.cmdBore === want.bore,
+        `${dev.label} 본체 터치 → 기본 ${S.NOZZLE_LABELS[want.dir]} 노즐`,
+        `커서 ${fmtP(bcur)} · ${app.cmdBore} (기대 ${want.bore} ${fmtP(want.tip)})`);
+      say(panelShown(), `${dev.label} 본체 터치 → 속성 창 열림`, panelShown() ? '열림' : '닫힘');
+
       for (const n of list) {
         app.clearSelection();
         await sleep(40);
@@ -157,17 +174,6 @@ async function ready() {
           started ? `${fmtP(started)} · 오차 ${(dist(started, n.tip) * 1000).toFixed(2)}mm · ${p.bore}` : '배관 없음');
         say(!!p && p.bore === n.bore && app.state.pipes.length > before, `${tapLabel} → 배관 관경 ${n.bore}`, p ? p.bore : '-');
       }
-
-      // ── 본체 터치: 기존처럼 기본 노즐(펌프 OUT · 나머지 첫 방향) + 속성 창 열기 ──
-      app.clearSelection();
-      await sleep(60);
-      const want = dev.type === 'pump' ? (list.find((n) => n.dir === 'out') || list[0]) : list[0];
-      await tap({ x: spec.x, y: (spec.y || 0) + Math.min(0.4, (spec.h || 0.3) * 0.5), z: spec.z });
-      const bcur = { ...app.cmdCursor };
-      say(near1mm(bcur, want.tip) && app.cmdBore === want.bore,
-        `${dev.label} 본체 터치 → 기본 ${S.NOZZLE_LABELS[want.dir]} 노즐`,
-        `커서 ${fmtP(bcur)} · ${app.cmdBore} (기대 ${want.bore} ${fmtP(want.tip)})`);
-      say(panelShown(), `${dev.label} 본체 터치 → 속성 창 열림`, panelShown() ? '열림' : '닫힘');
 
       // ── 속성 창 📍 버튼도 그대로: 누른 방향 노즐 끝으로 ──
       for (const n of list) {
@@ -221,8 +227,7 @@ async function ready() {
     await sleep(50);
     await tap(upN.tip);
     const eqBefore = app.state.equipment.filter((e) => e.type === 'elbow').length;
-    app.padDraw({ op: 'seg', axis: 'y', sign: 1 }, 0.8);
-    await sleep(50);
+    // 노즐에서 바로 꺾는다 — 엘보가 그 노즐 끝에 앉고 배관이 그 면에서 시작
     app.padDraw({ op: 'seg', axis: 'x', sign: 1 }, 1.2);
     await sleep(80);
     const elbows = app.state.equipment.filter((e) => e.type === 'elbow');
@@ -299,6 +304,36 @@ async function ready() {
     const shotCursor = fmtP(app.cmdCursor);
     say(near1mm(app.cmdCursor, hxLeft.tip), '시연 씬: 열교환기 왼쪽 노즐 터치 상태',
       `커서 ${shotCursor} · 노즐 ${fmtP(hxLeft.tip)} · 장비 ${app.state.equipment.length} · 배관 ${app.state.pipes.length} · 토스트 "${lastToast().slice(0, 50)}"`);
+
+    // 이제부터는 진짜 터치·클릭 검사 — 합성 이벤트용으로 껴 둔 포인터 캡처를 되둘린다.
+    delete canvas.setPointerCapture;
+    delete canvas.releasePointerCapture;
+    window.__probe = {
+      tips: () => {
+        const r = canvas.getBoundingClientRect();
+        const fr = document.getElementById('fr').getBoundingClientRect();
+        const out = [];
+        [[hxd, '열교환기'], [tankd, '탱크'], [pumpd, '펌프']].forEach(([spec, label]) => {
+          S.equipNozzles(spec).forEach((n) => {
+            const v = app.camera.position.clone().set(n.tip.x, n.tip.y, n.tip.z).project(app.camera);
+            out.push({
+              label, dir: n.dir, bore: n.bore, tip: { ...n.tip },
+              x: fr.left + r.left + (v.x * 0.5 + 0.5) * r.width,
+              y: fr.top + r.top + (-v.y * 0.5 + 0.5) * r.height,
+            });
+          });
+        });
+        return { frameTop: fr.top, frameLeft: fr.left, tips: out };
+      },
+      state: () => ({
+        cursor: { ...app.cmdCursor }, bore: app.cmdBore,
+        sel: app.selection ? `${app.selection.kind}:${app.selection.id}` : null,
+        propsHidden: !!doc.querySelector('#props').hidden,
+        toast: lastToast(), errors: (W.__errors || []).slice(),
+      }),
+      resetSelection: () => app.clearSelection(),
+      errors: () => (W.__errors || []).slice(),
+    };
 
     // 📸 버튼 — 캔버스 픽셀을 <img>로 복사(iframe 캔버스는 일반 화면 캡처에 안 담겨서)
     const capBtn = document.getElementById('cap');
