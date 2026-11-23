@@ -197,8 +197,16 @@ async function run() {
   check('사진: ㄷ자 연결 2곳 보고', pb.report.branched === 2, `branched=${pb.report.branched}`);
   check('사진: 게이트밸브 수직 유지', pb.equipment.filter((e) => e.type === 'valve' && e.axis === 'y').length === 2);
 
-  // ── ⑤ 라이브 앱에 도면 씬을 적용 → 렌더링
+  // ── ⑤ 라이브 앱에 사진(노즐) 씬을 먼저 적용 — 앱이 쓰는 store.js도 최신인지 확인
   const app = w.__app;
+  app.applyAIResult(PHOTO_NOZZLE, 'replace');
+  const stN = JSON.parse(JSON.stringify(app.state));
+  const stNLen = stN.pipes.map((p) => { let L = 0; for (let i = 1; i < p.points.length; i += 1) { const a = p.points[i - 1], b = p.points[i]; L += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z); } return L; });
+  result.detail.photoNozzleApp = stNLen;
+  check('앱: 짧은 노즐 0.3m 유지(꾸어지지 않음)', stN.pipes.length === 2 && stNLen.every((L) => Math.abs(L - 0.3) < 0.002),
+    stNLen.map((L) => L.toFixed(3)).join(' / '));
+
+  // ── ⑥ 라이브 앱에 도면 씬을 적용 → 렌더링 (미리보기)
   app.applyAIResult(DRAWING, 'replace');
   app.setView('iso', true);
   try { app.setDrawerOpen(false); app.setDims(true); } catch (e) {}
@@ -221,7 +229,7 @@ async function run() {
     !st.pipes.some((p) => p.points.some((q) => !isFinite(q.x) || !isFinite(q.y) || !isFinite(q.z)))
     && !st.equipment.some((e) => !isFinite(e.x) || !isFinite(e.y) || !isFinite(e.z)));
 
-  // ── ⑥ 콘솔 오류
+  // ── ⑦ 콘솔 오류
   await new Promise((r) => setTimeout(r, 900));
   const errs = (w.__errors || []).concat(window.__errs);
   result.detail.errors = errs;
