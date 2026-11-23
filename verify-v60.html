@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>v60 검증 — 노즐·이어그리기 (390×844)</title>
+<style>
+  body { margin: 0; background: #14181d; color: #dfe6ee; font: 12px/1.5 ui-monospace, monospace; display: flex; gap: 10px; padding: 8px; align-items: flex-start; }
+  #fr { width: 390px; height: 844px; border: 0; background: #000; flex: 0 0 auto; }
+  #log { flex: 1; white-space: pre-wrap; margin: 0; font-size: 12.5px; }
+  .ok { color: #6ee7a0; }
+  .ng { color: #ff8a7a; }
+  b { color: #ffd479; }
+</style>
+</head>
+<body>
+<iframe id="fr" src="./index.html?v=60" width="390" height="844"></iframe>
+<pre id="log">검증 준비 중...</pre>
+<script type="module">
+const results = [];
+const logEl = document.getElementById('log');
+logEl.textContent = '';
+const say = (ok, label, detail) => {
+  results.push({ ok: !!ok, label, detail: detail == null ? '' : String(detail) });
+  const line = document.createElement('span');
+  line.className = ok ? 'ok' : 'ng';
+  line.textContent = `${ok ? 'PASS' : 'FAIL'} · ${label}${detail != null ? ' — ' + detail : ''}\n`;
+  logEl.appendChild(line);
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const frame = document.getElementById('fr');
+const r3 = (v) => Math.round(Number(v) * 1000) / 1000;
+const same = (a, b, tol) => Math.abs(a.x - b.x) <= tol && Math.abs(a.y - b.y) <= tol && Math.abs(a.z - b.z) <= tol;
+const fmtP = (p) => `(${r3(p.x)}, ${r3(p.y)}, ${r3(p.z)})`;
+
+async function ready() {
+  for (let i = 0; i < 120; i += 1) {
+    const W = frame.contentWindow;
+    if (W && W.__app && W.__app.root && W.document.querySelector('#scene')) return W;
+    await sleep(100);
+  }
+  throw new Error('앱이 12초 안에 뜨지 않았습니다');
+}
+
+// 노즐 끝 화면 좌표 → 손 그리기 스냅이 그 노즐을 잡는지
+function snapAt(app, p, radius) {
+  const rect = app.renderer.domElement.getBoundingClientRect();
+  const s = app.projectToScreen(p, rect);
+  if (!s) return null;
+  return app.nearestPipeSnap({ clientX: rect.left + s.x, clientY: rect.top + s.y }, radius || 40);
+}
+
+// 노즐에서 손 그리기로 배관을 뽑는다 (handPointerDown과 같은 순서)
+function drawFrom(app, near, meters) {
+  app.handAnchor = { x: near.x, y: near.y, z: near.z };
+  app.handContinued = true;
+  app.handDirV = { ...near.dir };
+  app.lastDirV = null;
+  app.setCmdCursor(app.handAnchor, true);
+  if (near.bore) app.setCmdBore(near.bore, true);
+  return app.commitHand({ v: { ...near.dir } }, Math.round(meters * 1000));
+}
+
+function lastPipe(app) {
+  return app.state.pipes[app.state.pipes.length - 1];
+}
+
+function overlapArea(a, b) {
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+(async () => {
+  try {
+    const W = await ready();
+    const app = W.__app;
+    const doc = W.document;
+    say(true, '앱 로드', `390×844 iframe · ${W.innerWidth}×${W.innerHeight}`);
+    say((W.__errors || []).length === 0, '시작 시 콘솔 에러 0건', (W.__errors || []).length);
+
+    // ── ① 열교환기: 위·아래·왼쪽·오른쪽 노즐 설정 ─────────────────────
+    app.clearAll({ silent: true });
+    await sleep(80);
+    app.addEquipment('hx');
+    const hx = app.state.equipment[0];
+    hx.x = -1.6; hx.z = 0; hx.w = 3.4; hx.h = 0.8; hx.rot = 0;
+    hx.nozzles = { up: '100A', down: '80A', left: '80A', right: '100A' };
+    app.refreshScene();
+    app.select('equipment', hx.id);
+    await sleep(160);
+
+    const sels = [...doc.querySelectorAll('#propBody select[data-noz]')];
+    say(sels.length === 4, '속성 패널 노즐 선택란 4개 (위·아래·왼쪽·오른쪽)',
+      sels.map((s) => `${s.dataset.noz}=${s.value}`).join(', '));
+    say(sels.every((s) => !!s.closest('.noz-grid')), '2열 그리드에 컴팩트 배치');
+
+    // 방향별 📍 이어그리기 → 커서 = 노즐 끝, 관경 이어받기
+    const tips = {};
+    const want = { up: '100A', down: '80A', left: '80A', right: '100A' };
+    for (const dir of ['up', 'down', 'left', 'right']) {
+      app.select('equipment', hx.id);
+      await sleep(60);
+      const btn = doc.querySelector(`#propBody [data-act="noz"][data-dir="${dir}"]`);
+      if (!btn) { say(false, `${dir} 노즐 이어그리기 버튼 없음`); continue; }
+      btn.click();
+      await sleep(60);
+      tips[dir] = { tip: { ...app.cmdCursor }, bore: app.cmdBore, axis: { ...(app.lastDirV || {}) } };
+      say(app.cmdBore === want[dir], `${dir} 노즐 끝 이어그리기`,
+        `${fmtP(app.cmdCursor)}m · ${app.cmdBore} (기대 ${want[dir]})`);
+    }
+    // 기대 좌표 (builders.js/equipNozzles 계산값)
+    const expUp = { x: -1.6, y: 1.54, z: 0 };
+    const expLeftY = 0.896;
+    say(same(tips.up.tip, expUp, 0.005), '위 노즐 끝 좌표', `${fmtP(tips.up.tip)} ≈ ${fmtP(expUp)}`);
+    say(Math.abs(tips.left.tip.y - expLeftY) < 0.005 && Math.abs(tips.left.tip.x - (-3.372)) < 0.005,
+      '왼쪽 노즐 끝 좌표(높이·외벽 돌출)', `${fmtP(tips.left.tip)}`);
+
+    // 손 그리기 스냅이 노즐 끝을 잡는가 (화면 40px)
+    let snapUp = null;
+    Object.keys(tips).forEach((dir) => {
+      const near = snapAt(app, tips[dir].tip, 40);
+      const ok = !!near && near.kind === 'nozzle' && same(near, tips[dir].tip, 0.002) && near.bore === want[dir];
+      if (dir === 'up') snapUp = near;
+      say(ok, `손 그리기 스냅 · ${dir} 노즐`,
+        near ? `${near.kind} ${fmtP(near)} · ${near.bore || '-'} · ${near.equipName || ''}` : '스냅 없음');
+    });
+
+    // 노즐에서 위로 1200mm 이어 그리기 → 배관 시작점이 노즐 끝·관경 100A
+    app.setHandMode(true, true);
+    await sleep(80);
+    const res1 = drawFrom(app, snapUp, 1.2);
+    const p1 = lastPipe(app);
+    const start1 = p1 && p1.points[0];
+    say(!!res1 && !!p1, '위 노즐에서 이어 그리기 실행', p1 ? `${p1.name} ${p1.bore}` : '배관 없음');
+    say(!!start1 && same(start1, tips.up.tip, 0.002), '배관 시작점 = 노즐 끝(높이 포함)',
+      start1 ? `${fmtP(start1)} vs ${fmtP(tips.up.tip)}` : '-');
+    say(!!p1 && p1.bore === '100A', '배관 관경 = 노즐 관경', p1 ? p1.bore : '-');
+
+    // 이어서 오른쪽으로 꺾어 그리기 — 노즐 위에서 엘보가 자동으로 앉는지
+    const res2 = app.commitHand({ v: { x: 1, y: 0, z: 0 } }, 1500);
+    const elbow = app.state.equipment.find((e) => e.type === 'elbow');
+    say(!!res2 && !!elbow, '이어 그리기 꺾임에 엘보 자동', elbow ? `${elbow.bore} at ${fmtP(elbow)}` : '엘보 없음');
+
+    // ── ② 원심펌프: IN·OUT 2라인 ──────────────────────────────────────
+    app.setHandMode(false, true);
+    app.addEquipment('pump');
+    const pump = app.state.equipment.filter((e) => e.type === 'pump').pop();
+    pump.x = 2.6; pump.z = 1.8; pump.rot = 0;
+    pump.nozzles = { in: '200A', out: '150A' };
+    app.refreshScene();
+    app.select('equipment', pump.id);
+    await sleep(160);
+    const psels = [...doc.querySelectorAll('#propBody select[data-noz]')];
+    say(psels.length === 2 && psels.map((s) => s.dataset.noz).join(',') === 'in,out',
+      '펌프 속성 패널 IN·OUT 관경 2개', psels.map((s) => `${s.dataset.noz}=${s.value}`).join(', '));
+
+    const ptips = {};
+    for (const dir of ['in', 'out']) {
+      app.select('equipment', pump.id);
+      await sleep(60);
+      const btn = doc.querySelector(`#propBody [data-act="noz"][data-dir="${dir}"]`);
+      if (!btn) { say(false, `펌프 ${dir} 노즐 버튼 없음`); continue; }
+      btn.click();
+      await sleep(60);
+      ptips[dir] = {
+        tip: { ...app.cmdCursor }, bore: app.cmdBore, axis: { ...(app.lastDirV || {}) },
+        snap: null,
+      };
+      say(app.cmdBore === (dir === 'in' ? '200A' : '150A'), `펌프 ${dir.toUpperCase()} 노즐 끝`,
+        `${fmtP(app.cmdCursor)}m · ${app.cmdBore}`);
+    }
+    // 펌프 IN/OUT 은 서로 다른 자리에서 각각 스냅·이어그리기
+    app.setHandMode(true, true);
+    await sleep(80);
+    ['in', 'out'].forEach((dir) => {
+      const near = snapAt(app, ptips[dir].tip, 40);
+      const okSnap = !!near && near.kind === 'nozzle' && same(near, ptips[dir].tip, 0.002);
+      say(okSnap, `펌프 ${dir.toUpperCase()} 손 그리기 스냅`, near ? `${near.kind} ${fmtP(near)} · ${near.bore}` : '스냅 없음');
+      if (!near) return;
+      const res = drawFrom(app, near, 1.1);
+      const pipe = lastPipe(app);
+      const ok = !!res && !!pipe && same(pipe.points[0], ptips[dir].tip, 0.002)
+        && pipe.bore === ptips[dir].bore;
+      say(ok, `펌프 ${dir.toUpperCase()}에서 배관 이어 그리기`,
+        pipe ? `${pipe.name} ${pipe.bore} 시작 ${fmtP(pipe.points[0])}` : '배관 없음');
+    });
+    say(ptips.in && ptips.out && !same(ptips.in.tip, ptips.out.tip, 0.05),
+      'IN·OUT 노즐 끝이 서로 다른 2곳', `${fmtP(ptips.in.tip)} / ${fmtP(ptips.out.tip)}`);
+    app.setHandMode(false, true);
+
+    // ── ③ 레이아웃 (390px) · 콘솔 에러 ────────────────────────────────
+    app.select('equipment', hx.id);
+    await sleep(200);
+    const props = doc.querySelector('#props').getBoundingClientRect();
+    const topbar = doc.querySelector('#topbar').getBoundingClientRect();
+    say(overlapArea(props, topbar) === 0, '상단 바 ↔ 속성 패널 겹침 0px²', overlapArea(props, topbar).toFixed(1));
+    const bodyEl = doc.querySelector('#propBody');
+    say(bodyEl.scrollWidth - bodyEl.clientWidth <= 1, '속성 패널 가로 넘침 없음',
+      `${bodyEl.scrollWidth} vs ${bodyEl.clientWidth}`);
+    const cells = [...doc.querySelectorAll('#propBody .noz-grid .field')].map((el) => el.getBoundingClientRect());
+    let cellOverlap = 0;
+    for (let i = 0; i < cells.length; i += 1) {
+      for (let j = i + 1; j < cells.length; j += 1) cellOverlap += overlapArea(cells[i], cells[j]);
+    }
+    say(cellOverlap === 0 && cells.length === 4, '노즐 선택란끼리 겹침 0px²', `${cells.length}칸 · ${cellOverlap.toFixed(1)}`);
+    const btns = [...doc.querySelectorAll('#propBody .noz-actions .btn')].map((el) => el.getBoundingClientRect());
+    let btnOverlap = 0;
+    for (let i = 0; i < btns.length; i += 1) {
+      for (let j = i + 1; j < btns.length; j += 1) btnOverlap += overlapArea(btns[i], btns[j]);
+    }
+    say(btnOverlap === 0 && btns.length === 4, '📍 버튼 겹침 0px²', `${btns.length}개 · ${btnOverlap.toFixed(1)}`);
+    say(props.bottom <= W.innerHeight + 1 && props.top >= topbar.bottom, '패널이 화면 안에 들어옴',
+      `top ${Math.round(props.top)} / bottom ${Math.round(props.bottom)} / 화면 ${W.innerHeight}`);
+    say((W.__errors || []).length === 0, '검증 중 콘솔 에러 0건', (W.__errors || []).length);
+
+    // ── 시연 씬 (스크린샷용) ─────────────────────────────────────────
+    app.clearAll({ silent: true });
+    await sleep(80);
+    app.addEquipment('hx');
+    const hx2 = app.state.equipment[0];
+    hx2.x = -1.9; hx2.z = -0.4; hx2.w = 3.4; hx2.h = 0.8; hx2.rot = 0;
+    hx2.nozzles = { up: '100A', down: '50A', left: '80A', right: '80A' };
+    app.addEquipment('pump');
+    const pump2 = app.state.equipment.filter((e) => e.type === 'pump').pop();
+    pump2.x = 2.2; pump2.z = 1.9; pump2.rot = 0;
+    pump2.nozzles = { in: '200A', out: '150A' };
+    app.refreshScene();
+    await sleep(80);
+
+    const drawDir = (eqSpec, dir, meters) => {
+      app.select('equipment', eqSpec.id);
+      const btn = doc.querySelector(`#propBody [data-act="noz"][data-dir="${dir}"]`);
+      if (!btn) return null;
+      btn.click();
+      const tip = { ...app.cmdCursor };
+      const near = { ...tip, dir: { ...(app.lastDirV || {}) }, bore: app.cmdBore, kind: 'nozzle' };
+      app.setHandMode(true, true);
+      const r = drawFrom(app, near, meters);
+      return r;
+    };
+    drawDir(hx2, 'up', 1.1);
+    app.commitHand({ v: { x: 1, y: 0, z: 0 } }, 1600);
+    drawDir(hx2, 'right', 1.5);
+    app.commitHand({ v: { x: 0, y: 1, z: 0 } }, 1.2);
+    drawDir(hx2, 'left', 1.3);
+    app.commitHand({ v: { x: 0, y: 1, z: 0 } }, 0.9);
+    drawDir(pump2, 'in', 1.1);
+    drawDir(pump2, 'out', 1.3);
+    app.commitHand({ v: { x: -1, y: 0, z: 0 } }, 1.5);
+    app.setHandMode(false, true);
+    app.setDims(false);
+    app.setView('iso', true);
+    await sleep(120);
+    app.select('equipment', hx2.id);
+    await sleep(200);
+    say(true, '시연 씬 준비 완료', `장비 ${app.state.equipment.length}개 · 배관 ${app.state.pipes.length}개`);
+
+    const fails = results.filter((r) => !r.ok).length;
+    window.__results = results;
+    const sum = doc.createElement('div');
+    sum.innerHTML = `\n<b>합계: ${results.length - fails}/${results.length} PASS${fails ? ` · FAIL ${fails}` : ''}</b>\n`;
+    logEl.appendChild(sum);
+    window.__summary = { total: results.length, fails };
+  } catch (e) {
+    say(false, '검증 스크립트 예외', e && e.message ? e.message : e);
+    window.__results = results;
+    window.__summary = { total: results.length, fails: 1 };
+  }
+})();
+</script>
+</body>
+</html>
