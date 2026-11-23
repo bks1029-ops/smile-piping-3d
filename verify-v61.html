@@ -22,6 +22,7 @@
   <button id="cap" hidden>📸 390×844 캡처</button>
   <div id="capInfo"></div>
   <img id="shot" alt="">
+  <img id="shot2" alt="">
 </div>
 <script type="module">
 const results = [];
@@ -269,12 +270,30 @@ async function ready() {
     capBtn.hidden = false;
     capBtn.addEventListener('click', () => {
       const c = app.renderer.domElement;
+      const zoomShot = (imgId, target, dist) => {
+        const cam = app.camera;
+        const dir = cam.position.clone().sub(app.controls.target).normalize();
+        const p0 = cam.position.clone();
+        const t0 = app.controls.target.clone();
+        app.controls.target.copy(target);
+        cam.position.copy(target).addScaledVector(dir, dist);
+        cam.lookAt(target);
+        app.renderer.render(app.scene, cam);
+        const img = document.getElementById(imgId);
+        img.src = c.toDataURL('image/png');
+        cam.position.copy(p0);
+        app.controls.target.copy(t0);
+        app.controls.update();
+      };
+      // ① 전체 구도
       app.renderer.render(app.scene, app.camera);
       const r = c.getBoundingClientRect();
       const img = document.getElementById('shot');
       img.src = c.toDataURL('image/png');
       img.width = Math.round(r.width);
       img.height = Math.round(r.height);
+      // ② 노즐 끝에 커서가 붙은 자리 확대 (핀치 줌과 같은 구도)
+      zoomShot('shot2', { x: 2.02, y: 0.9, z: 1.7 }, 4.4);
       document.getElementById('capInfo').textContent =
         `canvas ${Math.round(r.width)}×${Math.round(r.height)} · 화면 ${W.innerWidth}×${W.innerHeight} · canvas top ${Math.round(r.top)}`;
       shotBox.scrollIntoView({ block: 'nearest' });
