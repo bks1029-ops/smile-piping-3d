@@ -415,6 +415,9 @@ export function makeEquipment(type, opts) {
     conn: o.conn === 'forged' ? 'forged' : 'flange',
   };
   if (bore) spec.bore = bore;
+  // 노즐 — 열교환기·헤더·탱크(원형·사각)·펌프. o.nozzles가 있으면 그 값을,
+  // 없으면 장비별 기본값(현장 설비처럼 보이는 값)을 그대로 적어 둔다.
+  if (NOZZLE_TYPES.has(type)) spec.nozzles = nozzlesOf({ type, nozzles: o.nozzles });
   // 방향 — 밸브·피팅을 수직 배관에 세울 때 axis: 'y'.
   // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
   if (AXIS_VALUES.has(o.axis)) spec.axis = o.axis;
@@ -501,6 +504,216 @@ export function headerBody(spec) {
     top: stand + dia,
     along: (r === 90 || r === 270) ? 'z' : 'x',
   };
+}
+
+// ── 장비 노즐 (위·아래·왼쪽·오른쪽 / 펌프는 IN·OUT) ────────────────────────
+// 열교환기·헤더·탱크(원형·사각)·펌프의 접속구. 속성 패널에서 방향별 관경을 고르면
+// 장비 외벽에서 노즐 목 + 플랜지가 돌출되고, 그 **끝점(플랜지 면) 좌표**로
+// ✏️ 손 그리기 스냅과 배관 이어그리기가 정확히 붙는다(높이 Y까지 그대로).
+// 좌표는 모두 월드 좌표(m)이고 builders.js·main.js·fusion.js가 같은 값을 쓴다.
+export const NOZZLE_DIRS = ['up', 'down', 'left', 'right'];
+
+export const NOZZLE_LABELS = {
+  up: '위', down: '아래', left: '왼쪽', right: '오른쪽', in: 'IN 흡입', out: 'OUT 토출',
+};
+
+// 노즐 관경 — 현장에서 쓰는 15A~200A. 'none'은 노즐 없음.
+export const NOZZLE_NONE = 'none';
+export const NOZZLE_SIZES = ['15A', '20A', '25A', '32A', '40A', '50A', '65A', '80A', '100A', '125A', '150A', '200A'];
+const NOZZLE_SIZE_SET = new Set(NOZZLE_SIZES);
+
+// 노즐을 가진 장비 — 나머지 부속(밸브·피팅·계기)은 노즐을 갖지 않는다.
+export const NOZZLE_TYPES = new Set(['header', 'hx', 'tank', 'stank', 'rtank', 'pump']);
+
+// 장비별 기본 노즐 — 새로 놓았을 때 현장 설비처럼 보이는 값.
+// (펌프는 흡입이 토출보다 한 치수 크다: 200A 흡입 · 150A 토출)
+const NOZZLE_DEFAULTS = {
+  header: { up: '150A', down: '50A' },
+  hx: { up: '100A', down: '50A' },
+  tank: { up: '25A', left: '50A' },
+  stank: { up: '100A', left: '100A' },
+  rtank: { left: '150A', right: '100A' },
+  pump: { in: '200A', out: '150A' },
+};
+
+// 그 장비가 쓸 수 있는 노즐 방향 — 펌프만 인·아웃 2곳이다.
+export function nozzleDirsOf(type) {
+  if (type === 'pump') return ['in', 'out'];
+  return NOZZLE_TYPES.has(type) ? NOZZLE_DIRS.slice() : [];
+}
+
+export function nozzleDefaults(type) {
+  const src = NOZZLE_DEFAULTS[type] || {};
+  const out = {};
+  nozzleDirsOf(type).forEach((d) => { out[d] = src[d] || NOZZLE_NONE; });
+  return out;
+}
+
+// 장비의 노즐 설정 — 저장돼 있으면 그 값을, 없으면(예전 도면·새 장비) 기본값을 쓴다.
+// 값이 하나라도 저장돼 있으면 저장본이 정본이다(사용자가 '없음'으로 끈 방향을 되살리지 않는다).
+export function nozzlesOf(spec) {
+  const dirs = nozzleDirsOf(spec && spec.type);
+  const out = {};
+  if (!dirs.length) return out;
+  const src = spec && spec.nozzles;
+  const has = !!(src && typeof src === 'object');
+  const base = has ? {} : nozzleDefaults(spec.type);
+  dirs.forEach((d) => {
+    const v = has ? src[d] : base[d];
+    out[d] = NOZZLE_SIZE_SET.has(v) ? v : NOZZLE_NONE;
+  });
+  return out;
+}
+
+export function nozzleBore(spec, dir) {
+  const all = nozzlesOf(spec);
+  return NOZZLE_SIZE_SET.has(all[dir]) ? all[dir] : null;
+}
+
+// 노즐 관경 바꾸기 — 'none'이면 그 방향 노즐을 없앤다.
+export function setNozzle(spec, dir, bore) {
+  if (!spec) return null;
+  const dirs = nozzleDirsOf(spec.type);
+  if (!dirs.includes(dir)) return null;
+  const all = nozzlesOf(spec);
+  all[dir] = NOZZLE_SIZE_SET.has(bore) ? bore : NOZZLE_NONE;
+  spec.nozzles = all;
+  return all;
+}
+
+// ── 노즐이 붙는 외벽 자리 (장비 로컬 좌표) ────────────────────────────────
+// builders.js가 그리는 본체 치수와 정확히 같은 식을 쓴다. p = 외벽 접합점,
+// axis = 노즐이 뻗는 바깥 방향(단위벡터).
+function nozzleAnchors(spec) {
+  const t = spec && spec.type;
+  const g = {};
+  if (t === 'hx') {
+    // 가로로 누운 원통(축 = 로컬 X) — 위·아래는 원통 꼭대기/바닥,
+    // 왼쪽·오른쪽은 채널 헤드(양단 경판) 끝면이다.
+    const L = Math.max(0.6, num(spec.w, 3));
+    const dia = Math.max(0.2, num(spec.h, 0.75));
+    const R = dia / 2;
+    const leg = Math.max(0.22, Math.min(0.55, dia * 0.62));
+    const cy = leg + R;
+    const endX = L * 0.37 + 0.295;
+    g.up = { p: [0, leg + dia, 0], axis: [0, 1, 0] };
+    g.down = { p: [0, leg, 0], axis: [0, -1, 0] };
+    g.left = { p: [-endX, cy, 0], axis: [-1, 0, 0] };
+    g.right = { p: [endX, cy, 0], axis: [1, 0, 0] };
+    return g;
+  }
+  if (t === 'header') {
+    const b = headerBody(spec);
+    const endX = b.L / 2 + b.R * 0.55;
+    g.up = { p: [0, b.cy + b.R, 0], axis: [0, 1, 0] };
+    g.down = { p: [0, b.cy - b.R, 0], axis: [0, -1, 0] };
+    g.left = { p: [-endX, b.cy, 0], axis: [-1, 0, 0] };
+    g.right = { p: [endX, b.cy, 0], axis: [1, 0, 0] };
+    return g;
+  }
+  if (t === 'tank') {
+    // 세운 원통 드럼 — 위는 윗면, 아래는 바닥, 좌·우는 옆면.
+    const r = Math.max(0.12, num(spec.w, 0.6) / 2);
+    const h = Math.max(0.2, num(spec.h, 0.9));
+    g.up = { p: [0, h * 0.98, 0], axis: [0, 1, 0] };
+    g.down = { p: [0, h * 0.02, 0], axis: [0, -1, 0] };
+    g.left = { p: [-r, h * 0.55, 0], axis: [-1, 0, 0] };
+    g.right = { p: [r, h * 0.55, 0], axis: [1, 0, 0] };
+    return g;
+  }
+  if (t === 'stank') {
+    // 대형 원통 저장탱크 — 로컬 0.9R·3.0H 원통을 w·h·d 배율로 늘린 본체.
+    const sx = Math.max(0.2, num(spec.w, 2) / 2.0);
+    const sy = Math.max(0.2, num(spec.h, 3) / 3.0);
+    const R = 0.9 * sx;
+    g.up = { p: [0, 2.72 * sy, 0], axis: [0, 1, 0] };
+    g.down = { p: [0, 0.55 * sy, 0], axis: [0, -1, 0] };
+    g.left = { p: [-R, 1.55 * sy, 0], axis: [-1, 0, 0] };
+    g.right = { p: [R, 1.55 * sy, 0], axis: [1, 0, 0] };
+    return g;
+  }
+  if (t === 'rtank') {
+    // 사각 탱크 — 위·아래는 뚜껑/바닥, 좌·우는 가로(W) 옆면.
+    const sx = Math.max(0.2, num(spec.w, 2.4) / 2.4);
+    const sy = Math.max(0.2, num(spec.h, 1.8) / 1.8);
+    const W = 2.2 * sx;
+    g.up = { p: [0, 1.72 * sy, 0], axis: [0, 1, 0] };
+    g.down = { p: [0, 0.1 * sy, 0], axis: [0, -1, 0] };
+    g.left = { p: [-W / 2, 1.0 * sy, 0], axis: [-1, 0, 0] };
+    g.right = { p: [W / 2, 1.0 * sy, 0], axis: [1, 0, 0] };
+    return g;
+  }
+  if (t === 'pump') {
+    // 원심펌프 — 흡입은 케이싱 앞(+Z), 토출은 위(+Y). 끝점은 펌프 도면 그대로 고정이라
+    // 관경을 바꿔도 스냅 자리가 움직이지 않는다(목 굵기만 바뀐다).
+    const sx = Math.max(0.2, num(spec.w, 1.15) / 1.15);
+    const sy = Math.max(0.2, num(spec.h, 0.85) / 0.85);
+    const sz = Math.max(0.2, num(spec.d, 0.6) / 0.6);
+    g.in = {
+      p: [0.12 * sx, 0.42 * sy, 0.2 * sz], axis: [0, 0, 1],
+      tip: [0.12 * sx, 0.42 * sy, 0.39 * sz],
+    };
+    g.out = {
+      p: [0.12 * sx, 0.58 * sy, 0], axis: [0, 1, 0],
+      tip: [0.12 * sx, 0.745 * sy, 0],
+    };
+    return g;
+  }
+  return g;
+}
+
+// 노즐 목 길이(m) — 관경이 클수록 조금 길게. 끝면은 여기에 플랜지 두께를 더한 곳.
+const NOZZLE_NECK_MIN = 0.10;
+const NOZZLE_NECK_MAX = 0.30;
+const NOZZLE_FLANGE_T = 0.03;
+
+// 장비의 노즐 목록 (월드 좌표). 설정된 노즐만, 위→아래→왼쪽→오른쪽(펌프는 in→out) 순서.
+//  · base : 장비 외벽에 닿는 접합점
+//  · tip  : 플랜지 접합면 = 배관이 시작되는 점 (손 그리기 스냅 좌표)
+//  · axis : 바깥으로 뻗는 방향 (이어 그리는 배관의 초기 방향)
+//  · r    : 관 외경 반지름, len = 목+플랜지 길이
+export function equipNozzles(spec) {
+  const dirs = nozzleDirsOf(spec && spec.type);
+  if (!dirs.length) return [];
+  const anchors = nozzleAnchors(spec);
+  const th = num(spec.rot, 0) * Math.PI / 180;
+  const c = Math.cos(th);
+  const s = Math.sin(th);
+  const toWorld = (p) => ({
+    x: round3(num(spec.x, 0) + p[0] * c + p[2] * s),
+    y: round3(Math.max(0, num(spec.y, 0) + p[1])),
+    z: round3(num(spec.z, 0) - p[0] * s + p[2] * c),
+  });
+  const rotV = (v) => ({ x: v[0] * c + v[2] * s, y: v[1], z: -v[0] * s + v[2] * c });
+  const out = [];
+  dirs.forEach((dir) => {
+    const bore = nozzleBore(spec, dir);
+    const a = anchors[dir];
+    if (!bore || !a) return;
+    const r = boreOd(bore) / 2;
+    const neck = Math.max(NOZZLE_NECK_MIN, Math.min(NOZZLE_NECK_MAX, 0.10 + 2.0 * r));
+    const axis = rotV(a.axis);
+    const base = toWorld(a.p);
+    const tip = a.tip
+      ? toWorld(a.tip)
+      : {
+        x: round3(base.x + axis.x * (neck + NOZZLE_FLANGE_T)),
+        y: round3(Math.max(0, base.y + axis.y * (neck + NOZZLE_FLANGE_T))),
+        z: round3(base.z + axis.z * (neck + NOZZLE_FLANGE_T)),
+      };
+    const len = Math.hypot(tip.x - base.x, tip.y - base.y, tip.z - base.z);
+    if (len < 1e-4) return;
+    out.push({
+      dir,
+      bore,
+      r: round3(r),
+      base,
+      tip,
+      axis: { x: round3(axis.x), y: round3(axis.y), z: round3(axis.z) },
+      len: round3(len),
+    });
+  });
+  return out;
 }
 
 // ── 장비 본체가 차지하는 공간 ────────────────────────────────────────
@@ -1387,10 +1600,10 @@ export function sampleScene() {
       [1.5, 0.86, 1.2], [1.5, 2.6, 1.2], [1.5, 2.6, -1.6],
     ]),
     pipe('PL-106 E-101 출구', '100A', 'carbon', [
-      [-3.0, 1.35, -4.2], [-3.0, 2.3, -4.2], [-3.0, 2.3, -1.6],
+      [-3.0, 1.67, -4.2], [-3.0, 2.3, -4.2], [-3.0, 2.3, -1.6],
     ]),
     pipe('PL-107 E-102 스팀 공급', '100A', 'carbon', [
-      [2.7, 3.6, -1.6], [2.7, 2.4, -1.6], [2.7, 2.4, -5.0], [2.7, 1.5, -5.0],
+      [2.7, 3.6, -1.6], [2.7, 2.4, -1.6], [2.7, 2.4, -5.0], [2.7, 1.41, -5.0],
     ]),
     pipe('PL-108 보온 스팀 라인', '80A', 'insulated', [
       [-6.8, 2.3, 3.2], [-0.5, 2.3, 3.2], [-0.5, 1.2, 3.2],
@@ -1522,6 +1735,8 @@ export function normalizeState(raw) {
         item.bore1 = BORES[e.bore1] ? e.bore1 : (t.bore1 || '100A');
         item.bore2 = BORES[e.bore2] ? e.bore2 : (type === 'tee' ? item.bore1 : (t.bore2 || '50A'));
       }
+      // 노즐 설정 — 저장된 방향별 관경을 살리고, 없으면 기본 노즐로 채운다.
+      if (NOZZLE_TYPES.has(type)) item.nozzles = nozzlesOf({ type, nozzles: e.nozzles });
       if (type === 'elbow' || type === 'elbow45') {
         item.bore = BORES[e.bore] ? e.bore : (BORES[e.bore1] ? e.bore1 : (t.bore || '100A'));
         const dims = elbowDims(type, item.bore);

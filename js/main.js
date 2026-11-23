@@ -7,9 +7,10 @@ import {
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
-} from './store.js?v=59';
-import { buildScene } from './builders.js?v=59';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=59';
+  equipNozzles, nozzlesOf, nozzleBore, setNozzle, nozzleDirsOf, NOZZLE_LABELS, NOZZLE_SIZES, NOZZLE_NONE,
+} from './store.js?v=60';
+import { buildScene } from './builders.js?v=60';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=60';
 import { buildOBJ } from './obj.js?v=59';
 import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=59';
 import { parseCommand, CMD_HELP } from './cmd.js?v=59';
@@ -650,10 +651,13 @@ class App {
       if (v.z > 1 || v.z < -1) return null;
       return { x: (v.x * 0.5 + 0.5) * rect.width, y: (-v.y * 0.5 + 0.5) * rect.height };
     };
-    const take = (d, p, dir, kind) => {
+    const take = (d, p, dir, kind, extra) => {
       if (!(d < bestD)) return;
       bestD = d;
-      best = { x: r3(p.x), y: r3(p.y), z: r3(p.z), dir: dir || null, kind: kind || 'vertex' };
+      best = {
+        x: r3(p.x), y: r3(p.y), z: r3(p.z), dir: dir || null, kind: kind || 'vertex',
+        ...(extra || {}),
+      };
     };
     const unit = (a, b) => {
       const l = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) || 1;
@@ -665,6 +669,17 @@ class App {
       take(Math.hypot(s.x - px, s.y - py), p, dir);
     };
 
+    // 장비 노즐 끝 — 플랜지 접합면을 먼저 본다. 배관 끝과 같은 자리면 노즐이 이긴다
+    // (노즐 관경을 그대로 이어받아야 하므로). 높이(Y)도 노즐 끝 높이 그대로 스냅된다.
+    this.state.equipment.forEach((e) => {
+      equipNozzles(e).forEach((n) => {
+        const s = screenOf(n.tip);
+        if (!s) return;
+        take(Math.hypot(s.x - px, s.y - py), n.tip, n.axis, 'nozzle', {
+          bore: n.bore, nozzleDir: n.dir, equipId: e.id, equipName: e.name,
+        });
+      });
+    });
     this.state.pipes.forEach((pipe) => {
       const pts = pipe.points || [];
       if (pts.length < 2) return;
@@ -751,6 +766,12 @@ class App {
         // 스냅한 점이 배관 몸통이면 그 자리에 티 분기가 생긴다 — 짧게 알려 준다.
         if (near.kind === 'body' && this.lastPointerType === 'touch') {
           this.toast(`배관 몸통 ${near.y.toFixed(2)}m 높이에 붙였습니다.`);
+        }
+        // 장비 노즐 끝이면 그 노즐의 관경을 이어받아 바로 배관을 뽑는다.
+        if (near.kind === 'nozzle' && near.bore) {
+          this.setCmdBore(near.bore, true);
+          const nm = `${near.equipName || '장비'} ${NOZZLE_LABELS[near.nozzleDir] || ''} 노즐`;
+          this.toast(`${nm} ${near.bore} · 단면 높이 ${near.y.toFixed(2)}m에서 이어 그립니다.`);
         }
         this.setCmdCursor(this.handAnchor, true);
       } else if (p) {
@@ -1389,12 +1410,12 @@ class App {
     };
     const dist = (p) => Math.hypot(p.x - cursor.x, p.y - cursor.y, p.z - cursor.z);
     let best = null;
-    const consider = (p, label) => {
+    const consider = (p, label, bore) => {
       const dx = p.x - cursor.x, dy = p.y - cursor.y, dz = p.z - cursor.z;
       const d = Math.hypot(dx, dy, dz);
       if (d < 0.02) return;
       if (!dirOk(dx, dy, dz)) return;
-      if (!best || d < best.d) best = { d, p: { x: p.x, y: p.y, z: p.z }, label };
+      if (!best || d < best.d) best = { d, p: { x: p.x, y: p.y, z: p.z }, label, bore: bore || null };
     };
 
     if (wantPipe) {
@@ -1408,6 +1429,8 @@ class App {
       this.state.equipment.forEach((e) => {
         if (op.type && !(op.type === 'valve' ? VALVE_TYPES.has(e.type) : e.type === op.type)) return;
         consider(this.equipExit(e), e.name);
+        // 노즐이 있는 장비는 노즐 끝도 연결 후보 — 그 노즐 관경을 그대로 이어받는다.
+        equipNozzles(e).forEach((n) => consider(n.tip, `${e.name} ${NOZZLE_LABELS[n.dir] || ''} 노즐`, n.bore));
       });
     }
     return best;
@@ -1436,6 +1459,27 @@ class App {
     this.clearSelection();
     const c = this.cmdCursor;
     this.toast(`📍 여기서 이어 그립니다 · ${this.cmdBore} · 커서 (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})m`);
+  }
+
+  // 장비 노즐 끝에서 이어 그리기 — 커서를 노즐 플랜지 면에 놓고 노즐 관경을 물려준다.
+  // (손 그리기 스냅과 같은 좌표를 쓴다 — 두 길이 같은 자리에서 시작한다)
+  nozContinue(dir) {
+    const spec = this.getSelectedSpec();
+    if (!spec || !dir) return;
+    const n = equipNozzles(spec).find((x) => x.dir === dir);
+    if (!n) { this.toast('그 방향에는 노즐이 없습니다. 관경을 먼저 고르세요.', { type: 'err' }); return; }
+    // 노즐이 뻗는 바깥 방향을 그대로 이어 그리는 방향으로 삼는다(수직 노즐이면 위로).
+    const ax = Math.abs(n.axis.y) > Math.max(Math.abs(n.axis.x), Math.abs(n.axis.z)) ? 'y'
+      : (Math.abs(n.axis.x) >= Math.abs(n.axis.z) ? 'x' : 'z');
+    const sgn = (ax === 'x' ? n.axis.x : ax === 'z' ? n.axis.z : n.axis.y) < 0 ? -1 : 1;
+    this.cmdAxis = ax;
+    this.cmdSign = sgn;
+    this.cmdRot = this.cmdRotFor(ax, sgn);
+    this.lastDirV = { x: n.axis.x, y: n.axis.y, z: n.axis.z };
+    this.setCmdBore(n.bore, true);
+    this.setCmdCursor({ x: n.tip.x, y: n.tip.y, z: n.tip.z }, true);
+    this.clearSelection();
+    this.toast(`📍 ${NOZZLE_LABELS[n.dir]} 노즐 ${n.bore}에서 이어 그립니다 · 커서 (${fmt(n.tip.x)}, ${fmt(n.tip.y)}, ${fmt(n.tip.z)})m`);
   }
 
   // 손가락 터치가 작은 부속을 빗나가도 화면 기준 32px 안의 가장 가까운 것을 고른다.
@@ -1523,6 +1567,7 @@ class App {
         ${this.boreFields(spec)}
         ${this.connField(spec)}
         ${this.axisField(spec)}
+        ${this.nozzleFields(spec)}
         <div class="prop-section">위치 (m)</div>
         <div class="prop-grid3">
           <label class="field">X<input type="number" step="0.1" data-f="x" value="${fmt(spec.x)}"></label>
@@ -1656,6 +1701,35 @@ class App {
           <label class="field">배관 축<select data-f="axis">${opts}</select></label>
           <label class="field">지금<span class="readonly">${spec.axis === 'y' ? '세움 · 핸들 옆' : '눕힘 · 흐름 방향'}</span></label>
         </div>`;
+  }
+
+  // ── 장비 노즐 — 위·아래·왼쪽·오른쪽(펌프는 IN·OUT) 관경 선택 ─────────────
+  // 고른 방향만 3D 외벽에 노즐·플랜지가 돌출되고, 그 끝점이 손 그리기 스냅 자리가 된다.
+  // 모바일 390px에서도 두 열로 깔끔하게 들어가도록 2열 그리드를 쓴다.
+  nozzleFields(spec) {
+    const dirs = nozzleDirsOf(spec.type);
+    if (!dirs.length) return '';
+    const cur = nozzlesOf(spec);
+    const opts = (v) => [`<option value="${NOZZLE_NONE}"${v === NOZZLE_NONE ? ' selected' : ''}>없음</option>`]
+      .concat(NOZZLE_SIZES.map((b) => `<option value="${b}"${b === v ? ' selected' : ''}>${b} (${BORES[b].mm}mm)</option>`))
+      .join('');
+    const pump = spec.type === 'pump';
+    const cells = dirs.map((d) => `<label class="field">${NOZZLE_LABELS[d]}
+            <select data-noz="${d}" title="${NOZZLE_LABELS[d]} 노즐 관경 — 없음이면 노즐을 그리지 않습니다">${opts(cur[d] || NOZZLE_NONE)}</select>
+          </label>`).join('');
+    const live = equipNozzles(spec);
+    // 노즐 끝 좌표를 한 줄로 보여 준다 — 어느 높이에 물리는지 바로 확인할 수 있게.
+    const coords = live.length
+      ? live.map((n) => `${NOZZLE_LABELS[n.dir]} ${fmt(n.tip.y)}m`).join(' · ')
+      : '지금은 켜진 노즐이 없습니다.';
+    const btns = live.map((n) => `<button class="btn small ghost" data-act="noz" data-dir="${n.dir}"
+            title="${NOZZLE_LABELS[n.dir]} 노즐 끝(${fmt(n.tip.x)}, ${fmt(n.tip.y)}, ${fmt(n.tip.z)})m 에서 ${n.bore} 배관을 이어 그립니다">📍 ${pump ? (n.dir === 'in' ? 'IN' : 'OUT') : NOZZLE_LABELS[n.dir]}</button>`).join('');
+    return `
+        <div class="prop-section">노즐 (관경)</div>
+        <div class="noz-grid">${cells}</div>
+        <p class="noz-tip">노즐 끝 높이 · ${coords}</p>
+        ${btns ? `<div class="prop-actions noz-actions">${btns}</div>` : ''}
+        <p class="hint">✏️ 손 그리기로 노즐 끝을 누르면 그 높이·관경 그대로 배관이 이어집니다. 📍는 명령·조이스틱으로 이어 그릴 자리를 잡아 줍니다.</p>`;
   }
 
   updatePipeSummary() {
@@ -2371,6 +2445,11 @@ class App {
           continue;
         }
         const path = this.orthoPath(cursor, hit.p);
+        // 노즐 끝에 붙었으면 그 노즐 관경으로 배관을 뽑는다(이후 명령도 그 관경으로 이어진다).
+        if (hit.bore && BORES[hit.bore]) {
+          bore = hit.bore;
+          notes.push(`노즐 관경 ${bore}`);
+        }
         pipeSeq += 1;
         pipes.push(makePipe({
           name: `PL-${String(pipeSeq).padStart(3, '0')} 연결`,
@@ -2565,6 +2644,17 @@ class App {
       el.textContent = `${this.cmdBore} · ${conn} · ${mat} · ${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)}m`;
     }
     this.highlightPad();
+  }
+
+  // 관경 바꾸기 — 노즐에서 이어 그릴 때·관경 이어받기에서 쓴다.
+  // (조이스틱 정보 줄과 배관 탭 관경 선택란을 같이 맞춘다)
+  setCmdBore(bore, quiet) {
+    if (!BORES[bore]) return;
+    this.cmdBore = bore;
+    const sel = $('#newBore');
+    if (sel) sel.value = bore;
+    this.updatePadInfo();
+    if (!quiet) this.toast(`관경 ${bore} (${BORES[bore].mm}mm)`);
   }
 
   // 연결 방식 전환 — 플랜지(기본) ↔ 단조(소켓웰드·나사식)
@@ -3779,6 +3869,13 @@ class App {
         this.renderProps();
         return;
       }
+      // 노즐 관경 — 그 방향 노즐을 바로 다시 그린다(없음이면 없앤다).
+      if (t.dataset.noz) {
+        setNozzle(spec, t.dataset.noz, t.value);
+        this.refreshScene();
+        this.renderProps();
+        return;
+      }
       if (t.dataset.f) {
         let v = t.type === 'number' ? parseFloat(t.value) : t.value;
         if (t.type === 'number' && !Number.isFinite(v)) return;
@@ -3809,6 +3906,7 @@ class App {
       if (!spec) return;
       if (act === 'del') this.deleteSelected();
       else if (act === 'from') this.fromHere();
+      else if (act === 'noz') this.nozContinue(btn.dataset.dir);
       else if (act === 'dup') this.duplicateSelected();
       else if (act === 'ground') { this.pushUndo('바닥에 붙이기'); spec.y = 0; this.refreshScene(); this.renderProps(); }
       else if (act === 'addpt') {

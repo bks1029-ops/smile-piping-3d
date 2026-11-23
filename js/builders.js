@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody } from './store.js?v=59';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody, equipNozzles } from './store.js?v=60';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -135,23 +135,8 @@ function buildHeader(spec) {
     });
   });
 
-  // 위쪽 노즐 3개 (수직 분기관이 꽂히는 자리) + 볼트 플랜지
-  [-0.32, 0, 0.32].forEach((f) => {
-    const x = L * f;
-    add(g, cyl(R * 0.34, 0.14, 22), shellMat, x, cy + R + 0.06, 0);
-    add(g, cyl(R * 0.46, 0.026, 26), steel, x, cy + R + 0.14, 0);
-    for (let i = 0; i < 6; i += 1) {
-      const a = (Math.PI * 2 * i) / 6;
-      add(g, cyl(0.009, 0.05, 8), boltMat,
-        x + Math.cos(a) * R * 0.38, cy + R + 0.14, Math.sin(a) * R * 0.38);
-    }
-  });
-
-  // 아래쪽 드레인 노즐 2개
-  [-0.18, 0.18].forEach((f) => {
-    add(g, cyl(0.035, 0.16, 14), steel, L * f, cy - R - 0.06, 0);
-    add(g, cyl(0.05, 0.02, 16), steel, L * f, cy - R - 0.14, 0);
-  });
+  // 위·아래·왼쪽·오른쪽 노즐은 buildNozzles()가 속성 패널 설정대로 그린다
+  // (예전 고정 노즐 3개·드레인 2개는 없앴다 — '없음'으로 끄면 정말 사라져야 한다).
 
   // 새들 지지 프레임 2개 — 바닥 보 + 두 기둥 + 원통 받침판
   [-0.3, 0.3].forEach((f) => {
@@ -197,13 +182,7 @@ function buildHX(spec) {
     add(g, cyl(R * 0.5, 0.05, 20), headMat, sx * (bodyLen / 2 + 0.27), cy, 0, 0, 0, Math.PI / 2);
   });
 
-  // 상부 노즐 + 플랜지
-  [-L * 0.24, L * 0.24].forEach((nx) => {
-    add(g, cyl(R * 0.3, 0.3, 20), shellMat, nx, legH + dia + 0.15, 0);
-    add(g, cyl(R * 0.42, 0.045, 24), boltMat, nx, legH + dia + 0.31, 0);
-  });
-  // 하부 드레인 노즐
-  add(g, cyl(R * 0.18, 0.18, 16), shellMat, L * 0.1, legH + 0.03, 0);
+  // 상·하·좌·우 노즐은 buildNozzles()가 그린다 (예전 고정 상부 노즐 2개·하부 드레인은 제거)
 
   // 새들 지지대
   [-L * 0.27, L * 0.27].forEach((sx) => {
@@ -233,12 +212,8 @@ function buildPump(spec) {
   // 볼류트 케이싱 (축 Z)
   add(g, cyl(0.24, 0.3, 28), blue, 0.12, 0.42, 0, Math.PI / 2, 0, 0);
   add(g, cyl(0.26, 0.05, 28), blue, 0.12, 0.42, 0.17, Math.PI / 2, 0, 0);
-  // 흡입 노즐 + 플랜지
-  add(g, cyl(0.11, 0.18, 20), blue, 0.12, 0.42, 0.27, Math.PI / 2, 0, 0);
-  add(g, cyl(0.15, 0.04, 20), steel, 0.12, 0.42, 0.37, Math.PI / 2, 0, 0);
-  // 토출 노즐 + 플랜지
-  add(g, cyl(0.085, 0.24, 20), blue, 0.12, 0.61, 0);
-  add(g, torus(0.125, 0.012), steel, 0.12, 0.73, 0, Math.PI / 2, 0, 0);
+  // 흡입(IN)·토출(OUT) 노즐은 buildNozzles()가 그린다 — 속성 패널에서 관경을 고르면
+  // 그 굵기로 케이싱 앞(+Z)·위(+Y)에 서고, 끝점이 손 그리기 스냅 자리가 된다.
   // 베어링 브래킷
   add(g, cyl(0.09, 0.22, 20), steel, 0.37, 0.42, 0, 0, 0, Math.PI / 2);
   // 커플링 가드
@@ -269,7 +244,7 @@ function buildTank(spec) {
   add(g, cyl(r * 1.02, 0.035, 28), rimMat, 0, h * 0.03, 0);
   add(g, cyl(r * 0.99, 0.03, 28), rimMat, 0, h * 0.96, 0);
   [0.33, 0.66].forEach((f) => add(g, torus(r * 1.005, 0.012), rimMat, 0, h * f, 0, Math.PI / 2, 0, 0));
-  add(g, cyl(r * 0.12, 0.06, 16), rimMat, r * 0.5, h + 0.02, 0);
+  // 상·하·좌·우 노즐은 buildNozzles()가 그린다 (예전 고정 상부 벤트는 제거)
   return g;
 }
 
@@ -365,16 +340,9 @@ function buildSTank(spec) {
   // 보강 링
   [0.95, 1.75].forEach((y) => add(g, torus(R * 1.005, 0.012), steel, 0, y, 0, Math.PI / 2, 0, 0));
 
-  // 맨홀 · 상부 노즐
+  // 맨홀 (상부 노즐·측면 노즐은 buildNozzles()가 속성 패널 설정대로 그린다)
   add(g, cyl(0.2, 0.12, 20), headMat, 0, shellTop + 0.36, 0);
   add(g, cyl(0.28, 0.035, 24), steel, 0, shellTop + 0.43, 0);
-  add(g, cyl(0.07, 0.16, 16), steel, 0.4, shellTop + 0.39, 0);
-
-  // 측면 노즐 (출구·입구) + 플랜지
-  [0.95, 2.15].forEach((y) => {
-    add(g, cyl(0.07, 0.24, 18), steel, R + 0.08, y, 0, 0, 0, Math.PI / 2);
-    add(g, cyl(0.1, 0.03, 20), steel, R + 0.21, y, 0, 0, 0, Math.PI / 2);
-  });
 
   // 사다리 (뒤쪽) + 명판
   [-0.16, 0.16].forEach((dx) => add(g, cyl(0.014, 1.9, 8), dark, dx, legH + 1.0, -R - 0.08));
@@ -422,13 +390,7 @@ function buildRTank(spec) {
   add(g, cyl(0.26, 0.07, 22), frameMat, 0.5, H + 0.19, 0.35);
   add(g, box(0.12, 0.05, 0.1), dark, 0.76, H + 0.2, 0.35);
 
-  // 측면 노즐 2개 + 플랜지
-  add(g, cyl(0.075, 0.24, 18), steel, -W / 2 - 0.1, 0.95, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.105, 0.03, 20), steel, -W / 2 - 0.23, 0.95, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.06, 0.2, 16), steel, W / 2 + 0.08, 1.35, 0, 0, 0, Math.PI / 2);
-  // 바닥 배수 밸브
-  add(g, cyl(0.05, 0.16, 14), steel, 0, 0.28, Dd / 2 + 0.06, Math.PI / 2, 0, 0);
-  add(g, torus(0.06, 0.012), dark, 0, 0.28, Dd / 2 + 0.14, 0, 0, 0);
+  // 측면·상부·바닥 노즐은 buildNozzles()가 속성 패널 설정대로 그린다
 
   g.scale.set(spec.w / 2.4, spec.h / 1.8, spec.d / 1.8);
   return g;
@@ -1025,8 +987,10 @@ export function buildPipe(spec, equipments) {
   const forged = isForged(spec);
 
   const joints = equipments || [];
-  // 배관 끝이 부속(엘보·밸브·플랜지 등)과 만나는 자리면 플랜지를 그리지 않는다 — 용접 이음으로 보이게.
-  const jointAt = (p) => joints.some((e) => Math.hypot((e.x || 0) - p.x, (e.y || 0) - p.y, (e.z || 0) - p.z) < 0.28);
+  // 배관 끝이 부속(엘보·밸브·플랜지 등)이나 장비 노즐 끝과 만나는 자리면 플랜지를 그리지 않는다 —
+  // 용접 이음으로 보이게(노즐 플랜지 바로 앞에 판이 하나 더 생기는 것을 막는다).
+  const jointAt = (p) => joints.some((e) => Math.hypot((e.x || 0) - p.x, (e.y || 0) - p.y, (e.z || 0) - p.z) < 0.28
+    || equipNozzles(e).some((n) => Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z) < 0.09));
 
   for (let i = 1; i < pts.length; i += 1) {
     const a = pts[i - 1];
@@ -1071,6 +1035,33 @@ function addFlange(g, pos, dir, r, material) {
   f.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
   f.castShadow = true;
   g.add(f);
+}
+
+// ── 장비 노즐 (목 + 플랜지) ──────────────────────────────
+// store.js equipNozzles()가 돌려준 **월드 좌표**(base → tip)를 그대로 쓴다 —
+// 속성 패널에서 고른 관경으로 장비 외벽에서 돌출되고, tip(플랜지 면)이 손 그리기 스냅 자리와 똑같다.
+// 노즐은 장비 회전·배율이 이미 끝난 좌표라 별도 그룹에 그린다(buildEquipment 참고).
+function buildNozzles(spec) {
+  const list = equipNozzles(spec);
+  if (!list.length) return null;
+  const g = new THREE.Group();
+  const steel = MAT('#9aa3ab', 0.4, 0.82);
+  const ring = MAT('#6f7880', 0.5, 0.8);
+  list.forEach((n) => {
+    const dir = new THREE.Vector3(n.tip.x - n.base.x, n.tip.y - n.base.y, n.tip.z - n.base.z);
+    const len = dir.length();
+    if (len < 1e-4) return;
+    dir.normalize();
+    const fl = Math.min(0.035, len * 0.4);          // 플랜지 원판 두께
+    const at = (t) => [
+      n.base.x + dir.x * t, n.base.y + dir.y * t, n.base.z + dir.z * t,
+    ];
+    // 벽 접합 보강 칼라 → 노즐 목 → 플랜지 원판 (끝면 = 스냅 좌표)
+    addTube(g, at(0), at(0.012), n.r * 1.26, ring, 20);
+    addTube(g, at(0), at(len - fl), n.r, steel, 22);
+    addTube(g, at(len - fl), at(len), n.r * 1.55, ring, 26);
+  });
+  return g;
 }
 
 export function buildEquipment(spec) {
@@ -1139,7 +1130,17 @@ export function buildEquipment(spec) {
   }
   g.userData.pick = { kind: 'equipment', id: spec.id };
   g.userData.spec = spec;
-  return g;
+  // 노즐은 월드 좌표로 그리므로 본체 그룹(회전·배율 적용됨) 밖에 둔다.
+  // 둘을 한 그룹으로 묶어 selection·내보내기가 한 장비로 다룰 수 있게 한다.
+  const noz = buildNozzles(spec);
+  if (!noz) return g;
+  const root = new THREE.Group();
+  root.add(g);
+  root.add(noz);
+  root.userData.pick = { kind: 'equipment', id: spec.id };
+  root.userData.spec = spec;
+  noz.userData.pick = { kind: 'equipment', id: spec.id };
+  return root;
 }
 
 const EQUIP_BUILDERS = {

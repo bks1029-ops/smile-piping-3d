@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis } from './store.js?v=59';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES } from './store.js?v=60';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -68,6 +68,16 @@ export function buildFusionScript(state) {
       if (!item.rmat && item.axis === 'y'
           && e.type !== 'gauge' && e.type !== 'safety_valve') {
         item.rmat = verticalMatrix(e.rot);
+      }
+      // 노즐 — 웹앱과 **같은 끝점 좌표**를 넘겨 Fusion에도 같은 자리에 목·플랜지가 생긴다.
+      // 노즐을 쓰는 장비는 빈 목록이라도 넣어, 각 타입 빌더의 고정 노즐은 그리지 않게 한다.
+      if (NOZZLE_TYPES.has(e.type)) {
+        item.nozzles = equipNozzles(e).map((n) => ({
+          dir: n.dir, bore: n.bore, r: n.r,
+          base: [n.base.x, n.base.y, n.base.z],
+          tip: [n.tip.x, n.tip.y, n.tip.z],
+          axis: [n.axis.x, n.axis.y, n.axis.z],
+        }));
       }
       return item;
     }),
@@ -252,6 +262,33 @@ BORES = {
 JACKET = {'insulated': 0.035}
 
 
+def build_nozzles(comp, e, tag):
+    """장비 노즐 — 웹앱 store.js equipNozzles()가 계산한 끝점(base → tip)으로
+    목(neck)과 플랜지 원판을 만든다. tip이 바로 배관이 시작되는 접합면이다."""
+    made = 0
+    for nz in (e.get('nozzles') or []):
+        r = nz.get('r') or 0.05
+        base = nz.get('base')
+        tip = nz.get('tip')
+        if not base or not tip:
+            continue
+        dx = tip[0] - base[0]
+        dy = tip[1] - base[1]
+        dz = tip[2] - base[2]
+        length = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if length < 0.02:
+            continue
+        fl = min(0.035, length * 0.4)
+        u = (dx / length, dy / length, dz / length)
+        neck_end = (tip[0] - u[0] * fl, tip[1] - u[1] * fl, tip[2] - u[2] * fl)
+        dr = nz.get('dir', 'x')
+        if add_cylinder(comp, base, neck_end, r, tag + '_Noz_' + dr):
+            made += 1
+        if add_cylinder(comp, neck_end, tip, r * 1.55, tag + '_NozFlg_' + dr):
+            made += 1
+    return made
+
+
 def build_header(comp, e, tag):
     """스팀/배관 헤더 — 가로 원통 분배기 + 볼트 플랜지 + 새들 지지 프레임"""
     made = 0
@@ -276,20 +313,21 @@ def build_header(comp, e, tag):
             if add_cylinder(comp, local_to_world(e, (a, cy, 0)),
                             local_to_world(e, (b, cy, 0)), R * 1.18, tag + '_Flange'):
                 made += 1
-    # 상부 노즐 3개 (수직 분기관 자리) + 플랜지
-    for f in (-0.32, 0.0, 0.32):
-        x = L * f
-        if add_cylinder(comp, local_to_world(e, (x, cy + R, 0)),
-                        local_to_world(e, (x, cy + R + 0.14, 0)), R * 0.34, tag + '_Nozzle'):
-            made += 1
-        if add_cylinder(comp, local_to_world(e, (x, cy + R + 0.12, 0)),
-                        local_to_world(e, (x, cy + R + 0.17, 0)), R * 0.46, tag + '_NozzleFlange'):
-            made += 1
-    # 하부 드레인
-    for f in (-0.18, 0.18):
-        if add_cylinder(comp, local_to_world(e, (L * f, cy - R, 0)),
-                        local_to_world(e, (L * f, cy - R - 0.14, 0)), 0.035, tag + '_Drain'):
-            made += 1
+    # 상부 노즐 3개 (수직 분기관 자리) + 플랜지 — 노즐 목록이 오면 build_nozzles가 그린다
+    if e.get('nozzles') is None:
+        for f in (-0.32, 0.0, 0.32):
+            x = L * f
+            if add_cylinder(comp, local_to_world(e, (x, cy + R, 0)),
+                            local_to_world(e, (x, cy + R + 0.14, 0)), R * 0.34, tag + '_Nozzle'):
+                made += 1
+            if add_cylinder(comp, local_to_world(e, (x, cy + R + 0.12, 0)),
+                            local_to_world(e, (x, cy + R + 0.17, 0)), R * 0.46, tag + '_NozzleFlange'):
+                made += 1
+        # 하부 드레인
+        for f in (-0.18, 0.18):
+            if add_cylinder(comp, local_to_world(e, (L * f, cy - R, 0)),
+                            local_to_world(e, (L * f, cy - R - 0.14, 0)), 0.035, tag + '_Drain'):
+                made += 1
     # 새들 지지 프레임
     for f in (-0.3, 0.3):
         w = local_to_world(e, (L * f, 0, 0))
@@ -321,12 +359,13 @@ def build_heat_exchanger(comp, e, tag):
         w = local_to_world(e, (sx * L * 0.27, 0, 0))
         if add_box(comp, w[0], w[1], w[2], 0.14, leg, dia * 1.04, e.get('rot', 0), tag + '_Saddle'):
             made += 1
-    # 상부 노즐 2개
-    for sx in (-1, 1):
-        a = local_to_world(e, (sx * L * 0.24, leg + dia - 0.02, 0))
-        b = local_to_world(e, (sx * L * 0.24, leg + dia + 0.3, 0))
-        if add_cylinder(comp, a, b, R * 0.3, tag + '_Nozzle'):
-            made += 1
+    # 상부 노즐 2개 — 노즐 목록이 오면 build_nozzles가 그린다
+    if e.get('nozzles') is None:
+        for sx in (-1, 1):
+            a = local_to_world(e, (sx * L * 0.24, leg + dia - 0.02, 0))
+            b = local_to_world(e, (sx * L * 0.24, leg + dia + 0.3, 0))
+            if add_cylinder(comp, a, b, R * 0.3, tag + '_Nozzle'):
+                made += 1
     return made
 
 
@@ -351,12 +390,12 @@ def build_pump(comp, e, tag):
     # 모터
     if add_cylinder(comp, L(0.6, 0.42, 0), L(1.02, 0.42, 0), 0.165 * rs, tag + '_Motor'):
         made += 1
-    # 토출 노즐
-    if add_cylinder(comp, L(0.12, 0.42, 0), L(0.12, 0.74, 0), 0.085 * rs, tag + '_Discharge'):
-        made += 1
-    # 흡입 노즐
-    if add_cylinder(comp, L(0.12, 0.42, 0.15), L(0.12, 0.42, 0.4), 0.11 * rs, tag + '_Suction'):
-        made += 1
+    # 토출·흡입 노즐 — 노즐 목록이 오면 build_nozzles가 그린다
+    if e.get('nozzles') is None:
+        if add_cylinder(comp, L(0.12, 0.42, 0), L(0.12, 0.74, 0), 0.085 * rs, tag + '_Discharge'):
+            made += 1
+        if add_cylinder(comp, L(0.12, 0.42, 0.15), L(0.12, 0.42, 0.4), 0.11 * rs, tag + '_Suction'):
+            made += 1
     return made
 
 
@@ -921,9 +960,10 @@ def build_storage_tank(comp, e, tag):
         made += 1
     if add_cylinder(comp, P(0, shellTop + 0.3, 0), P(0, shellTop + 0.42, 0), 0.2 * sx, tag + '_Manhole'):
         made += 1
-    for y in (0.95, 2.15):
-        if add_cylinder(comp, P(R, y, 0), P(R + 0.24, y, 0), 0.07 * sx, tag + '_Nozzle'):
-            made += 1
+    if e.get('nozzles') is None:
+        for y in (0.95, 2.15):
+            if add_cylinder(comp, P(R, y, 0), P(R + 0.24, y, 0), 0.07 * sx, tag + '_Nozzle'):
+                made += 1
     return made
 
 
@@ -951,10 +991,11 @@ def build_rect_tank(comp, e, tag):
     mh = P(0.5, H + 0.1, 0.35)
     if add_cylinder(comp, mh, P(0.5, H + 0.16, 0.35), 0.26 * sx, tag + '_Manhole'):
         made += 1
-    if add_cylinder(comp, P(-W / 2, 0.95, 0), P(-W / 2 - 0.24, 0.95, 0), 0.075 * sx, tag + '_NozzleIn'):
-        made += 1
-    if add_cylinder(comp, P(W / 2, 1.35, 0), P(W / 2 + 0.2, 1.35, 0), 0.06 * sx, tag + '_NozzleOut'):
-        made += 1
+    if e.get('nozzles') is None:
+        if add_cylinder(comp, P(-W / 2, 0.95, 0), P(-W / 2 - 0.24, 0.95, 0), 0.075 * sx, tag + '_NozzleIn'):
+            made += 1
+        if add_cylinder(comp, P(W / 2, 1.35, 0), P(W / 2 + 0.2, 1.35, 0), 0.06 * sx, tag + '_NozzleOut'):
+            made += 1
     return made
 
 
@@ -1033,6 +1074,7 @@ def build(comp, scene, report):
         fn = builders.get(e.get('type'), build_tank)
         try:
             n = fn(comp, e, tag)
+            n += build_nozzles(comp, e, tag)
             report['bodies'] += n
             report['equipment'] += 1
             if n == 0:
