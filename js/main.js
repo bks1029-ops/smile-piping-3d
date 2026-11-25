@@ -12,15 +12,15 @@ import {
   HX_AT, HX_AT_LABELS, HX_NOZ_DIRS, HX_NOZ_DIR_LABELS, HX_PRESETS,
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
   equipPorts, teePorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
-  HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces,
-} from './store.js?v=67';
-import { buildScene } from './builders.js?v=67';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=67';
-import { buildOBJ } from './obj.js?v=67';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=67';
-import { parseCommand, CMD_HELP } from './cmd.js?v=67';
-import { buildDimItems } from './dims.js?v=67';
-import { buildAiImageParts } from './zoom.js?v=67';
+  HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis,
+} from './store.js?v=68';
+import { buildScene } from './builders.js?v=68';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=68';
+import { buildOBJ } from './obj.js?v=68';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=68';
+import { parseCommand, CMD_HELP } from './cmd.js?v=68';
+import { buildDimItems } from './dims.js?v=68';
+import { buildAiImageParts } from './zoom.js?v=68';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -1964,6 +1964,79 @@ class App {
     return { x: sx, z: sz, hitX, hitZ };
   }
 
+  // ── 접합면 자석 스냅 — 드래그로 끌어다 놓으면 근처 접합면에 0mm로 붙는다 ──────
+  // 2026-11-25 `31599` 캡처: "방향 틀고 드래그 해서 붙이려고 해도 안붙어"
+  //  · 내 접합면(플랜지 면·노즐 끝·티 포트·엘보 두 끝) 중 가장 가까운 짝을 찾아
+  //    그 면끼리 정확히 포갠다(x·y·z 모두 이동 — 바닥 드래그에서도 높이가 맞춰진다).
+  //  · 마주 보는 면(축이 반대)을 우선하고, 거리 0.25m 안만 후보로 본다.
+  portSnapFor(spec, nx, ny, nz) {
+    const RANGE = 0.25;
+    const mine = this.equipPortsOf(spec);
+    if (!mine.length) return null;
+    const dx = nx - (Number(spec.x) || 0);
+    const dy = ny - (Number(spec.y) || 0);
+    const dz = nz - (Number(spec.z) || 0);
+    const cands = [];
+    this.state.equipment.forEach((e) => {
+      if (!e || e.id === spec.id) return;
+      this.equipPortsOf(e).forEach((p) => cands.push(p));
+    });
+    this.state.pipes.forEach((pp) => {
+      const pts = pp.points || [];
+      if (pts.length < 2) return;
+      const a = pts[0];
+      const b = pts[1];
+      const z0 = pts[pts.length - 2];
+      const z1 = pts[pts.length - 1];
+      const l1 = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) || 1;
+      const l2 = Math.hypot(z1.x - z0.x, z1.y - z0.y, z1.z - z0.z) || 1;
+      cands.push({ tip: a, axis: { x: (a.x - b.x) / l1, y: (a.y - b.y) / l1, z: (a.z - b.z) / l1 }, label: `${pp.name || '배관'} 시작` });
+      cands.push({ tip: z1, axis: { x: (z1.x - z0.x) / l2, y: (z1.y - z0.y) / l2, z: (z1.z - z0.z) / l2 }, label: `${pp.name || '배관'} 끝` });
+    });
+    if (!cands.length) return null;
+    let best = null;
+    mine.forEach((m) => {
+      const tip = { x: m.tip.x + dx, y: m.tip.y + dy, z: m.tip.z + dz };
+      cands.forEach((c) => {
+        const d = Math.hypot(tip.x - c.tip.x, tip.y - c.tip.y, tip.z - c.tip.z);
+        if (d > RANGE) return;
+        const ma = m.axis || { x: 0, y: 0, z: 0 };
+        const ca = c.axis || { x: 0, y: 0, z: 0 };
+        const dot = ma.x * ca.x + ma.y * ca.y + ma.z * ca.z;
+        // 마주 보고 있을 때(축이 반대)를 우선 — 거리만 보면 옆면 위로 붙는 일이 생긴다.
+        const score = d + (dot > -0.3 ? 0.08 : 0);
+        if (!best || score < best.score) {
+          best = {
+            score, d, dot, label: c.label || '',
+            x: r3(nx + (c.tip.x - tip.x)),
+            y: Math.max(0, r3(ny + (c.tip.y - tip.y))),
+            z: r3(nz + (c.tip.z - tip.z)),
+          };
+        }
+      });
+    });
+    return best;
+  }
+
+  // 부속의 접합면 목록 — 티는 세 포트, 엘보는 두 다리 끝면, 나머지는 equipPorts(플랜지 면·노즐).
+  equipPortsOf(spec) {
+    if (!spec || !spec.type) return [];
+    const out = equipPorts(spec).map((n) => ({ tip: n.tip, axis: n.axis, label: n.label || '' }));
+    if (spec.type === 'elbow' || spec.type === 'elbow45') {
+      const b = equipBasis(spec);
+      const dims = elbowDims(spec.type, spec.bore || spec.bore1);
+      [0, 1].forEach((i) => {
+        const ax = { x: b[i], y: b[3 + i], z: b[6 + i] };
+        out.push({
+          tip: { x: r3(spec.x + ax.x * dims.face), y: r3(Math.max(0, spec.y + ax.y * dims.face)), z: r3(spec.z + ax.z * dims.face) },
+          axis: ax,
+          label: i === 0 ? '입구' : '출구',
+        });
+      });
+    }
+    return out;
+  }
+
   showAlignGuides(x, z, snap) {
     this.setupAlignGuides();
     const y = 0.02;
@@ -2073,6 +2146,19 @@ class App {
       this.pushUndo('드래그 이동');
     }
     if (!st.moved) return;
+    // 먼저 접합면 자석 — 근처(0.25m) 접합면이 있으면 그 자리에 0mm로 붙인다.
+    const ps = this.portSnapFor(spec, nx, spec.y, nz);
+    if (ps) {
+      st.portSnap = ps;
+      spec.x = ps.x;
+      spec.y = ps.y;
+      spec.z = ps.z;
+      if (st.group) st.group.position.set(spec.x, spec.y, spec.z);
+      this.refreshHighlight();
+      this.updateDims();
+      return;
+    }
+    st.portSnap = null;
     // 다른 장비와 150mm 안이면 X·Z 축에 딱 붙인다 — 나란히 정렬.
     const snap = this.alignSnapFor(spec, nx, nz);
     nx = snap.x;
@@ -2095,6 +2181,12 @@ class App {
     if (!st.moved) return;
     this.rebuild();
     const spec = this.getSelectedSpec();
+    if (st.portSnap && spec) {
+      this.toast(`접합면에 붙였습니다 · (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`, {
+        action: '되돌리기', onAction: () => this.undo(),
+      });
+      return;
+    }
     if (spec) this.toast(`위치 이동 → (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`, {
       action: '되돌리기', onAction: () => this.undo(),
     });
@@ -3828,6 +3920,41 @@ class App {
           : (op.size1 && op.size2 ? { bore1: op.size1, bore2: op.size2, conn: pieceConn } : { conn: pieceConn });
         if (op.type === 'hx' && hxType) extra.hxType = hxType;
         const spec = putEquip(op.type, extra);
+        if (isElbow) {
+          // 엘보 — 커서(직전 배관 끝)에 **입구 면**을 맞추고 꺾임점을 face만큼 앞에 둔다.
+          // 예전에는 커서에 꺾임점을 두고 로컬 +X를 진행 방향으로 돌려 세워, 입구가 위를 향해
+          // 뒤집힌 채 등이 밸브 위에 얹혔다(2026-11-25 `31597` 캡처).
+          const dv = prevDir || equipDir || this.lastDirV
+            || { x: axis === 'x' ? sign : 0, y: axis === 'y' ? sign : 0, z: axis === 'z' ? sign : 0 };
+          const dims = elbowDims(op.type, spec.bore || bore);
+          const pick = this.padDirV();
+          const dot = pick ? pick.x * dv.x + pick.y * dv.y + pick.z * dv.z : 0;
+          let outV = pick && Math.abs(dot) < 0.7 ? pick : this.turnDirFor(dv);
+          if (op.type === 'elbow45') {
+            const dg = { x: dv.x + outV.x, y: dv.y + outV.y, z: dv.z + outV.z };
+            const dl = Math.hypot(dg.x, dg.y, dg.z) || 1;
+            outV = { x: dg.x / dl, y: dg.y / dl, z: dg.z / dl };
+          }
+          spec.inDir = [r3(-dv.x), r3(-dv.y), r3(-dv.z)];
+          spec.outDir = [r3(outV.x), r3(outV.y), r3(outV.z)];
+          delete spec.dir;
+          spec.x = r3(cursor.x + dv.x * dims.face);
+          spec.y = Math.max(0, r3(cursor.y + dv.y * dims.face));
+          spec.z = r3(cursor.z + dv.z * dims.face);
+          cursor = put({
+            x: r3(spec.x + outV.x * dims.face),
+            y: Math.max(0, r3(spec.y + outV.y * dims.face)),
+            z: r3(spec.z + outV.z * dims.face),
+          });
+          axis = Math.abs(outV.x) >= Math.abs(outV.y) && Math.abs(outV.x) >= Math.abs(outV.z) ? 'x'
+            : (Math.abs(outV.z) >= Math.abs(outV.y) ? 'z' : 'y');
+          sign = (axis === 'x' ? outV.x : axis === 'z' ? outV.z : outV.y) < 0 ? -1 : 1;
+          rot = this.cmdRotFor(axis, sign);
+          prevDir = { x: outV.x, y: outV.y, z: outV.z };
+          this.lastDirV = { ...prevDir };
+          notes.push(op.type === 'elbow45' ? '45° 엘보' : '엘보');
+          continue;
+        }
         // spec.w = builders.js 메시의 실제 좌우 접합면 폭. 그래서 이 값만큼만 전진시키면 틈이 생기지 않는다.
         const len = inline ? (spec.w || 0) : 0;
         // 양쪽 4mm씩 살짝 물리게 놓아 접합면에 실금 같은 틈이 보이지 않게 한다.

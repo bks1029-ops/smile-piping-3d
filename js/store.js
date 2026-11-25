@@ -46,6 +46,26 @@ export function flangeOd(bore) {
   return Math.round(od * 1.8 * 1e4) / 1e4;
 }
 
+// ── 플랜지 판 두께 (m) ────────────────────────────────────────────────
+// 예전에는 단독 플랜지 45mm·배관 끝 40mm로 두꺼워, 볼트를 빼자 '하키 퍽' 같은
+// 민무늬 원판으로 보였다(2026-11-25 `31587` 캡처). KS 10K 판 두께를 16~22mm로
+// 다듬어 단독 플랜지·배관 끝·맞물림 판·밸브 자기 플랜지가 모두 이 한 표를 쓴다.
+//  · 플랜지 부속의 w(면간 두께)도 이 값으로 맞춘다 — 그래야 접합면(±w/2)이
+//    판의 바깥면과 정확히 일치해, 플랜지 위에 엘보를 올려도 파묻히지 않는다
+//    (2026-11-25 `31589` 캡처).
+export const FLANGE_T = {
+  '15A': 0.014, '20A': 0.014, '25A': 0.014, '32A': 0.016, '40A': 0.016,
+  '50A': 0.016, '65A': 0.018, '80A': 0.018, '100A': 0.020, '125A': 0.020,
+  '150A': 0.022, '200A': 0.022, '250A': 0.022, '300A': 0.022, '350A': 0.022,
+  '400A': 0.022, '450A': 0.022, '500A': 0.022, '550A': 0.022, '600A': 0.022,
+};
+
+export function flangeTh(bore) {
+  if (FLANGE_T[bore]) return FLANGE_T[bore];
+  const od = BORES[bore] ? BORES[bore].od : BORES['100A'].od;
+  return Math.max(0.014, Math.min(0.022, Math.round(od * 0.175 * 1e3) / 1e3));
+}
+
 export const MATERIALS = {
   carbon:    { label: '흑관·카본스틸', color: '#4b5057', roughness: 0.58, metalness: 0.6, jacket: 0.0 },
   sus:       { label: 'SUS 스테인리스', color: '#c8ced4', roughness: 0.32, metalness: 0.88, jacket: 0.0 },
@@ -112,8 +132,10 @@ export function applyBoreSize(spec) {
   const bs = boreScale(bore);
   spec.bore = bore;
   spec.w = round3(t.defaults.w * bs.plan);
-  // 플랜지 — 접시 외경(h·d)은 KS 10K 표의 그 관경 플랜지 외경 그대로(100A 210mm > 80A 185mm).
+  // 플랜지 — 판 두께(w)와 접시 외경(h·d)을 KS 10K 표 그대로 잡는다
+  //  (100A 210mm > 80A 185mm, 두께는 14~22mm). 접합면 ±w/2가 곧 판의 바깥면이다.
   if (spec.type === 'flange') {
+    spec.w = round3(flangeTh(bore));
     spec.h = round3(flangeOd(bore));
     spec.d = round3(flangeOd(bore));
     return spec;
@@ -579,8 +601,10 @@ export function makeEquipment(type, opts) {
     conn: o.conn === 'forged' ? 'forged' : 'flange',
   };
   if (bore) spec.bore = bore;
-  // 플랜지 — 외경은 기본 치수가 아니라 KS 10K 표(관경별)로 잡는다.
+  // 플랜지 — 외경은 기본 치수가 아니라 KS 10K 표(관경별)로, 두께(w)도 표 값으로 잡는다.
+  // 접합면 ±w/2가 판의 바깥면과 정확히 겹치도록 하는 기준값이다.
   if (type === 'flange' && bore) {
+    spec.w = round3(flangeTh(bore));
     spec.h = round3(flangeOd(bore));
     spec.d = round3(flangeOd(bore));
   }
@@ -626,6 +650,24 @@ export function makeEquipment(type, opts) {
     spec.d = dims.r * 2;
     if (Array.isArray(o.inDir) && o.inDir.length === 3) spec.inDir = o.inDir.map((v) => round3(Number(v) || 0));
     if (Array.isArray(o.outDir) && o.outDir.length === 3) spec.outDir = o.outDir.map((v) => round3(Number(v) || 0));
+    // 두 다리 방향이 없으면 진행 방향(dir)에서 만든다 — 예전에는 로컬 +X가 진행 방향으로
+    // 돌아, 입구가 위를 향한 채 뒤집혀 얹혔다(2026-11-25 `31597` 캡처).
+    if (!spec.inDir || !spec.outDir) {
+      const dv = Array.isArray(spec.dir) && spec.dir.length === 3 ? spec.dir : [1, 0, 0];
+      const l = Math.hypot(num(dv[0], 0), num(dv[1], 0), num(dv[2], 0)) || 1;
+      const u = [num(dv[0], 0) / l, num(dv[1], 0) / l, num(dv[2], 0) / l];
+      const perp = Math.abs(u[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];   // 수평이면 위, 수직이면 +X로 꺾는다
+      let outV = perp;
+      if (type === 'elbow45') {
+        const dg = [u[0] + perp[0], u[1] + perp[1], u[2] + perp[2]];
+        const dl = Math.hypot(dg[0], dg[1], dg[2]) || 1;
+        outV = [dg[0] / dl, dg[1] / dl, dg[2] / dl];
+      }
+      // 입구 면은 진행 방향의 **반대**를 본다 — 직전 배관·플랜지와 마주 본다.
+      spec.inDir = [round3(-u[0]), round3(-u[1]), round3(-u[2])];
+      spec.outDir = outV.map((v) => round3(v));
+      delete spec.dir;
+    }
   }
   // 이경 부속(레듀샤·티)은 1차/2차 관경을 기억하고, 실제 관경 크기로 폭을 잡는다.
   if (type === 'reducer' || type === 'tee') {
@@ -1240,7 +1282,7 @@ function teeFrame(spec) {
   const L = Math.max(0.22, 2.6 * r1 * 2);
   const H = Math.max(0.1, L * 0.5);
   const w = num(spec.w, fittingNaturalWidth('tee', b1, b2));
-  const s = Math.max(0.05, w) / (L + 0.03);
+  const s = Math.max(0.05, w) / L;
   let M = rotYM(num(spec.rot, 0));
   const dv = Array.isArray(spec.dir) && spec.dir.length === 3
     ? spec.dir.map((v) => Number(v)) : null;
@@ -2339,8 +2381,10 @@ export function normalizeState(raw) {
       // 밸브·피팅이 달린 배관 관경 — 저장된 값을 살린다.
       // (예전 도면은 관경을 기억하지 않으므로 비워 두고, 아래에서 붙어 있는 배관을 보고 채운다)
       if (isBoreSized(type) && BORES[e.bore]) item.bore = e.bore;
-      // 플랜지 — 접시 외경은 KS 10K 표를 따른다(예전 도면의 0.26 고정 크기를 바로잡는다).
+      // 플랜지 — 판 두께는 KS 10K 표를 따르고, 접시 외경도 KS 10K 표를 따른다
+      // (예전 도면의 0.06 두께·0.26 고정 크기를 바로잡는다 — 접합면이 판 면과 어긋나 있었다).
       if (type === 'flange' && BORES[item.bore]) {
+        item.w = round3(flangeTh(item.bore));
         item.h = Math.round(flangeOd(item.bore) * 1000) / 1000;
         item.d = item.h;
       }

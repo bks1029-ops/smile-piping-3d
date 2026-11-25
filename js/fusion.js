@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, handleRotOf, flangeOd, equipBasis } from './store.js?v=67';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, handleRotOf, flangeOd, equipBasis } from './store.js?v=68';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -911,23 +911,23 @@ def build_flow(comp, e, tag):
 
 
 def build_flange(comp, e, tag):
-    """플랜지 — 볼트링 원판 + 볼트 8개 (접시 외경 = 관경별 KS 10K 외경)"""
+    """플랜지 — 얇은 링 판(두께 = 접합면 간격 w) + PCD 볼트 구멍 8개.
+
+    웹앱 buildFlange와 같은 치수 체계 — 판 두께가 곰 w 그대로이고,
+    접시 외경은 관경별 KS 10K(h·d)이다. 그래서 플랜지 끝면이 ±w/2 접합면과 일치한다.
+    """
     made = 0
-    sx, sy, sz = _scaled(e, 0.06, 0.26, 0.26)
-    # 웹앱 buildFlange와 같은 비율 — 로질 지름 0.24 → KS 외경(100A 0.21 · 80A 0.185)
+    w = max(0.008, float(e.get('w') or 0.02))
     od = max(0.04, float(e.get('h') or e.get('d') or 0.24))
-    k = od / 0.24
+    R = od / 2
 
     def P(lx, ly, lz):
-        return local_to_world(e, (lx * sx, ly * k, lz * k))
+        return local_to_world(e, (lx, ly, lz))
 
-    if add_cylinder(comp, P(-0.022, 0, 0), P(0.022, 0, 0), 0.12 * k, tag + '_Disc'):
+    if add_cylinder(comp, P(-w / 2, 0, 0), P(w / 2, 0, 0), R, tag + '_Disc'):
         made += 1
-    for i in range(8):
-        a = math.pi * 2 * i / 8
-        dy, dz = math.cos(a) * 0.093, math.sin(a) * 0.093
-        if add_cylinder(comp, P(-0.03, dy, dz), P(0.03, dy, dz), 0.014 * k, '%s_Bolt%d' % (tag, i + 1)):
-            made += 1
+    # 볼트 구멍은 웹 화면의 표시용이다 — 퓨전 솔리드는 판 하나로 내보낸다
+    # (구멍 컷 피처는 생성 스크립트에서 지원하지 않아, 실행 오류가 나지 않게 하지 않는다).
     return made
 
 

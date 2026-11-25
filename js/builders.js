@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, teeBranch, teePorts, HANDLE_TYPES, flangeOd, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=67';
+import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=68';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -49,6 +49,98 @@ const cyl2 = (rt, rb, h, seg = 24) => G(`cyl2|${rt.toFixed(4)}|${rb.toFixed(4)}|
 const box = (w, h, d) => G(`box|${w.toFixed(3)}|${h.toFixed(3)}|${d.toFixed(3)}`, () => new THREE.BoxGeometry(w, h, d));
 const torus = (r, t) => G(`tor|${r.toFixed(4)}|${t.toFixed(4)}`, () => new THREE.TorusGeometry(r, t, 8, 32));
 const sphere = (r, seg = 18) => G(`sph|${r.toFixed(4)}|${seg}`, () => new THREE.SphereGeometry(r, seg, Math.max(8, Math.round(seg * 0.65))));
+
+// ── 플랜지 판 — 가운데 내경이 뚫린 링 + PCD 볼트 구멍 ────────────────────────
+// 예전에는 속이 꽉 찬 원기둥이라 볼트를 빼자 '하키 퍽'처럼 보였다(2026-11-25 `31587`).
+// 지금은 ① 가운데 내경 ② PCD 원주 볼트 구멍 ③ 두 구멍이 어둡게 보이도록 판 속에 숨긴
+// 어두운 속판으로 그린다. 형상은 치수별로 캐시해 판이 늘어도 무거워지지 않는다.
+const FLANGE_DARK = () => MAT('#1a2026', 0.9, 0.2);
+const FLANGE_PIPE_T = 0.020;   // 배관 끝 플랜지 기본 두께(20mm)
+
+// 볼트 구멍 규격 — KS 10K처럼 50A 이하는 4개, 65A 이상은 8개. PCD는 외경의 0.84.
+function flangeBolts(R) {
+  const nBolt = R * 2 <= 0.16 ? 4 : 8;
+  return { nBolt, pcdR: R * 0.84, boltR: Math.max(0.0045, R * 0.055) };
+}
+
+// 원 둘레 점 배열 — 꼭짓점 수를 직접 정해 저폴리곤으로 유지한다(curveSegments 미사용).
+function circlePts(cx, cy, r, n) {
+  const out = [];
+  for (let i = 0; i < n; i += 1) {
+    const a = (Math.PI * 2 * i) / n;
+    out.push(new THREE.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r));
+  }
+  return out;
+}
+
+function flangeGeo(R, boreR, T, b) {
+  const key = `fring|${R.toFixed(4)}|${boreR.toFixed(4)}|${T.toFixed(4)}|${b.nBolt}|${b.boltR.toFixed(4)}`;
+  return G(key, () => {
+    const shape = new THREE.Shape(circlePts(0, 0, R, 40));
+    shape.holes.push(new THREE.Path(circlePts(0, 0, boreR, 26)));
+    for (let i = 0; i < b.nBolt; i += 1) {
+      const a = (Math.PI * 2 * i) / b.nBolt;
+      const px = Math.cos(a) * b.pcdR;
+      const py = Math.sin(a) * b.pcdR;
+      // 작은 관경(15A~25A 노즐)에서는 구멍이 내경이나 테두리에 붙을 수 있다 — 그럴 땐 빼고 그린다.
+      if (b.pcdR - b.boltR < boreR + 0.002 || b.pcdR + b.boltR > R - 0.002) continue;
+      shape.holes.push(new THREE.Path(circlePts(px, py, b.boltR, 8)));
+    }
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: T, bevelEnabled: false, steps: 1 });
+    geo.translate(0, 0, -T / 2);   // 판 중심을 원점에 — 어느 축으로 돌려도 제자리
+    geo.computeVertexNormals();
+    return geo;
+  });
+}
+
+// 판 한 장 — pos 중심, dir 축(+Z를 dir로 돌린다), 외경 R, 내경 boreR, 두께 T.
+function flangeMesh(parent, pos, dir, R, boreR, T, material) {
+  const b = flangeBolts(R);
+  const mesh = new THREE.Mesh(flangeGeo(R, boreR, T, b), material || MAT('#9aa3ab', 0.4, 0.85));
+  mesh.position.copy(pos);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  // 구멍 속을 채우는 어두운 속판 — 판 몸 안에 숨어 있다가 내경·볼트 구멍으로만 보인다.
+  // (구멍으로 배경이 비쳐 밝은 점처럼 보이던 것을 막아, 가까이서도 '뚫린 구멍'으로 읽힌다)
+  const plug = new THREE.Mesh(
+    G(`fplug|${R.toFixed(4)}|${T.toFixed(4)}`, () => new THREE.CylinderGeometry(R * 0.985, R * 0.985, T * 0.55, 28)),
+    FLANGE_DARK(),
+  );
+  plug.position.copy(mesh.position);
+  plug.quaternion.copy(mesh.quaternion)
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
+  plug.receiveShadow = true;
+  parent.add(plug);
+  return mesh;
+}
+
+// 부속 로컬 X축 플랜지 판 — 판의 **바깥면이 접합면(±w/2)** 에 정확히 닿는다.
+// (예전에는 판은 0.045 두께인데 접합면은 w/2=0.03이라 7~15mm 어긋나 있었고,
+//  플랜지 위에 엘보를 올리면 엘보가 판 속으로 파묻히거나 떠 보였다 — 2026-11-25 `31589`)
+//  · opt.baseR  : 판 로컬 반지름 기준(flangeK가 KS 10K 외경으로 맞춰 준다)
+//  · opt.defW   : 이 부속의 기본 폭 = 로컬 좌표계의 폭(접합면은 ±defW/2)
+//  · opt.bodyEnd·neckR : 판 안쪽 면과 몸체 끝이 벌어지면 그 사이를 목으로 메운다
+function equipFlangeSide(g, spec, sx, opt) {
+  const o = opt || {};
+  const bore = spec.bore || SIZE_REF_BORE;
+  const plan = boreScale(bore).plan || 1;
+  const defW = o.defW || 0.2;
+  const xs = (Number(spec.w) || defW * plan) / defW;   // 로컬 X 배율(보통 plan)
+  const baseR = o.baseR || 0.12;
+  const R = baseR * flangeK(spec, baseR);
+  const Tl = (o.T || flangeTh(bore)) / xs;
+  const half = defW / 2;                               // 로컬 접합면
+  const inner = half - Tl;
+  const mat = o.mat || MAT(spec.color, 0.35, 0.9);
+  if (o.neckR && inner - (o.bodyEnd || 0) > 0.002) {
+    add(g, cyl(o.neckR, inner - (o.bodyEnd || 0), 20), o.neckMat || mat,
+      sx * ((o.bodyEnd || 0) + inner) / 2, 0, 0, 0, 0, Math.PI / 2);
+  }
+  flangeMesh(g, new THREE.Vector3(sx * (half + inner) / 2, 0, 0), new THREE.Vector3(1, 0, 0),
+    R, (boreOd(bore) / 2 * 1.03) / plan, Tl, mat);
+}
 
 // 두 점을 잇는 원통(단위 높이 원통을 회전·스케일) — 경사 분기관·타이로드·지주 등
 function addTube(parent, a, b, r, material, seg = 18) {
@@ -358,7 +450,6 @@ function buildValve(spec) {
   const g = new THREE.Group();
   const bodyMat = MAT(spec.color, 0.35, 0.9);
   const darkMat = MAT('#2c3238', 0.65, 0.5);
-  const fk = flangeK(spec, 0.13);   // KS 10K 외경(80A 185mm) — 단독 플랜지·배관 끝과 같은 크기
 
   // 몸체 (흐름 방향 X)
   add(g, cyl(0.085, 0.14, 20), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
@@ -370,9 +461,8 @@ function buildValve(spec) {
       socketBoss(g, [sx * 0.1, 0, 0], [sx, 0, 0], 0.085, bodyMat, darkMat);
       return;
     }
-    add(g, cyl(0.13 * fk, 0.045, 24), bodyMat, sx * 0.095, 0, 0, 0, 0, Math.PI / 2);
-    // (v64) 플랜지 면의 돌출 링 제거 — v63 맞물림 플랜지와 겹쳐 밖으로 튀어나와 보였다.
-    add(g, torus(0.105 * fk, 0.006), darkMat, sx * 0.117, 0, 0, 0, Math.PI / 2, 0);
+    // 얇은 링 판(내경·볼트 구멍) — 바깥면이 접합면(±w/2)에 정확히 닿는다.
+    equipFlangeSide(g, spec, sx, { baseR: 0.13, defW: 0.264, bodyEnd: 0.07, neckR: 0.085, mat: bodyMat });
   });
   // 보닛 · 스템
   add(g, cyl(0.07, 0.09, 20), bodyMat, 0, 0.11, 0);
@@ -495,8 +585,10 @@ function buildVPump(spec) {
     add(g, cyl(0.016, 0.05, 10), steel, sx * 0.2, 0.045, sz * 0.2);
   });
 
-  // 흉입(하부) 플랜지
-  add(g, cyl(0.155, 0.03, 26), steel, 0, 0.115, 0);
+  // 흉입(하부) 플랜지 — 얇은 링 판(내경·볼트 구멍) + 목
+  const riseV = (Number(spec.h) || 0.85) / 0.85;
+  const vT = 0.016 / riseV;                     // 판 두께(로컬) — 월드 16mm
+  flangeMesh(g, new THREE.Vector3(0, 0.115, 0), new THREE.Vector3(0, 1, 0), 0.155, 0.1, vT, steel);
   add(g, cyl(0.1, 0.05, 20), steel, 0, 0.155, 0);
 
   // 볼류트 케이싱 + 볼트 이어
@@ -508,7 +600,7 @@ function buildVPump(spec) {
   }
 
   // 토출(상부) 플랜지
-  add(g, cyl(0.155, 0.03, 26), steel, 0, 0.415, 0);
+  flangeMesh(g, new THREE.Vector3(0, 0.415, 0), new THREE.Vector3(0, 1, 0), 0.155, 0.1, vT, steel);
 
   // 모터 브래킷 · 모터(냉각핀) · 상단 캡 · 리프팅 아이
   add(g, cyl(0.11, 0.07, 20), motorMat, 0, 0.465, 0);
@@ -530,24 +622,19 @@ function buildButterfly(spec) {
   const g = new THREE.Group();
   const bodyMat = MAT(spec.color, 0.35, 0.72);
   const gearMat = MAT(shade(spec.color, 0.78), 0.5, 0.65);
-  const fk = flangeK(spec, 0.165);
   const steel = MAT('#9aa3ab', 0.35, 0.85);
   const dark = MAT('#2c3238', 0.65, 0.5);
 
   // 웨이퍼 바디 (흐름 X)
   add(g, cyl(0.115, 0.1, 28), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  // 양단 접합부 — 플랜지면 볼트 원판, 단조형이면 소켓 보스만
+  // 양단 접합부 — 플랜지면 얇은 링 판, 단조형이면 소켓 보스만
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) {
       socketBoss(g, [sx * 0.058, 0, 0], [sx, 0, 0], 0.115, bodyMat, steel);
       return;
     }
-    add(g, cyl(0.165 * fk, 0.028, 30), bodyMat, sx * 0.062, 0, 0, 0, 0, Math.PI / 2);
-    for (let i = 0; i < 8; i += 1) {
-      const a = (Math.PI * 2 * i) / 8;
-      add(g, cyl(0.011, 0.05, 8), steel, sx * 0.062, Math.cos(a) * 0.148 * fk, Math.sin(a) * 0.148 * fk, 0, 0, Math.PI / 2);
-    }
+    equipFlangeSide(g, spec, sx, { baseR: 0.165, defW: 0.174, bodyEnd: 0.05, neckR: 0.115, mat: bodyMat });
   });
   // 상·하 루그
   add(g, box(0.09, 0.09, 0.06), bodyMat, 0, 0.13, 0);
@@ -571,20 +658,17 @@ function buildYValve(spec) {
   const bodyMat = MAT(spec.color, 0.42, 0.6);
   const steel = MAT('#9aa3ab', 0.35, 0.85);
   const dark = MAT('#2c3238', 0.65, 0.5);
-  const fk = flangeK(spec, 0.135);
 
   // 본체 (흐름 X)
   add(g, cyl(0.085, 0.22, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  // 양단 접합부 — 플랜지면 원판+링, 단조형이면 소켓 보스
+  // 양단 접합부 — 플랜지면 얇은 링 판, 단조형이면 소켓 보스
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) {
       socketBoss(g, [sx * 0.11, 0, 0], [sx, 0, 0], 0.085, bodyMat, dark);
       return;
     }
-    add(g, cyl(0.135 * fk, 0.03, 26), bodyMat, sx * 0.12, 0, 0, 0, 0, Math.PI / 2);
-    // (v64) 플랜지 앞 은색 고리(torus 0.14) 제거 — 맞물림 플랜지 밖으로 둥근 링이 튀어나왔다.
-    add(g, torus(0.1 * fk, 0.006), steel, sx * 0.136, 0, 0, 0, Math.PI / 2, 0);
+    equipFlangeSide(g, spec, sx, { baseR: 0.135, defW: 0.296, bodyEnd: 0.11, neckR: 0.085, mat: bodyMat });
   });
   // Y자 경사 분기 (아래·뒤 45°) + 끝 캡
   addTube(g, [0, 0, 0], [-0.02, -0.19, -0.15], 0.062, bodyMat, 20);
@@ -606,14 +690,13 @@ function buildBall(spec) {
   const bodyMat = MAT(spec.color, 0.35, 0.8);
   const steel = MAT('#9aa3ab', 0.35, 0.85);
   const dark = MAT('#2c3238', 0.6, 0.5);
-  const fk = flangeK(spec, 0.085);
 
   add(g, sphere(0.075, 20), bodyMat, 0, 0, 0);
   add(g, cyl(0.052, 0.2, 20), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) socketBoss(g, [sx * 0.092, 0, 0], [sx, 0, 0], 0.055, bodyMat, steel);
-    else add(g, cyl(0.085 * fk, 0.024, 22), steel, sx * 0.105, 0, 0, 0, 0, Math.PI / 2);
+    else equipFlangeSide(g, spec, sx, { baseR: 0.085, defW: 0.234, bodyEnd: 0.1, mat: steel });
   });
   add(g, cyl(0.03, 0.04, 14), bodyMat, 0, 0.075, 0);
   add(g, cyl(0.024, 0.06, 12), steel, 0, 0.11, 0);
@@ -635,13 +718,12 @@ function buildCheck(spec) {
   const bodyMat = MAT(spec.color, 0.4, 0.78);
   const steel = MAT('#9aa3ab', 0.35, 0.85);
   const dark = MAT('#2c3238', 0.6, 0.5);
-  const fk = flangeK(spec, 0.115);
 
   add(g, cyl(0.1, 0.06, 26), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) socketBoss(g, [sx * 0.042, 0, 0], [sx, 0, 0], 0.09, bodyMat, steel);
-    else add(g, cyl(0.115 * fk, 0.018, 26), steel, sx * 0.045, 0, 0, 0, 0, Math.PI / 2);
+    else equipFlangeSide(g, spec, sx, { baseR: 0.115, defW: 0.108, bodyEnd: 0.03, neckR: 0.1, mat: steel });
   });
   add(g, box(0.1, 0.045, 0.06), bodyMat, 0, 0.105, 0);
   add(g, cyl(0.011, 0.05, 8), steel, 0, 0.14, 0);
@@ -662,20 +744,19 @@ function buildSafetyValve(spec) {
   const steel = MAT('#9aa3ab', 0.35, 0.85);
   const dark = MAT('#2c3238', 0.65, 0.5);
 
-  // 입구 (아래) — 플랜지 + 목
-  add(g, cyl(0.085, 0.022, 24), steel, 0, -0.16, 0);
+  // 입구 (아래) — 얇은 링 플랜지 + 목
+  const rise = (Number(spec.h) || 0.52) / 0.52;
+  const plan = boreScale(spec.bore || SIZE_REF_BORE).plan || 1;
+  const Y = new THREE.Vector3(0, 1, 0);
+  flangeMesh(g, new THREE.Vector3(0, -0.16, 0), Y, 0.085, 0.045, 0.018 / rise, steel);
   add(g, cyl(0.045, 0.09, 18), bodyMat, 0, -0.11, 0);
   // 본체 (세로) + 중간 플랜지 2개
   add(g, cyl(0.068, 0.15, 22), bodyMat, 0, -0.01, 0);
-  add(g, cyl(0.088, 0.02, 24), steel, 0, 0.065, 0);
-  add(g, cyl(0.082, 0.018, 24), steel, 0, -0.075, 0);
-  for (let i = 0; i < 8; i += 1) {
-    const a = (Math.PI * 2 * i) / 8;
-    add(g, cyl(0.008, 0.05, 8), dark, Math.cos(a) * 0.078, 0.065, Math.sin(a) * 0.078);
-  }
+  flangeMesh(g, new THREE.Vector3(0, 0.065, 0), Y, 0.088, 0.068, 0.018 / rise, steel);
+  flangeMesh(g, new THREE.Vector3(0, -0.075, 0), Y, 0.082, 0.068, 0.014 / rise, steel);
   // 측면 토출구 (+X) + 플랜지
   add(g, cyl(0.04, 0.16, 18), bodyMat, 0.1, -0.01, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.065, 0.02, 20), steel, 0.185, -0.01, 0, 0, 0, Math.PI / 2);
+  flangeMesh(g, new THREE.Vector3(0.185, -0.01, 0), new THREE.Vector3(1, 0, 0), 0.065, 0.04, 0.014 / plan, steel);
   // 보닛 · 스프링 하우징 · 캡 · 조정 나사
   add(g, cyl2(0.048, 0.07, 0.05, 20), bonnetMat, 0, 0.1, 0);
   add(g, cyl(0.056, 0.15, 22), bonnetMat, 0, 0.2, 0);
@@ -695,7 +776,6 @@ function buildBellows(spec) {
   const bodyMat = MAT(spec.color, 0.32, 0.88);
   const steel = MAT('#8f979f', 0.4, 0.85);
   const dark = MAT('#3a4249', 0.6, 0.5);
-  const fk = flangeK(spec, 0.15);
   const len = 0.24;
 
   // 주름 원통 (토러스 5개) + 내부 슬리부
@@ -713,7 +793,7 @@ function buildBellows(spec) {
       socketBoss(g, [sx * len / 2, 0, 0], [sx, 0, 0], 0.098, bodyMat, steel);
       return;
     }
-    add(g, cyl(0.15 * fk, 0.032, 28), steel, sx * (len / 2 + 0.016), 0, 0, 0, 0, Math.PI / 2);
+    equipFlangeSide(g, spec, sx, { baseR: 0.15, defW: 0.304, bodyEnd: 0.12, neckR: 0.098, mat: steel });
   });
 
   // 타이로드 4개 + 너트
@@ -749,13 +829,11 @@ function buildElbow(spec) {
   addTube(g, [R, 0, 0], [R + Ls, 0, 0], r, bodyMat, 22);
   addTube(g, [0, R, 0], [0, R + Ls, 0], r, bodyMat, 22);
 
-  // 접합면 — 플랜지형은 용접 비드, 단조형은 소켓 보스
+  // 접합면 — 용접 부위에는 아무 링·비드를 두르지 않는다(사용자: "용접표시 다 없어도 돼").
+  //  · 단조형만 소켓 보스를 그린다 — 그것이 소켓웰드·나사 이음의 모습이다.
   if (isForged(spec)) {
     socketBoss(g, [R + Ls, 0, 0], [1, 0, 0], r, bodyMat, beadMat);
     socketBoss(g, [0, R + Ls, 0], [0, 1, 0], r, bodyMat, beadMat);
-  } else {
-    add(g, torus(r * 1.02, r * 0.1), beadMat, R + Ls, 0, 0, 0, Math.PI / 2, 0);
-    add(g, torus(r * 1.02, r * 0.1), beadMat, 0, R + Ls, 0, Math.PI / 2, 0, 0);
   }
 
   return g;
@@ -773,7 +851,8 @@ function buildTee(spec) {
   const r2 = boreOd(b2) / 2;
   const L = Math.max(0.22, 2.6 * r1 * 2); // 주배관 길이
   const branchH = Math.max(0.1, L * 0.5);
-  const s = Math.max(0.05, spec.w) / (L + 0.03);
+  // s는 면간폭 w를 곰관 길이 L로 나눈 값 — 직진 양 끝면이 정확히 ±w/2에 앉는다.
+  const s = Math.max(0.05, spec.w) / L;
 
   // 분기 방향 — 본관(로컬 X) 축 둘레로 위·아래·앞·뒤 (기본 위)
   const B = teeBranch(spec);
@@ -788,14 +867,10 @@ function buildTee(spec) {
     socketBoss(g, [L / 2, 0, 0], [1, 0, 0], r1, bodyMat, beadMat);
     socketBoss(g, end, B, r2, bodyMat, beadMat);
   } else {
-    // 분기 플랜지 — 분기 축에 수직인 얇은 원판
-    addTube(g, [end[0] - B[0] * 0.011, end[1] - B[1] * 0.011, end[2] - B[2] * 0.011],
-      [end[0] + B[0] * 0.011, end[1] + B[1] * 0.011, end[2] + B[2] * 0.011], r2 * 1.4, bodyMat, 24);
-    add(g, torus(r1 * 1.03, 0.006), beadMat, L / 2, 0, 0, 0, Math.PI / 2, 0);
-    add(g, torus(r1 * 1.03, 0.006), beadMat, -L / 2, 0, 0, 0, Math.PI / 2, 0);
-    // 분기 끝 보강 링
-    addTube(g, [end[0] - B[0] * 0.016, end[1] - B[1] * 0.016, end[2] - B[2] * 0.016],
-      [end[0] - B[0] * 0.004, end[1] - B[1] * 0.004, end[2] - B[2] * 0.004], r2 * 1.04, beadMat, 24);
+    // 분기 플랜지 — 분기 축에 수직인 얇은 원판. 바깥면이 분기 접합면(포트)과 일치한다.
+    addTube(g, [end[0] - B[0] * 0.022, end[1] - B[1] * 0.022, end[2] - B[2] * 0.022],
+      [end[0], end[1], end[2]], r2 * 1.4, bodyMat, 24);
+    // (용접 비드·보강 링은 v68에서 모두 제거 — 사용자: "용접표시 다 없어도 돼")
   }
 
   g.scale.set(s, s, s);
@@ -814,24 +889,19 @@ function buildReducer(spec) {
   const r1 = boreOd(b1) / 2;
   const r2 = boreOd(b2) / 2;
   const L = Math.max(0.1, 0.12 + 0.6 * Math.abs(r1 - r2) * 2);
-  const FT = 0.024;
-  const s = Math.max(0.05, spec.w) / (L + FT * 2);
+  // 면간거리 w가 곰 혼의 길이 그대로 — 양 끝면이 ±w/2에 0mm로 앉아야
+  // 플랜지·노줄 위에 바로 이어 놓았을 때 뜨지 않는다(2026-11-25 `31595`).
+  const s = Math.max(0.05, spec.w) / L;
 
+  // 매끈한 테이퍼 곰 혼 — 양떼의 링·용접 칼라는 그리지 않는다(2026-11-25 "레듀샤 양쪽에 링같은건 뭐야").
   add(g, cyl2(r1, r2, L, 28), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
   if (isForged(spec)) {
-    // 단조형 — 원뿔 양단에 소켓 보스만 (플랜지 원판 없음)
+    // 단조형 — 소켓웰드·나사식은 양 끝에 육각 소켓 부스가 있어야 한다(플랜지 판 없음).
     socketBoss(g, [-L / 2, 0, 0], [-1, 0, 0], r1, bodyMat, beadMat, { collar: 1.24, hex: 1.34, neck: 1.06 });
     socketBoss(g, [L / 2, 0, 0], [1, 0, 0], r2, bodyMat, beadMat, { collar: 1.3, hex: 1.42, neck: 1.08 });
-  } else {
-    // 맞대기 용접형 — 레듀샤 양단에는 플랜지 원판이 없다. 배관과 거의 같은 굵기의
-    // 얇은 용접 칼라만 둘러 '배관을 그냥 이어 붙인' 모습으로 그린다.
-    // (2026-11-25 `31580` 캡처 — 레듀샤가 플랜지 타입처럼 보였!)  
-    add(g, cyl(r1 * 1.1, 0.009, 28), steel, -(L / 2 + 0.0035), 0, 0, 0, 0, Math.PI / 2);
-    add(g, cyl(r2 * 1.14, 0.009, 26), steel, L / 2 + 0.0035, 0, 0, 0, 0, Math.PI / 2);
   }
-  add(g, torus(r1 * 1.05, 0.005), beadMat, -(L / 2 - 0.012), 0, 0, 0, Math.PI / 2, 0);
-  add(g, torus(r2 * 1.06, 0.005), beadMat, L / 2 - 0.012, 0, 0, 0, Math.PI / 2, 0);
 
+  // 곰 혼 끝면이 그대로 접합면이다 — 따로 칼라·링을 더하지 않는다.
   g.scale.set(s, s, s);
   return g;
 }
@@ -886,15 +956,8 @@ function buildElbow45(spec) {
   if (isForged(spec)) {
     socketBoss(g, [T + Ls, 0, 0], [1, 0, 0], r, bodyMat, beadMat);
     socketBoss(g, [(T + Ls) * u[0], (T + Ls) * u[1], 0], [u[0], u[1], 0], r, bodyMat, beadMat);
-    return g;
   }
-  add(g, torus(r * 1.02, r * 0.1), beadMat, T + Ls, 0, 0, 0, Math.PI / 2, 0);
-  const bead = new THREE.Mesh(torus(r * 1.02, r * 0.1), beadMat);
-  bead.position.set((T + Ls) * u[0], (T + Ls) * u[1], 0);
-  bead.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(u[0], u[1], 0));
-  bead.castShadow = true;
-  g.add(bead);
-
+  // 용접 부위에는 링·비드를 두르지 않는다 — 두 다리 끝면이 그대로 접합면이다.
   return g;
 }
 
@@ -911,8 +974,7 @@ function buildCap(spec) {
   if (isForged(spec)) {
     socketBoss(g, [-0.058, 0, 0], [-1, 0, 0], r, bodyMat, beadMat, { collar: 1.3, hex: 1.42, neck: 1.06 });
   } else {
-    add(g, torus(r * 1.06, 0.007), beadMat, -0.055, 0, 0, 0, Math.PI / 2, 0);
-    add(g, cyl(r * 0.7, 0.03, 6), beadMat, -0.075, 0, 0, 0, 0, Math.PI / 2); // 렌치 자리
+    add(g, cyl(r * 0.7, 0.03, 6), beadMat, -0.075, 0, 0, 0, 0, Math.PI / 2);   // 렌치 자리
   }
 
   g.scale.set(spec.w / 0.148, spec.h / 0.11, spec.d / 0.11);
@@ -947,7 +1009,6 @@ function buildFlow(spec) {
   const steel = MAT('#9aa3ab', 0.35, 0.85);
   const dark = MAT('#2c3238', 0.6, 0.5);
   const face = MAT('#e9f2f7', 0.35, 0.15);
-  const fk = flangeK(spec, 0.1);
 
   // 계기 바디 (흐름 X) + 양단 접합부
   add(g, cyl(0.06, 0.18, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
@@ -957,11 +1018,7 @@ function buildFlow(spec) {
       socketBoss(g, [sx * 0.1, 0, 0], [sx, 0, 0], 0.06, bodyMat, steel, { collar: 1.3, hex: 1.42, neck: 1.05 });
       return;
     }
-    add(g, cyl(0.1 * fk, 0.032, 28), steel, sx * 0.104, 0, 0, 0, 0, Math.PI / 2);
-    for (let i = 0; i < 6; i += 1) {
-      const a = (Math.PI * 2 * i) / 6;
-      add(g, cyl(0.011, 0.06, 8), dark, sx * 0.104, Math.cos(a) * 0.082 * fk, Math.sin(a) * 0.082 * fk, 0, 0, Math.PI / 2);
-    }
+    equipFlangeSide(g, spec, sx, { baseR: 0.1, defW: 0.24, bodyEnd: 0.09, neckR: 0.06, mat: steel });
   });
   // 상부 스템 · 트랜스미터 헤드 · 표시창
   add(g, cyl(0.035, 0.1, 18), steel, 0, 0.11, 0);
@@ -976,19 +1033,17 @@ function buildFlow(spec) {
   return g;
 }
 
-// ── 플랜지 (볼트링 원판) ─────────────────────────────
+// ── 플랜지 (볼트 구멍 뚫린 링 판) ─────────────────────────────
+// 두께는 store의 KS 10K 표(flangeTh) 그대로 — 접합면(±w/2)이 곧 판의 앞뒤 면이다.
+// 그래서 이 플랜지 위에 엘보·파이프를 올리면 0mm로 딸 붙는다(2026-11-25 `31589`).
 function buildFlange(spec) {
   const g = new THREE.Group();
-  const bodyMat = MAT(spec.color, 0.45, 0.8);
-  // 원판 + 중심 허브 — 튀어나오는 볼트는 그리지 않는다(2026-11-25 사용자: "볼트는 없어도 되").
-  add(g, cyl(0.12, 0.045, 32), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2);
-  add(g, cyl(0.05, 0.05, 22), MAT('#2a3138', 0.7, 0.4), 0, 0, 0, 0, 0, Math.PI / 2);
-
-  // 접시 외경 — KS 10K 표의 그 관경 플랜지 외경(spec.h = m). 로컬 접시 지름 0.24로 나눈다.
-  // (예전에는 spec.h/0.26 고정 비율이라, 관경을 따라 커지긴 해도 배관 끝 플랜지와
-  //  크기가 어긋났고 80A·100A가 거의 같아 보였다 — 2026-11-25 `31563` 캡처)
-  const od = Math.max(0.04, Number(spec.h) || Number(spec.d) || 0.24);
-  g.scale.set(spec.w / 0.06, od / 0.24, od / 0.24);
+  const bore = spec.bore || SIZE_REF_BORE;
+  const R = Math.max(0.02, (Number(spec.h) || flangeOd(bore)) / 2);
+  const T = Math.max(0.008, Number(spec.w) || flangeTh(bore));
+  const boreR = Math.min(R * 0.78, boreOd(bore) / 2 * 1.03);
+  // 판은 로컬 X축(유로 축)으로 세운다 — 부속 자세(equipBasis)가 이 축을 돌린다.
+  flangeMesh(g, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), R, boreR, T, MAT(spec.color, 0.45, 0.8));
   return g;
 }
 
@@ -1152,10 +1207,12 @@ function buildMateFlanges(state) {
       // 이 면에 피팅이 닿아 있는가
       if (!fits.some((ff) => near(ff.p, f.p, 0.055))) return;
       const inward = new THREE.Vector3(f.ax.x, f.ax.y, f.ax.z);
-      const c = new THREE.Vector3(f.p.x, f.p.y, f.p.z).addScaledVector(inward, 0.027);
-      addFlange(g, c, inward, rr, flangeMat, rad);
-      const gk = new THREE.Vector3(f.p.x, f.p.y, f.p.z).addScaledVector(inward, 0.0055);
-      addFlange(g, gk, inward, rr, gasketMat, rad * 0.999, 0.005);
+      // 링 판 — 두께는 KS 10K 표, 판은 개스킷 3mm를 두고 접합면 바깥(부속 쪽)에 앉는다.
+      const T = flangeTh(e.bore);
+      const c = new THREE.Vector3(f.p.x, f.p.y, f.p.z).addScaledVector(inward, 0.003 + T / 2);
+      addFlange(g, c, inward, rr, flangeMat, rad, T);
+      const gk = new THREE.Vector3(f.p.x, f.p.y, f.p.z).addScaledVector(inward, 0.0015);
+      addFlange(g, gk, inward, rr, gasketMat, rad * 0.999, 0.003);
     });
   });
   return g;
@@ -1208,18 +1265,19 @@ export function buildPipe(spec, equipments, pipes) {
     }
     return null;
   };
-  // 맞물림 플랜지 — 부속·장비의 플랜지 면에 배관 쪽 판을 한 장 맞댄다(두께 40mm).
+  // 맞물림 플랜지 — 부속·장비의 플랜지 면에 배관 쪽 판을 한 장 맞대다(두께는 KS 10K 표).
   //  · 두 판 사이에 3mm 개스킷 틈을 두어 '두 장이 체결된' 모습이 한눈에 보이게 하고,
   //  · 판 외경은 맞대는 쪽 플랜지와 **같은 KS 10K 외경**으로 — 계단처럼 보이지 않게 한다.
   //  · 볼트·스터드는 그리지 않는다 — 튀어나온 것으로 보인다는 지적(2026-11-25 "볼트는 없어도 되").
   const mateFlange = (p, inward, plateRad) => {
     const rad = plateRad || flangeOd(spec.bore) / 2;
-    // 배관 끝은 부속 면에서 4mm 물려 있다 — 판 앞면이 그 면에서 3mm 떨어지게 놓는다.
-    const c = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.027);
-    addFlange(g, c, inward, r, flangeMat, rad);
+    const T = flangeTh(spec.bore) || FLANGE_PIPE_T;
+    // 접합면(p) 바로 바깥에 개스킷 3mm → 판이 놓인다 — 판 앞면이 부속 플랜지 면에 0mm로 닿는다.
+    const c = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.003 + T / 2);
+    addFlange(g, c, inward, r, flangeMat, rad, T);
     // 개스킷 — 두 판 사이의 얇은 어두운 링
-    const gk = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.0055);
-    addFlange(g, gk, inward, r, gasketMat, rad * 0.999, 0.005);
+    const gk = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.0015);
+    addFlange(g, gk, inward, r, gasketMat, rad * 0.999, 0.003);
   };
   // 맞대는 쪽 플랜지 외경 — 장비 노즐 끝이면 그 노즐 플랜지(buildNozzles: 노즐 반지름×1.55)와
   // 같은 크기로, 밸브·유량계 같은 부속이면 배관 외경의 1.8배로 맞춘다.
@@ -1250,7 +1308,8 @@ export function buildPipe(spec, equipments, pipes) {
     //  · 플랜지식 부속·장비 노즐이면 맞음림 플랜지 한 장, 아니면 배관 끝 플랜지
     const endBoss = (p, out, radius) => {
       if (forged) socketBoss(g, [p.x, p.y, p.z], [out.x, out.y, out.z], radius, mat, flangeMat, { collar: 1.42, hex: 1.56 });
-      else addFlange(g, p, out, radius, flangeMat, flangeOd(spec.bore) / 2);
+      // 배관 끝 플랜지 — 두께 KS 10K 표. 접합면(p)이 곧 판 앞뒤의 중심값이다.
+      else addFlange(g, p, out, radius, flangeMat, flangeOd(spec.bore) / 2, flangeTh(spec.bore) || FLANGE_PIPE_T);
     };
     // 플랜지식 밸브 끝에서 이어 그린 배관은 그 밸브 플랜지에 맞물리는 배관 플랜지를 한 장 세운다.
     //  · 단, 그 접합면에 사용자가 직접 놓은 `플랜지` 가 이미 있으면 자동 맞물림 판을 더 그리지 않는다 —
@@ -1269,14 +1328,8 @@ export function buildPipe(spec, equipments, pipes) {
     const others = Array.isArray(pipes) ? pipes : [];
     const pipeEndAt = (p) => others.some((op) => op && op.id !== spec.id
       && (op.points || []).some((q) => Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z) < 0.05));
-    // 용접 비드 — 관 반지름보다 살짝 굵은 얇은 링 (플랜지가 아니라 이음새만 보이게)
-    const weldBead = (p, out) => {
-      const t = new THREE.Mesh(G(`wbead|${r.toFixed(4)}`, () => new THREE.TorusGeometry(r * 1.04, r * 0.17, 8, 22)), beadMat);
-      t.position.copy(p);
-      t.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), out.clone().normalize());
-      t.castShadow = true;
-      g.add(t);
-    };
+    // 용접 비드 — 매끈한 이음. (2026-11-25 사용자: "용접표시 다 없어도 돼" — 이제 그리지 않는다)
+    const weldBead = () => {};
     const endJoint = (p, out, inward) => {
       const mate = mateJoint(p);
       if (mate) { if (!flangeAt(p)) mateFlange(p, inward, mateRadius(mate, p)); return; }
@@ -1302,14 +1355,11 @@ export function buildPipe(spec, equipments, pipes) {
 }
 
 function addFlange(g, pos, dir, r, material, outer, thick) {
-  // outer를 주면 그 반지름으로(맞대는 플랜지와 같은 외경), 없으면 배관 외경의 1.8배.
-  const R = outer || r * 1.8;
-  const T = thick || 0.04;
-  const f = new THREE.Mesh(G(`fcyl|${R.toFixed(4)}|${T.toFixed(3)}`, () => new THREE.CylinderGeometry(R, R, T, 22)), material);
-  f.position.copy(pos);
-  f.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-  f.castShadow = true;
-  g.add(f);
+  // outer를 주면 그 반지름으로(맞대는 플랜지와 같은 외경), 없으면 배관 외경의 1.9배.
+  // 판 가운데에 배관이 지나가는 내경을 뚫어 두고, PCD 원주에 볼트 구멍을 낸다.
+  const R = outer || r * 1.9;
+  const T = thick || FLANGE_PIPE_T;
+  flangeMesh(g, pos, dir, R, r * 1.03, T, material);
 }
 
 // ── 장비 노즐 (목 + 플랜지) ──────────────────────────────
@@ -1327,14 +1377,16 @@ function buildNozzles(spec) {
     const len = dir.length();
     if (len < 1e-4) return;
     dir.normalize();
-    const fl = Math.min(0.035, len * 0.4);          // 플랜지 원판 두께
+    // 노즐 끝 플랜지 — 얇은 링 판(내경·볼트 구멍). 배관 끝 플랜지와 같은 규칙으로 앉힌다.
+    const fl = Math.min(0.020, len * 0.35);            // 플랜지 판 두께
     const at = (t) => [
       n.base.x + dir.x * t, n.base.y + dir.y * t, n.base.z + dir.z * t,
     ];
-    // 벽 접합 보강 칼라 → 노즐 목 → 플랜지 원판 (끝면 = 스냅 좌표)
+    // 벽 접합 보강 칼라 → 노즐 목 → 플랜지 판 (판 바깥면 = 끝면 = 스냅 좌표)
     addTube(g, at(0), at(0.012), n.r * 1.26, ring, 20);
     addTube(g, at(0), at(len - fl), n.r, steel, 22);
-    addTube(g, at(len - fl), at(len), n.r * 1.55, ring, 26);
+    const c = new THREE.Vector3(...at(len - fl / 2));
+    flangeMesh(g, c, dir, n.r * 1.55, n.r * 1.03, fl, ring);
   });
   return g;
 }
