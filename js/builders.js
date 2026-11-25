@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=69';
+import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=70';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -894,9 +894,11 @@ function buildTee(spec) {
   const b2 = spec.bore2 || b1;
   const r1 = boreOd(b1) / 2;
   const r2 = boreOd(b2) / 2;
-  const L = Math.max(0.22, 2.6 * r1 * 2); // 주배관 길이
-  const branchH = Math.max(0.1, L * 0.5);
-  // s는 면간폭 w를 곰관 길이 L로 나눈 값 — 직진 양 끝면이 정확히 ±w/2에 앉는다.
+  // KS B 1522 / ASME B16.9 — 중심~끝 C에서 본관 전체 길이 2C, 분기 길이 C.
+  const dims = teeDims(b1);
+  const L = dims.L;             // 주배관 길이 = 2C
+  const branchH = dims.H;       // 분기 길이 = C
+  // s는 면간폭 w를 본관 길이 L로 나눈 값 — 직진 양 끝면이 정확히 ±w/2에 앉는다.
   const s = Math.max(0.05, spec.w) / L;
 
   // 분기 방향 — 본관(로컬 X) 축 둘레로 위·아래·앞·뒤 (기본 위)
@@ -933,9 +935,10 @@ function buildReducer(spec) {
   const b2 = spec.bore2 || '50A';
   const r1 = boreOd(b1) / 2;
   const r2 = boreOd(b2) / 2;
-  const L = Math.max(0.1, 0.12 + 0.6 * Math.abs(r1 - r2) * 2);
+  // KS B 1522 / ASME B16.9 — 큰 관경 기준 전체 길이 H가 곧 곰 혼 길이.
+  const L = reducerDims(b1, b2).H;
   // 면간거리 w가 곰 혼의 길이 그대로 — 양 끝면이 ±w/2에 0mm로 앉아야
-  // 플랜지·노줄 위에 바로 이어 놓았을 때 뜨지 않는다(2026-11-25 `31595`).
+  // 플랜지·노즐 위에 바로 이어 놓았을 때 뜨지 않는다(2026-11-25 `31595`).
   const s = Math.max(0.05, spec.w) / L;
 
   // 매끈한 테이퍼 곰 혼 — 양떼의 링·용접 칼라는 그리지 않는다(2026-11-25 "레듀샤 양쪽에 링같은건 뭐야").
@@ -1188,6 +1191,14 @@ function flowAxis(e) {
 // 벨브자체에 플렌지가 있으니까 자동으로 붙이는건 빼자 너무 지저분이 났다"
 //  → 밸브↔엘보·티·레듀샤 직결판(buildMateFlanges)과 배관 끝 맞물림 판을 없앴다.
 //    플랜지는 사용자가 직접 놓은 `플랜지` 부속만 그린다(선택·삭제 가능).
+//
+// ── (v70) 배관 끝 자동 플랜지까지 완전 제거 — 연결 방식 3단계 ────────────────
+// 사용자 제안(2026-11-26): "연결 선택에 플렌지, 단조 이렇게 있는데 선택안함을 기본으로 두면 어때?"
+//  · 'none'   (선택안함 · 기본값) — 배관 양 끝에 아무것도 그리지 않는 매끈한 배관(맞대기 용접형).
+//  · 'flange' (플랜지)           — 사용자가 직접 고른 경우에만 배관 끝에 플랜지 원판.
+//  · 'forged' (단조)             — 사용자가 직접 고른 경우에만 소켓 보스(소켓웰드·나사식).
+// 예전 `32072` 캡처처럼 펌프 노즐·엘보 양쪽·열린 배관 끝마다 선택·삭제도 안 되는 판이
+// 자동으로 붙던 것을 없앤다.
 
 export function buildPipe(spec, equipments, pipes) {
   const g = new THREE.Group();
@@ -1204,10 +1215,18 @@ export function buildPipe(spec, equipments, pipes) {
   const forged = isForged(spec);
 
   const joints = equipments || [];
+  // 연결 방식 — 'none'(기본) / 'flange'(직접 고름) / 'forged'(직접 고름).
+  const connMode = spec.conn === 'forged' ? 'forged' : (spec.conn === 'none' ? 'none' : 'flange');
   // 배관 끝이 부속(엘보·밸브·플랜지 등)이나 장비 노즐 끝과 만나는 자리면 플랜지를 그리지 않는다 —
   // 용접 이음으로 보이게(노즐 플랜지 바로 앞에 판이 하나 더 생기는 것을 막는다).
-  const jointAt = (p) => joints.some((e) => Math.hypot((e.x || 0) - p.x, (e.y || 0) - p.y, (e.z || 0) - p.z) < 0.28
-    || equipNozzles(e).some((n) => Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z) < 0.09));
+  // 부속 **중심**에서 뭉뚱그려 재면 200A 엘보(면까지 0.305m)처럼 큰 부속을 놓치므로
+  // 접합면 좌표(equipConnectFaces)·노즐 끝 좌표로 직접 확인한다 (2026-11-26 `32072`).
+  const jointAt = (p) => joints.some((e) => {
+    const near = (q) => Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z) < 0.09;
+    if (equipNozzles(e).some((n) => near(n.tip))) return true;
+    if (equipConnectFaces(e).some((f) => near(f.tip))) return true;
+    return Math.hypot((e.x || 0) - p.x, (e.y || 0) - p.y, (e.z || 0) - p.z) < 0.28;
+  });
 
   // 이 배관 끝이 플랜지식 부속(밸브·스트레이너·유량계)의 접합면에 닿았는가.
   //  · v69부터 이 자리에 배관 쪽 판을 '자동으로' 더 그리지 않는다 — 부속 자체에 플랜지가
@@ -1248,12 +1267,12 @@ export function buildPipe(spec, equipments, pipes) {
     g.add(pipe);
 
     // 배관 끝 접합 — 순서대로 판단한다:
-    //  · 다른 배관 끝과 맞닿았거나 레듀샤 같은 맞대기 용접 부속이면 **용접 비드만**
-    //    (같은 관경·같은 방향으로 이어진 구간에 두툼한 플랜지 원판이 붙어
-    //     '중간에 플랜지'처럼 보이던 문제 — 2026-11-25 `31578` 캡처)
-    //  · 플랜지식 부속·장비 노즐이면 아무 판도 그리지 않고(부속 자체 판), 아니면 배관 끝 플랜지
+    //  · '선택안함'(기본)이면 **아무것도 그리지 않는다** — 매끈한 맞대기 용접형 배관.
+    //  · 다른 배관 끝과 맞닿았으면 용접 비드만(이음선). 플랜지식 부속·장비 노즐이면
+    //    아무 판도 그리지 않고(부속 자체 판), '플랜지'를 직접 골랐을 때만 배관 끝 플랜지.
     const endBoss = (p, out, radius) => {
-      if (forged) socketBoss(g, [p.x, p.y, p.z], [out.x, out.y, out.z], radius, mat, flangeMat, { collar: 1.42, hex: 1.56 });
+      if (connMode === 'none') return;
+      if (connMode === 'forged') socketBoss(g, [p.x, p.y, p.z], [out.x, out.y, out.z], radius, mat, flangeMat, { collar: 1.42, hex: 1.56 });
       // 배관 끝 플랜지 — 두께 KS 10K 표. 접합면(p)이 곧 판 앞뒤의 중심값이다.
       else addFlange(g, p, out, radius, flangeMat, flangeOd(spec.bore) / 2, flangeTh(spec.bore) || FLANGE_PIPE_T);
     };
@@ -1265,6 +1284,7 @@ export function buildPipe(spec, equipments, pipes) {
     // 용접 비드 — 매끈한 이음. (2026-11-25 사용자: "용접표시 다 없어도 돼" — 이제 그리지 않는다)
     const weldBead = () => {};
     const endJoint = (p, out, inward) => {
+      if (connMode === 'none') return;   // 선택안함 — 배관 끝에 아무것도 그리지 않는다
       if (mateJoint(p)) return;   // 부속 자체 플랜지가 있으니 배관 쪽 판은 그리지 않는다
       if (pipeEndAt(p)) { weldBead(p, out); return; }   // 배관↔배관 직선 이음 — 매끈하게
       if (!jointAt(p)) endBoss(p, out, r);

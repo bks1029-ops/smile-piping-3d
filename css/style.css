@@ -944,6 +944,21 @@ canvas.move-drag:active { cursor: grabbing; }
   background: #221c12;
 }
 
+/* 📐 피팅값 자동계산 — 조이스틱 머리 아래 한 줄. 켜면 주황, 끄면 회색. */
+.pad-fit {
+  grid-column: 1 / -1;
+  font-size: 9.5px;
+  letter-spacing: -0.2px;
+  color: #ffcf7a;
+  border-color: #6b5327;
+  background: #221c12;
+}
+.pad-fit[data-fit="off"] {
+  color: #8b96a3;
+  border-color: #3f4c5c;
+  background: #131a22;
+}
+
 .pad-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
 .pad-btn {
   appearance: none;

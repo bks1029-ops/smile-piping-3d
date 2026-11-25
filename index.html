@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=69">
+<link rel="stylesheet" href="./css/style.css?v=70">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -126,8 +126,12 @@
         <div class="pad-head" id="padHead" title="끌어서 조이스틱 위치 옮기기">
           <button type="button" class="pad-frame" id="btnFrame" data-frame="me" aria-pressed="true"
                   title="방향 기준: 내 시점(지금 보는 화면) ↔ 도면 축(X·Z 고정)">내 시점 기준</button>
-          <button type="button" class="pad-frame pad-conn" id="btnConn" data-conn="flange" aria-pressed="false"
-                  title="연결 방식: 플랜지 ↔ 단조(소켓웰드·나사식) — 이후 배관·부속에 적용">연결 · 플랜지</button>
+          <button type="button" class="pad-frame pad-conn" id="btnConn" data-conn="none" aria-pressed="false"
+                  title="연결 방식: 선택안함(기본, 배관 끝에 플랜지 없음) → 플랜지 → 단조(소켓웰드·나사식) — 이후 배관·부속에 적용">연결 · 선택안함</button>
+          <!-- 피팅값 자동계산 — 켜면 500을 입력해도 엘보값(예: 200A 304.8mm)을 빼고 직관 195mm만,
+               끄면 엘보 다음 직관을 입력한 500mm 그대로 그린다. -->
+          <button type="button" class="pad-frame pad-fit" id="btnFitAuto" data-fit="on" aria-pressed="true"
+                  title="피팅값 자동계산: 켜면 꺾임에서 엘보·티·레듀샤 값을 빼고 직관을 그립니다(중심선 기준). 끄면 입력한 길이 그대로 직관을 그립니다">📐 피팅값 자동계산 · ON</button>
         </div>
         <div class="pad-grid">
           <button type="button" class="pad-btn" data-dir="x:-1" title="왼쪽" aria-label="왼쪽">←</button>
@@ -141,7 +145,7 @@
         </div>
         <div class="pad-info" id="padInfoRow" title="끌어서 조이스틱 위치 옮기기 · ⟲ 기본 위치">
           <span class="pad-grip" aria-hidden="true">⠿</span>
-          <span class="pad-info-text" id="padInfo">50A · 흑관·카본스틸 · 0, 0.5, 0m</span>
+          <span class="pad-info-text" id="padInfo">50A · 선택안함 · 흑관·카본스틸 · 0, 0.5, 0m</span>
           <button type="button" class="pad-reset" id="padReset" title="조이스틱 위치 초기화(왼쪽 아래)"
                   aria-label="조이스틱 위치 초기화">⟲</button>
         </div>
@@ -174,6 +178,8 @@
             <select id="newMaterial"></select>
           </label>
         </div>
+        <label class="switch"><input type="checkbox" id="fitAutoSwitch" checked> 피팅값 자동계산
+          <span class="switch-note">(켜면 꺾임에서 엘보값을 빼고 직관을 그립니다)</span></label>
         <button class="btn accent wide" id="btnDrawPipe">3D에서 배관 그리기</button>
         <p class="hint">바닥을 터치해 점을 찍으면 파이프와 엘보가 자동으로 만들어집니다.</p>
         <div class="list-head"><span>배관 목록</span><span class="count" id="pipeCount">0</span></div>
@@ -270,6 +276,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=69"></script>
+<script type="module" src="./js/main.js?v=70"></script>
 </body>
 </html>

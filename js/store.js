@@ -73,10 +73,12 @@ export const MATERIALS = {
 };
 
 // ── 연결 방식 ────────────────────────────────────────────────────────────────
-// flange : 플랜지 접합(기본값) — 배관 끝·밸브·피팅에 볼트링 원판이 붙는다.
-// forged : 단조형(소켓웰드·나사식) — 플랜지 원판 없이 소켓 보스·육각 칼라만 남는다.
-// 기존 도면(conn 없음)은 모두 플랜지로 읽어 호환을 유지한다.
+// none   : 선택안함(기본값) — 배관 끝에 플랜지도 단조 보스도 그리지 않는 매끈한 배관.
+// flange : 사용자가 직접 고른 경우에만 배관 끝에 플랜지 원판.
+// forged : 단조형(소켓웰드·나사식) — 플랜지 원판 없이 소켓 보스·육각 칼라만.
+// 예전 도면(conn 없음)은 플랜지형으로 읽어 호환을 유지한다.
 export const CONN_MODES = {
+  none: { label: '선택안함', short: '—' },
   flange: { label: '플랜지', short: 'FLG' },
   forged: { label: '단조', short: 'FRG' },
 };
@@ -88,7 +90,14 @@ export const CONN_TYPES = new Set([
 ]);
 
 export function connOf(item) {
-  return item && item.conn === 'forged' ? 'forged' : 'flange';
+  const c = item && item.conn;
+  return c === 'forged' ? 'forged' : (c === 'none' ? 'none' : 'flange');
+}
+
+// 배관의 연결 방식 — v70부터 기본값은 '선택안함'(자동 플랜지·보스 없음).
+// 'none'이 아닌 값은 담아 둔 그대로 지킨다(사용자가 직접 고른 'flange'/'forged').
+export function pipeConnOf(v) {
+  return v === 'forged' ? 'forged' : (v === 'flange' ? 'flange' : 'none');
 }
 
 // 관경 외경(m) — 부속(레듀샤·티)을 실제 관경 크기로 그릴 때 쓴다.
@@ -145,19 +154,73 @@ export function applyBoreSize(spec) {
   return spec;
 }
 
-// ── 엘보(90°·45°) 치수 — 관경 외경에서 그대로 뽑는다 ─────────────────────────
+// ── 엘보(90°·45°) 치수 — KS B 1522 / ASME B16.9 **롱엘보(LR)** 표 그대로 ───────
+// face(중심~끝)는 1.5×NPS(인치) 표를 따른다 — 200A(8") = 304.8mm.
+// (예전엔 R=1.5×외경에 직관 스텁 Ls=0.18R를 더해 200A가 383mm로, 실제 현장 엘보보다
+//  78mm나 길었다 — 2026-11-26 사용자 지적 "엘보값 200a 304.8 이야")
+//  · 작은 관경(15A~25A)은 표의 최소값 38.1mm를 쓴다.
+export const ELBOW_FACE = {
+  '15A': 0.0381, '20A': 0.0381, '25A': 0.0381, '32A': 0.0476, '40A': 0.0572,
+  '50A': 0.0762, '65A': 0.0953, '80A': 0.1143, '100A': 0.1524, '125A': 0.1905,
+  '150A': 0.2286, '200A': 0.3048, '250A': 0.3810, '300A': 0.4572, '350A': 0.5334,
+  '400A': 0.6096, '450A': 0.6858, '500A': 0.7620, '550A': 0.8382, '600A': 0.9144,
+};
+
+// 45° LR 엘보 — 중심~끝(B). 200A = 127.0mm (KS B 1522 / ASME B16.9).
+export const ELBOW45_FACE = {
+  '15A': 0.0159, '20A': 0.0190, '25A': 0.0222, '32A': 0.0254, '40A': 0.0286,
+  '50A': 0.0349, '65A': 0.0445, '80A': 0.0508, '100A': 0.0635, '125A': 0.0794,
+  '150A': 0.0953, '200A': 0.1270, '250A': 0.1588, '300A': 0.1905, '350A': 0.2223,
+  '400A': 0.2540, '450A': 0.2858, '500A': 0.3175, '550A': 0.3429, '600A': 0.3810,
+};
+
+// 티 — 중심~끝(C). 본관 전체 길이 w = 2C, 분기 길이 = C. 200A = 177.8mm.
+export const TEE_C = {
+  '15A': 0.0254, '20A': 0.0286, '25A': 0.0381, '32A': 0.0476, '40A': 0.0572,
+  '50A': 0.0635, '65A': 0.0762, '80A': 0.0857, '100A': 0.1048, '125A': 0.1238,
+  '150A': 0.1429, '200A': 0.1778, '250A': 0.2159, '300A': 0.2540, '350A': 0.3302,
+  '400A': 0.3810, '450A': 0.4318, '500A': 0.4826, '550A': 0.5334, '600A': 0.5842,
+};
+
+// 레듀샤 — 전체 길이(H), **큰 관경** 기준. 200A = 152.4mm.
+export const REDUCER_H = {
+  '15A': 0.0381, '20A': 0.0381, '25A': 0.0508, '32A': 0.0508, '40A': 0.0635,
+  '50A': 0.0762, '65A': 0.0889, '80A': 0.0889, '100A': 0.1016, '125A': 0.1270,
+  '150A': 0.1397, '200A': 0.1524, '250A': 0.1778, '300A': 0.2032, '350A': 0.3302,
+  '400A': 0.3556, '450A': 0.3810, '500A': 0.4064, '550A': 0.4318, '600A': 0.4572,
+};
+
 // r   : 배관 외경 반지름 (= 엘보 관 반지름, 배관과 같은 굵기로 앉는다)
-// R   : 곡률 반경 (긴 반경 엘보 = 1.5D, D = 외경)
-// T   : 꼭짓점에서 곡관 접점까지 거리 (90°는 R, 45°는 R·tan22.5°)
-// Ls  : 접점에서 접합면까지 직관 스텁
+// R   : 곡률 반경 — 90°는 R = 중심~끝(실제 LR 엘보는 곡관 접점이 곧 접합면),
+//       45°는 R = B / tan22.5° 로 잡아야 두 다리 접점이 표의 B와 정확히 맞는다
+// T   : 꼭짓점에서 곡관 접점까지 거리 = 중심~끝(face)
+// Ls  : 접점에서 접합면까지 직관 스텁 — 실제 LR 엘보는 0
 // face: 꼭짓점 → 접합면 거리 = T + Ls  (배관을 이만큼 당겨 엘보를 앉힌다)
 export function elbowDims(type, bore) {
-  const od = boreOd(bore || '100A');
+  const b = bore || '100A';
+  const od = boreOd(b);
   const r = od / 2;
-  const R = 1.5 * od;
-  const Ls = 0.18 * R;
-  const T = type === 'elbow45' ? R * Math.tan(Math.PI / 8) : R;
-  return { od, r, R, Ls, T, face: round3(T + Ls) };
+  const is45 = type === 'elbow45';
+  const F = is45 ? (ELBOW45_FACE[b] || 0.0635) : (ELBOW_FACE[b] || 0.1524);
+  const R = is45 ? round3(F / Math.tan(Math.PI / 8)) : F;
+  const Ls = 0;
+  return { od, r, R, Ls, T: F, face: round3(F) };
+}
+
+// 티 치수 — C(중심~끝)로 본관 전체 길이 2C·분기 길이 C. builders·ports가 같은 값을 쓴다.
+export function teeDims(bore1) {
+  const b = BORES[bore1] ? bore1 : '100A';
+  const C = TEE_C[b] || 0.1048;
+  return { C, L: round3(C * 2), H: C, w: round3(C * 2) };
+}
+
+// 레듀샤 치수 — 큰 관경 기준 전체 길이 H가 곧 접합면 사이 거리(w).
+export function reducerDims(bore1, bore2) {
+  const b1 = BORES[bore1] ? bore1 : '100A';
+  const b2 = BORES[bore2] ? bore2 : b1;
+  const big = boreOd(b1) >= boreOd(b2) ? b1 : b2;
+  const H = REDUCER_H[big] || 0.1016;
+  return { H, w: round3(H) };
 }
 
 // 엘보 배치용 회전행렬 (행 우선 3×3).
@@ -230,15 +293,8 @@ export function gaugeBasis(normal) {
 //  · 티: 주배관 길이 + 양단 용접 비드
 // 이 폭만큼 커서를 전진시켜 앞뒤 배관과 겹치지 않게 한다.
 export function fittingNaturalWidth(type, bore1, bore2) {
-  const o1 = boreOd(bore1);
-  const o2 = boreOd(bore2 || bore1);
-  if (type === 'reducer') {
-    const L = Math.max(0.1, 0.12 + 0.6 * Math.abs(o1 - o2));
-    return round3(L + 0.048);
-  }
-  if (type === 'tee') {
-    return round3(Math.max(0.22, 2.6 * o1) + 0.03);
-  }
+  if (type === 'reducer') return reducerDims(bore1, bore2).w;
+  if (type === 'tee') return teeDims(bore1).w;
   return 0;
 }
 
@@ -329,16 +385,16 @@ export const EQUIP_TYPES = {
   },
   elbow: {
     cat: 'fitting', label: '90° 엘보', short: 'EL', bore: '100A',
-    defaults: { w: 0.26, h: 0.12, d: 0.12 }, color: '#c9d0d6',
+    defaults: { w: 0.1524, h: 0.12, d: 0.12 }, color: '#c9d0d6',
   },
   tee: {
     cat: 'fitting', label: '티 분기관', short: 'TE',
-    defaults: { w: 0.34, h: 0.26, d: 0.22 }, color: '#c9d0d6',
+    defaults: { w: 0.2096, h: 0.26, d: 0.22 }, color: '#c9d0d6',
     bore1: '100A', bore2: '100A',
   },
   reducer: {
     cat: 'fitting', label: '레듀샤 (이경관)', short: 'RD',
-    defaults: { w: 0.32, h: 0.22, d: 0.22 }, color: '#c9d0d6',
+    defaults: { w: 0.1016, h: 0.22, d: 0.22 }, color: '#c9d0d6',
     bore1: '100A', bore2: '50A',
   },
   nipple: {
@@ -347,7 +403,7 @@ export const EQUIP_TYPES = {
   },
   elbow45: {
     cat: 'fitting', label: '45° 엘보', short: 'E45', bore: '100A',
-    defaults: { w: 0.15, h: 0.12, d: 0.12 }, color: '#c9d0d6',
+    defaults: { w: 0.0635, h: 0.12, d: 0.12 }, color: '#c9d0d6',
   },
   cap: {
     cat: 'fitting', label: '캡 (엔드캡·마개)', short: 'CP',
@@ -693,8 +749,8 @@ export function makePipe(opts) {
     name: o.name || '배관',
     bore: BORES[o.bore] ? o.bore : '100A',
     material: MATERIALS[o.material] ? o.material : 'carbon',
-    // 배관 끝단 연결 방식 — 단조형이면 플랜지 대신 소켓 보스를 그린다.
-    conn: o.conn === 'forged' ? 'forged' : 'flange',
+    // 배관 끝단 연결 방식 — '선택안함'(기본, 아무것도 안 그린다) / 직접 고른 플랜지·단조.
+    conn: pipeConnOf(o.conn),
     points: (o.points || []).map((p) => ({ x: num(p.x, 0), y: num(p.y, 0), z: num(p.z, 0) })),
   };
   // 사진에서 읽은 관 색(적색 방청관·은색 아연도)이 있으면 재질색 대신 입힌다.
@@ -1198,21 +1254,32 @@ export function equipConnectFaces(spec) {
   // 티 — 직진 A·B + 분기 세 접속구
   if (spec.type === 'tee') return teePorts(spec);
   // 엘보 — 두 다리 끝면 (elbowDims().face)
+  //  90° : 두 다리가 직각 → 로컬 X(입구)와 Y(출구) 축 그대로 face만큼.
+  //  45° : 두 다리가 135° → 출구 다리는 로컬 X·Y 사이 대각선(-0.707, +0.707) 위에 있다.
+  //        (예전엔 90°처럼 Y축 위에 잡아, 포트 자리에 붙인 배관이 엘보 메쉬와 어긋났다 — 2026-11-26)
   if (spec.type === 'elbow' || spec.type === 'elbow45') {
     const dims = elbowDims(spec.type, spec.bore || '100A');
     const b = equipBasis(spec);
-    return [0, 1].map((i) => {
-      const ax = { x: b[i], y: b[3 + i], z: b[6 + i] };
-      return {
-        nid: i === 0 ? 'legA' : 'legB',
-        tip: {
-          x: round3(num(spec.x, 0) + ax.x * dims.face),
-          y: round3(num(spec.y, 0) + ax.y * dims.face),
-          z: round3(num(spec.z, 0) + ax.z * dims.face),
-        },
-        axis: ax,
-      };
+    const col = (i) => ({ x: b[i], y: b[3 + i], z: b[6 + i] });
+    const cx = col(0);
+    const cy = col(1);
+    const tipAt = (ax) => ({
+      x: round3(num(spec.x, 0) + ax.x * dims.face),
+      y: round3(num(spec.y, 0) + ax.y * dims.face),
+      z: round3(num(spec.z, 0) + ax.z * dims.face),
     });
+    if (spec.type === 'elbow45') {
+      const ux = -Math.SQRT1_2;
+      const uy = Math.SQRT1_2;
+      const axB = { x: cx.x * ux + cy.x * uy, y: cx.y * ux + cy.y * uy, z: cx.z * ux + cy.z * uy };
+      const l = Math.hypot(axB.x, axB.y, axB.z) || 1;
+      const uB = { x: round3(axB.x / l), y: round3(axB.y / l), z: round3(axB.z / l) };
+      return [
+        { nid: 'legA', tip: tipAt(cx), axis: cx },
+        { nid: 'legB', tip: tipAt(uB), axis: uB },
+      ];
+    }
+    return [cx, cy].map((ax, i) => ({ nid: i === 0 ? 'legA' : 'legB', tip: tipAt(ax), axis: ax }));
   }
   // 플랜지로 체결하는 부속(밸브·신축관·유량계·플랜지) — 양쪽 접합면
   const fl = flangedPorts(spec);
@@ -1283,8 +1350,10 @@ function teeFrame(spec) {
   const b1 = spec.bore1 && BORES[spec.bore1] ? spec.bore1 : '100A';
   const b2 = spec.bore2 && BORES[spec.bore2] ? spec.bore2 : b1;
   const r1 = boreOd(b1) / 2;
-  const L = Math.max(0.22, 2.6 * r1 * 2);
-  const H = Math.max(0.1, L * 0.5);
+  // buildTee()와 같은 표준 치수 — 본관 2C, 분기 C (KS B 1522 / ASME B16.9)
+  const td = teeDims(b1);
+  const L = td.L;
+  const H = td.H;
   const w = num(spec.w, fittingNaturalWidth('tee', b1, b2));
   const s = Math.max(0.05, w) / L;
   let M = rotYM(num(spec.rot, 0));
@@ -2214,6 +2283,8 @@ export function aiResultToScene(result) {
 export function emptyState() {
   return {
     version: 1,
+    // v70: 배관 연결 방식 3단계(none/flange/forged) 저장 형식.
+    connV: 2,
     name: '스마일산업 배관 도면',
     equipment: [],
     pipes: [],
@@ -2417,6 +2488,8 @@ export function normalizeState(raw) {
         item.bore1 = BORES[e.bore1] ? e.bore1 : (t.bore1 || '100A');
         item.bore2 = BORES[e.bore2] ? e.bore2 : (type === 'tee' ? item.bore1 : (t.bore2 || '50A'));
         if (type === 'tee') item.branch = TEE_BRANCHES.includes(e.branch) ? e.branch : 'up';
+        // v70 — 티·레듀샤도 표준 치수(2C / H)로 맞춘다. 예전 도면의 임의 폭은 표준값으로 바로잡는다.
+        item.w = fittingNaturalWidth(type, item.bore1, item.bore2);
       }
       // 노즐 설정 — 저장된 방향별 관경을 살리고, 없으면 기본 노즐로 채운다.
       // 열교환기는 자유 노즐 목록(nozList)을 살린다 — 예전 방향별 관경(nozzles)도 같은 자리로 옮긴다.
@@ -2441,6 +2514,10 @@ export function normalizeState(raw) {
     });
   }
   if (Array.isArray(raw.pipes)) {
+    // v70 이전 저장분의 배관 conn('flange' = 당시 기본값이던 자동 플랜지)은
+    // 새 기본값 '선택안함'으로 옮긴다 — 예전 도면을 열어도 선택·삭제 안 되는 판이 남지 않게.
+    // v70부터 저장분(connV: 2)은 사용자가 직접 고른 'flange'를 그대로 지킨다.
+    const legacyConn = !(Number(raw.connV) >= 2);
     raw.pipes.forEach((p) => {
       if (!p || !Array.isArray(p.points) || p.points.length < 2) return;
       s.pipes.push({
@@ -2449,7 +2526,7 @@ export function normalizeState(raw) {
         name: typeof p.name === 'string' ? p.name : '배관',
         bore: BORES[p.bore] ? p.bore : '100A',
         material: MATERIALS[p.material] ? p.material : 'carbon',
-        conn: p.conn === 'forged' ? 'forged' : 'flange',
+        conn: legacyConn ? (p.conn === 'forged' ? 'forged' : 'none') : pipeConnOf(p.conn),
         points: p.points.map((pt) => ({ x: num(pt.x, 0), y: Math.max(0, num(pt.y, 0)), z: num(pt.z, 0) })),
         ...(toHexColor(p.color) ? { color: toHexColor(p.color) } : {}),
       });

@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=69';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=70';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -72,7 +72,7 @@ export function buildFusionScript(state) {
     }),
     pipes: state.pipes.map((p) => ({
       name: p.name, bore: p.bore, material: p.material,
-      conn: p.conn === 'forged' ? 'forged' : 'flange',
+      conn: p.conn === 'none' ? 'none' : (p.conn === 'forged' ? 'forged' : 'flange'),
       points: p.points.map((pt) => ({ x: pt.x, y: pt.y, z: pt.z })),
     })),
   };
@@ -249,6 +249,33 @@ BORES = {
     '400A': 0.4064, '450A': 0.4572, '500A': 0.5080, '550A': 0.5588, '600A': 0.6096,
 }
 JACKET = {'insulated': 0.035}
+# KS B 1522 / ASME B16.9 롱엘보(LR) 중심~끝(m) — 90° face. 45°는 이 값 x tan(22.5°).
+# 웹앱 store.js ELBOW_FACE와 같은 표다 (200A(8") = 304.8mm).
+ELBOW_FACE = {
+    '15A': 0.0381, '20A': 0.0381, '25A': 0.0381, '32A': 0.0476, '40A': 0.0572,
+    '50A': 0.0762, '65A': 0.0953, '80A': 0.1143, '100A': 0.1524, '125A': 0.1905,
+    '150A': 0.2286, '200A': 0.3048, '250A': 0.3810, '300A': 0.4572, '350A': 0.5334,
+    '400A': 0.6096, '450A': 0.6858, '500A': 0.7620, '550A': 0.8382, '600A': 0.9144,
+}
+# 45° LR 엘보 중심~끝(B) · 티 중심~끝(C) · 레듀샤 전체 길이(H, 큰 관경 기준) — 웹앱과 같은 표
+ELBOW45_FACE = {
+    '15A': 0.0159, '20A': 0.0190, '25A': 0.0222, '32A': 0.0254, '40A': 0.0286,
+    '50A': 0.0349, '65A': 0.0445, '80A': 0.0508, '100A': 0.0635, '125A': 0.0794,
+    '150A': 0.0953, '200A': 0.1270, '250A': 0.1588, '300A': 0.1905, '350A': 0.2223,
+    '400A': 0.2540, '450A': 0.2858, '500A': 0.3175, '550A': 0.3429, '600A': 0.3810,
+}
+TEE_C = {
+    '15A': 0.0254, '20A': 0.0286, '25A': 0.0381, '32A': 0.0476, '40A': 0.0572,
+    '50A': 0.0635, '65A': 0.0762, '80A': 0.0857, '100A': 0.1048, '125A': 0.1238,
+    '150A': 0.1429, '200A': 0.1778, '250A': 0.2159, '300A': 0.2540, '350A': 0.3302,
+    '400A': 0.3810, '450A': 0.4318, '500A': 0.4826, '550A': 0.5334, '600A': 0.5842,
+}
+REDUCER_H = {
+    '15A': 0.0381, '20A': 0.0381, '25A': 0.0508, '32A': 0.0508, '40A': 0.0635,
+    '50A': 0.0762, '65A': 0.0889, '80A': 0.0889, '100A': 0.1016, '125A': 0.1270,
+    '150A': 0.1397, '200A': 0.1524, '250A': 0.1778, '300A': 0.2032, '350A': 0.3302,
+    '400A': 0.3556, '450A': 0.3810, '500A': 0.4064, '550A': 0.4318, '600A': 0.4572,
+}
 
 
 def build_nozzles(comp, e, tag):
@@ -709,8 +736,9 @@ def build_elbow(comp, e, tag):
     bore = e.get('bore') or e.get('bore1') or '100A'
     od = BORES.get(bore, 0.1143)
     r = od / 2.0
-    R = 1.5 * od
-    Ls = 0.18 * R
+    # KS B 1522 / ASME B16.9 롱엘보 — 중심~끝(face)이 곧 곡률 반경, 직관 스텁 없음
+    R = ELBOW_FACE.get(bore, 0.1524)
+    Ls = 0.0
 
     def P(lx, ly, lz):
         return local_to_world(e, (lx, ly, lz))
@@ -748,10 +776,12 @@ def build_tee(comp, e, tag):
     b2 = e.get('bore2') or b1
     r1 = _bore(b1, 0.1143) / 2.0
     r2 = _bore(b2, _bore(b1, 0.1143)) / 2.0
-    L = max(0.22, 2.6 * r1 * 2.0)
-    branch = max(0.1, L * 0.5)
+    # KS B 1522 / ASME B16.9 — 중심~끝 C에서 본관 전체 길이 2C, 분기 길이 C
+    C = TEE_C.get(b1, 0.1048)
+    L = 2.0 * C
+    branch = C
     # 웹앱은 메시 폭(spec.w)에 맞춰 균일 배율을 준다 — 퓨전에서도 같은 배율을 쓴다.
-    s = max(0.05, e.get('w') or (L + 0.03)) / (L + 0.03)
+    s = max(0.05, e.get('w') or L) / L
     L *= s
     branch *= s
     r1 *= s
@@ -774,19 +804,19 @@ def build_tee(comp, e, tag):
 
 
 def build_reducer(comp, e, tag):
-    """레듀샤 — 1차 관경에서 2차 관경으로 줄어드는 이경 원통 + 양단 플랜지"""
+    """레듀샤 — 1차 관경에서 2차 관경으로 줄어드는 이경 원뿔(전체 길이 H)"""
     made = 0
     b1 = e.get('bore1') or '100A'
     b2 = e.get('bore2') or '50A'
     r1 = _bore(b1, 0.1143) / 2.0
     r2 = _bore(b2, 0.0605) / 2.0
-    L = max(0.1, 0.12 + 0.6 * abs(r1 - r2) * 2.0)
-    FT = 0.024
-    s = max(0.05, e.get('w') or (L + FT * 2)) / (L + FT * 2)
+    # KS B 1522 / ASME B16.9 — 큰 관경 기준 전체 길이 H가 곰 혼 길이 그대로
+    big = b1 if _bore(b1, 0.1143) >= _bore(b2, 0.0605) else b2
+    L = REDUCER_H.get(big, 0.1016)
+    s = max(0.05, e.get('w') or L) / L
     L *= s
     r1 *= s
     r2 *= s
-    FT *= s
 
     def P(lx, ly, lz):
         return local_to_world(e, (lx, ly, lz))
@@ -802,11 +832,7 @@ def build_reducer(comp, e, tag):
     if forged(e):
         made += socket_boss(comp, e, tag, (-L / 2, 0, 0), (-1, 0, 0), r1)
         made += socket_boss(comp, e, tag, (L / 2, 0, 0), (1, 0, 0), r2)
-    else:
-        if add_cylinder(comp, P(-L / 2 - FT, 0, 0), P(-L / 2, 0, 0), r1 * 1.22, tag + '_FlangeBig'):
-            made += 1
-        if add_cylinder(comp, P(L / 2, 0, 0), P(L / 2 + FT, 0, 0), r2 * 1.35, tag + '_FlangeSmall'):
-            made += 1
+    # 웹앱(v68부터)처럼 원뿔만 그린다 — 양단 판을 더하면 표준 전체 길이(H)보다 길어진다.
     return made
 
 
@@ -834,9 +860,10 @@ def build_elbow45(comp, e, tag):
     bore = e.get('bore') or e.get('bore1') or '100A'
     od = BORES.get(bore, 0.1143)
     r = od / 2.0
-    R = 1.5 * od
+    # KS B 1522 / ASME B16.9 롱엘보 45° — F x tan(22.5°) = 중심~끝, 직관 스텁 없음
+    R = ELBOW_FACE.get(bore, 0.1524)
     T = R * math.tan(math.pi / 8.0)
-    Ls = 0.18 * R
+    Ls = 0.0
     cx, cy = T, R
 
     def P(lx, ly, lz):

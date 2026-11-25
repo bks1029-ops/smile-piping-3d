@@ -13,14 +13,14 @@ import {
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=69';
-import { buildScene } from './builders.js?v=69';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=69';
-import { buildOBJ } from './obj.js?v=69';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=69';
-import { parseCommand, CMD_HELP } from './cmd.js?v=69';
-import { buildDimItems } from './dims.js?v=69';
-import { buildAiImageParts } from './zoom.js?v=69';
+} from './store.js?v=70';
+import { buildScene } from './builders.js?v=70';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=70';
+import { buildOBJ } from './obj.js?v=70';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=70';
+import { parseCommand, CMD_HELP } from './cmd.js?v=70';
+import { buildDimItems } from './dims.js?v=70';
+import { buildAiImageParts } from './zoom.js?v=70';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -118,8 +118,12 @@ class App {
     this.cmdCursor = { x: 0, y: 0.5, z: 0 };
     this.cmdBore = '50A';
     this.cmdMaterial = 'carbon';
-    // 연결 방식 — 플랜지(기본) / 단조형(소켓웰드·나사식). 이후 배관·부속에 적용된다.
-    this.cmdConn = 'flange';
+    // 연결 방식 — 선택안함(기본) / 플랜지 / 단조형(소켓웰드·나사식). 이후 배관·부속에 적용된다.
+    this.cmdConn = 'none';
+    // 피팅값 자동계산 — 켜면(기본) 꺾임에서 엘보값을 빼고 직관을 그린다(중심선 기준).
+    // 끄면 엘보 다음 직관을 입력한 길이 그대로 그린다. localStorage에 기억한다.
+    this.fitAuto = true;
+    try { this.fitAuto = localStorage.getItem('smilePiping3D.fitAuto') !== 'off'; } catch (e) { /* ignore */ }
     this.cmdRot = 0;
     this.cmdAxis = 'x';
     this.cmdSign = 1;
@@ -195,6 +199,7 @@ class App {
     this.setDirFrame(savedFrame === 'plan' ? 'plan' : 'me', true);
     this.setPadOpen(true);
     this.setViewbar(false);   // 모바일 보기 바는 '등각' 1개로 접힌 상태로 시작
+    this.applyFitAuto();      // 📐 피팅값 자동계산 버튼·스위치를 저장값에 맞춘다
     this.updatePadInfo();
     this.updateMicUi();
 
@@ -2893,20 +2898,24 @@ class App {
         <p class="hint">분기를 위·아래·앞·뒤로 돌릴 수 있고, 직진 A·직진 B·분기 세 끝 어디서든 이어 그릴 수 있습니다. 3D에서 그 끝을 손가락으로 톡 눌러도 같은 자리로 커서가 갑니다.</p>`;
   }
 
-  // 연결 방식 선택 — 플랜지(기본) ↔ 단조(소켓웰드·나사식).
+  // 연결 방식 선택 — 배관은 선택안함(기본)·플랜지·단조 3단계, 부속은 플랜지 ↔ 단조.
   // 몸통이 플랜지로 그려지는 부속과 배관에서만 보여 준다 (플랜지 부속 자체는 항상 플랜지).
   connField(spec) {
     if (!spec) return '';
     const isPipe = spec.kind === 'pipe' || Array.isArray(spec.points);
     if (!isPipe && (!CONN_TYPES.has(spec.type) || spec.type === 'flange')) return '';
-    const cur = connOf(spec);
-    const opts = Object.keys(CONN_MODES).map((m) =>
+    const cur = isPipe ? connOf(spec) : (spec.conn === 'forged' ? 'forged' : 'flange');
+    // 부속은 붙는 방식이 꼭 있어야 하므로 '선택안함'을 빼고 보여 준다.
+    const keys = isPipe ? ['none', 'flange', 'forged'] : ['flange', 'forged'];
+    const opts = keys.map((m) =>
       `<option value="${m}"${m === cur ? ' selected' : ''}>${CONN_MODES[m].label}</option>`).join('');
+    const mark = cur === 'none' ? '매끈 · 플랜지 없음'
+      : (cur === 'forged' ? '단조 · 플랜지 없음' : '플랜지 원판');
     return `
         <div class="prop-section">연결 방식 (${isPipe ? '배관 끝단' : '접합'})</div>
         <div class="field-row">
           <label class="field">연결<select data-f="conn">${opts}</select></label>
-          <label class="field">도면 표시<span class="readonly">${cur === 'forged' ? '단조 · 플랜지 없음' : '플랜지 원판'}</span></label>
+          <label class="field">도면 표시<span class="readonly">${mark}</span></label>
         </div>`;
   }
 
@@ -3062,7 +3071,7 @@ class App {
     if (u.cur) {
       this.cmdBore = u.cur.bore;
       this.cmdMaterial = u.cur.material;
-      this.cmdConn = u.cur.conn === 'forged' ? 'forged' : 'flange';
+      this.cmdConn = connOf({ conn: u.cur.conn });
       this.cmdAxis = u.cur.axis;
       this.cmdSign = u.cur.sign;
       this.cmdRot = u.cur.rot;
@@ -3375,7 +3384,7 @@ class App {
     this.lastDirV = null;
     this.cmdBore = '50A';
     this.cmdMaterial = 'carbon';
-    this.cmdConn = 'flange';
+    this.cmdConn = 'none';
     this.cmdAxis = 'x';
     this.cmdSign = 1;
     this.cmdRot = 0;
@@ -3693,7 +3702,7 @@ class App {
       } else if (o.op === 'material') {
         if (MATERIALS[o.material]) OUT.push({ op: 'material', material: o.material });
       } else if (o.op === 'conn') {
-        OUT.push({ op: 'conn', conn: o.conn === 'forged' ? 'forged' : 'flange' });
+        OUT.push({ op: 'conn', conn: connOf({ conn: o.conn }) });
       } else if (o.op === 'equip') {
         if (EQUIP_TYPES[o.type]) {
           OUT.push({
@@ -3811,7 +3820,7 @@ class App {
     let cursor = { ...this.cmdCursor };
     let bore = this.cmdBore;
     let material = this.cmdMaterial;
-    let conn = this.cmdConn === 'forged' ? 'forged' : 'flange';
+    let conn = connOf({ conn: this.cmdConn });
     let rot = this.cmdRot;
     let axis = this.cmdAxis;
     let sign = this.cmdSign;
@@ -3847,7 +3856,9 @@ class App {
         const a = pts[n - 2];
         const b = pts[n - 1];
         const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-        const f = Math.min(face, len * 0.45);
+        // 표준 엘보값이 구간 길이보다 짧으면 그대로 빼고(500 → 195.2mm), 더 길면 예전처럼
+        // 45%까지만 줄여 배관이 사라지지 않게 한다.
+        const f = len > face + 1e-6 ? face : Math.min(face, len * 0.45);
         if (f > 1e-4) {
           pts[n - 1] = put({
             x: b.x - ((b.x - a.x) / len) * f,
@@ -3865,7 +3876,7 @@ class App {
       const b = target.points[n - 1];
       if (Math.hypot(b.x - cursor.x, b.y - cursor.y, b.z - cursor.z) > 0.03) return;
       const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-      const f = Math.min(face, len * 0.45);
+      const f = len > face + 1e-6 ? face : Math.min(face, len * 0.45);
       if (f <= 1e-4) return;
       const np = put({
         x: b.x - ((b.x - a.x) / len) * f,
@@ -3969,11 +3980,15 @@ class App {
         } else if (wantElbow) wantElbow = null; // 일직선에는 꺾임이 없다
       }
       // 접합면 밖에 세운 엘보는 그 출구 면에서 시작해야 하므로 짧은 구간이라도 줄이지 않는다.
-      if (!fixed) face = Math.min(face, meters * 0.45);
+      if (this.fitAuto && !fixed) face = meters > face + 1e-6 ? face : Math.min(face, meters * 0.45);
       const from = face > 0
         ? put({ x: cursor.x + v.x * face, y: cursor.y + v.y * face, z: cursor.z + v.z * face })
         : { ...cursor };
-      const to = put({ x: cursor.x + v.x * meters, y: cursor.y + v.y * meters, z: cursor.z + v.z * meters });
+      // 피팅값 자동계산(ON) — 입력한 길이는 **중심선 기준**이라 엘보가 차지한 face만큼 빼고
+      //   실제 직관을 그린다 (200A 엘보 304.8mm + `500` → 직관 195.2mm).
+      // OFF — 엘보 출구 면에서부터 입력한 길이를 그대로 직관으로 그린다 (`500` → 직관 500mm).
+      const run = this.fitAuto ? meters - face : meters;
+      const to = put({ x: from.x + v.x * run, y: from.y + v.y * run, z: from.z + v.z * run });
       if (!pts) pts = [from];
       pts.push(to);
       cursor = to;
@@ -3985,7 +4000,7 @@ class App {
       const op = ops[i];
       if (op.op === 'bore') { bore = op.bore; continue; }
       if (op.op === 'material') { material = op.material; continue; }
-      if (op.op === 'conn') { conn = op.conn === 'forged' ? 'forged' : 'flange'; continue; }
+      if (op.op === 'conn') { conn = connOf({ conn: op.conn }); continue; }
       if (op.op === 'newpipe') { flush(); this.lastDirV = null; prevDir = null; continue; }
       if (op.op === 'seg') {
         // world: 손 그리기가 고른 축은 화면 기준이 아니라 실제 3D 축이다.
@@ -4321,7 +4336,7 @@ class App {
     if (el) {
       const c = this.cmdCursor;
       const mat = (MATERIALS[this.cmdMaterial] || MATERIALS.carbon).label;
-      const conn = (CONN_MODES[this.cmdConn] || CONN_MODES.flange).label;
+      const conn = (CONN_MODES[this.cmdConn] || CONN_MODES.none).label;
       el.textContent = `${this.cmdBore} · ${conn} · ${mat} · ${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)}m`;
     }
     this.highlightPad();
@@ -4338,15 +4353,43 @@ class App {
     if (!quiet) this.toast(`관경 ${bore} (${BORES[bore].mm}mm)`);
   }
 
-  // 연결 방식 전환 — 플랜지(기본) ↔ 단조(소켓웰드·나사식)
+  // 연결 방식 순환 — 선택안함(기본) → 플랜지 → 단조 → 선택안함.
   setCmdConn(mode, quiet) {
-    this.cmdConn = mode === 'forged' ? 'forged' : 'flange';
+    this.cmdConn = connOf({ conn: mode });
     this.updatePadInfo();
     if (!quiet) {
-      this.toast(this.cmdConn === 'forged'
-        ? '단조형 — 이후 배관·부속을 플랜지 없이 소켓 보스로 그립니다. (단조 볼밸브 · 소켓 엘보)'
-        : '플랜지형 — 이후 배관·부속에 플랜지 원판을 그립니다.');
+      const msg = {
+        none: '선택안함 — 배관 끝에 플랜지를 그리지 않습니다. 플랜지가 필요하면 `플랜지` 부속을 직접 놓으세요.',
+        forged: '단조형 — 이후 배관·부속을 플랜지 없이 소켓 보스로 그립니다. (단조 볼밸브 · 소켓 엘보)',
+        flange: '플랜지형 — 이후 배관 끝에 플랜지 원판을 그립니다.',
+      };
+      this.toast(msg[this.cmdConn] || msg.none);
     }
+  }
+
+  // 📐 피팅값 자동계산 — ON이면 입력한 길이에서 엘보·티·레듀샤 값(face)을 빼고
+  // 실제 직관을 그린다(중심선 기준). OFF면 엘보 출구에서부터 입력 길이 그대로.
+  setFitAuto(on, quiet) {
+    this.fitAuto = !!on;
+    try { localStorage.setItem('smilePiping3D.fitAuto', this.fitAuto ? 'on' : 'off'); } catch (e) { /* ignore */ }
+    this.applyFitAuto();
+    if (!quiet) {
+      this.toast(this.fitAuto
+        ? '📐 피팅값 자동계산 켜짐 — 500을 넣으면 엘보값을 빼고 직관을 그립니다(중심선 기준)'
+        : '📐 피팅값 자동계산 꺼짐 — 500을 넣으면 직관 500mm를 그대로 그립니다');
+    }
+  }
+
+  applyFitAuto() {
+    const on = !!this.fitAuto;
+    const btn = $('#btnFitAuto');
+    if (btn) {
+      btn.dataset.fit = on ? 'on' : 'off';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.textContent = `📐 피팅값 자동계산 · ${on ? 'ON' : 'OFF'}`;
+    }
+    const sw = $('#fitAutoSwitch');
+    if (sw && sw.checked !== on) sw.checked = on;
   }
 
   // [내 시점 기준] ↔ [도면 축 기준]
@@ -4383,10 +4426,10 @@ class App {
     }
     const cn = $('#btnConn');
     if (cn) {
-      const forged = this.cmdConn === 'forged';
-      cn.textContent = `연결 · ${forged ? '단조' : '플랜지'}`;
-      cn.dataset.conn = forged ? 'forged' : 'flange';
-      cn.setAttribute('aria-pressed', forged ? 'true' : 'false');
+      const c = connOf({ conn: this.cmdConn });
+      cn.textContent = `연결 · ${(CONN_MODES[c] || CONN_MODES.none).label}`;
+      cn.dataset.conn = c;
+      cn.setAttribute('aria-pressed', c !== 'none' ? 'true' : 'false');
     }
   }
 
@@ -4510,7 +4553,7 @@ class App {
       if (e.target && e.target.closest && e.target.closest('#padReset')) return; // 리셋 버튼은 그냥 클릭
       // 머리 줄의 '내 시점 기준'·'연결' 버튼은 끌기가 아니라 클릭으로 동작해야 한다.
       // (포인터 캡처가 걸리면 mouseup·click이 머리로 바뀌어 버튼이 먹통이 됨)
-      if (e.target && e.target.closest && e.target.closest('#btnFrame, #btnConn')) return;
+      if (e.target && e.target.closest && e.target.closest('#btnFrame, #btnConn, #btnFitAuto')) return;
       const r = pad.getBoundingClientRect();
       drag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: r.left, top: r.top, moved: false, handle };
       try { handle.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
@@ -4581,7 +4624,12 @@ class App {
     if (!pad) return;
     $('#cmdPad').addEventListener('click', () => this.setPadOpen(!this.padOpen));
     $('#btnFrame').addEventListener('click', () => this.setDirFrame(this.dirFrame === 'me' ? 'plan' : 'me'));
-    $('#btnConn').addEventListener('click', () => this.setCmdConn(this.cmdConn === 'flange' ? 'forged' : 'flange'));
+    $('#btnConn').addEventListener('click', () => {
+      const next = { none: 'flange', flange: 'forged', forged: 'none' };
+      this.setCmdConn(next[connOf({ conn: this.cmdConn })] || 'none');
+    });
+    const fitBtn = $('#btnFitAuto');
+    if (fitBtn) fitBtn.addEventListener('click', () => this.setFitAuto(!this.fitAuto));
     $('#pad45').addEventListener('click', () => {
       this.diag45 = !this.diag45;
       this.highlightPad();
@@ -5500,6 +5548,9 @@ class App {
     // 치수 표시 토글 (기본 켜짐 · localStorage에 기억)
     const btnDims = $('#btnDims');
     if (btnDims) btnDims.addEventListener("click", () => this.setDims(!this.dimsAll));
+    // 피팅값 자동계산 — 배관 탭 스위치(조이스틱 버튼과 같은 상태)
+    const fitSw = $('#fitAutoSwitch');
+    if (fitSw) fitSw.addEventListener('change', () => this.setFitAuto(!!fitSw.checked, true));
     // ✏️ 손 그리기 토글 — 모바일에서는 접힌 보기 바에도 항상 보인다.
     const btnHand = $('#btnHand');
     if (btnHand) btnHand.addEventListener('click', () => this.setHandMode(!this.handMode));
@@ -5703,6 +5754,7 @@ class App {
         }
         spec[t.dataset.f] = v;
         this.refreshScene();
+        if (t.dataset.f === 'conn') this.renderProps();
       } else if (t.dataset.ptf) {
         const i = Number(t.dataset.pt);
         const v = parseFloat(t.value);
