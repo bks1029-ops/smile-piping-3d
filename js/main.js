@@ -155,6 +155,16 @@ class App {
     this.handTouches = new Set();// 지금 화면에 닿아 있는 손가락(포인터) 번호
     this.handDimItem = null;     // 방금 그은 구간의 치수 창이 가리키는 구간 { pipeId, index }
     this.lastPointerType = null; // 마지막으로 캔버스를 누른 입력 종류('touch'·'mouse'·'pen')
+    // 모바일 고스트 클릭(Ghost Click) 방어 — 3D에서 장비를 톡 누르면 그 pointerup에서 속성 창이
+    // 그 자리에 열리고, 모바일 브라우저가 같은 좌표에 뒤이어 보내는 click이 새로 열린 입력칸에
+    // 그대로 꽂혀 키보드가 올라오던 문제(v64까지). 창을 연 직후 짧게 창 안 입력을 잠근다.
+    this.propsGuardUntil = 0;
+    this.propsGuardTimer = 0;
+    this.propsGuardRaf = 0;
+    this.propsGhostUntil = 0;     // 뒤늦게 오는 호환 클릭(최대 시한)
+    this.propsRealDownAt = 0;     // 속성 창 안을 손·마우스로 실제 누른 시각
+    this.propsLastKeyAt = 0;      // 마지막 키 입력 시각(키보드 이동으로 잡힌 초점은 막지 않는다)
+    this.fromCanvasTap = false;   // 지금 처리 중인 탭이 3D 캔버스에서 시작됐는지
   }
 
   // ── 초기화 ───────────────────────────────────────────────
@@ -1446,6 +1456,8 @@ class App {
     const spec = this.getSelectedSpec();
     if (spec) this.aimAt(spec);
     if (window.innerWidth <= 860) this.setDrawerOpen(false);
+    // 3D 탭으로 연 창이면(창이 이미 열려 있던 경우 포함) 뒤따르는 고스트 클릭을 잠근다.
+    if (this.fromCanvasTap) this.guardPropsFromGhostTap();
   }
 
   clearSelection() {
@@ -1997,6 +2009,7 @@ class App {
     this.releaseOverlayEntry();
     this.aimAtNozzle(n);
     if (window.innerWidth <= 860) this.setDrawerOpen(false);
+    if (this.fromCanvasTap) this.guardPropsFromGhostTap();
     const c = this.cmdCursor;
     this.toast(`📍 ${n.label || NOZZLE_LABELS[n.dir]} 노즐 ${n.bore}에서 이어 그립니다 · 커서 (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})m`);
   }
@@ -2075,11 +2088,14 @@ class App {
     const panel = $('#props');
     const spec = this.getSelectedSpec();
     if (!spec) { panel.hidden = true; this.releaseOverlayEntry(); return; }
+    const wasHidden = panel.hidden;
     panel.hidden = false;
     // 속성 창을 열 때 다른 곳(명령창 등)에 잡혀 있던 초점은 놓아 준다.
     // 창 안의 입력칸에는 자동 초점을 주지 않는다 — 사용자가 그 칸을 직접 눌렀을 때만 키보드가 뜬다.
     this.blurForeignInput();
     this.syncOverlayEntry();
+    // 창이 막 열렸으면 3D 탭의 후속 click(고스트 클릭)이 입력칸을 건드리지 못하게 잠근다.
+    if (wasHidden) this.guardPropsFromGhostTap();
     const body = $('#propBody');
 
     if (spec.kind === 'equipment' || this.state.equipment.includes(spec)) {
@@ -2906,6 +2922,38 @@ class App {
     const panel = $('#props');
     if (panel && panel.contains(ae)) return;
     ae.blur();
+  }
+
+  // ── 모바일 고스트 클릭 방어 ──────────────────────────────
+  // 3D에서 장비를 톡 누르면 그 pointerup 자리에서 속성 창이 열린다. 모바일 브라우저(안드로이드
+  // 크롬·삼성 인터넷·iOS 사파리)는 그 터치를 마우스 클릭으로도 한 번 더 보내는데(호환 클릭),
+  // 새로 열린 창이 그 자리를 덮고 있어서 그 click이 '이름' 칸에 그대로 꽂혀 키보드가 올라왔다.
+  //  ① 창을 연 직후 350ms : 창 안의 터치·클릭·초점을 통째로 막는다.
+  //  ② 그 뒤 900ms까지     : 창 안을 직접 누른 적 없는(앞선 pointerdown이 없는) 마우스 클릭과
+  //                          그로 인한 초점만 막는다 — 기기·브라우저에 따라 호환 클릭이 500ms쯤
+  //                          늦게 도착하기 때문. 직접 누른 탭은 ②에서도 그대로 통과한다.
+  guardPropsFromGhostTap(ms = 350, ghostMs = 900) {
+    const panel = $('#props');
+    if (!panel || panel.hidden) return;
+    const now = performance.now();
+    this.propsGuardUntil = now + ms;
+    this.propsGhostUntil = now + Math.max(ghostMs, ms);
+    this.propsRealDownAt = 0;
+    const drop = () => {
+      const ae = document.activeElement;
+      if (!ae || !panel.contains(ae)) return;
+      if (!/INPUT|TEXTAREA|SELECT/.test(ae.tagName || '')) return;
+      try { ae.blur(); } catch (e) { /* ignore */ }
+    };
+    // 이미 잡힌 초점이 있으면 즉시, 관통한 click이 다음 틱에 초점을 잡으면 그때 한 번 더 놓는다.
+    drop();
+    if (this.propsGuardRaf) cancelAnimationFrame(this.propsGuardRaf);
+    this.propsGuardRaf = requestAnimationFrame(() => { this.propsGuardRaf = 0; drop(); });
+    if (this.propsGuardTimer) clearTimeout(this.propsGuardTimer);
+    this.propsGuardTimer = setTimeout(() => {
+      this.propsGuardTimer = 0;
+      drop();
+    }, ms);
   }
 
   runCommandLine(raw) {
@@ -4018,7 +4066,13 @@ class App {
     return this.raycaster;
   }
 
+  // 3D 캔버스의 탭 한 번 — 이 안에서 속성 창이 열리면 이어지는 고스트 클릭으로부터 창을 잠근다.
   onCanvasClick(ev) {
+    this.fromCanvasTap = true;
+    try { this.handleCanvasTap(ev); } finally { this.fromCanvasTap = false; }
+  }
+
+  handleCanvasTap(ev) {
     // 손 그리기 중에는 한 손가락 탭이 그리기 시작점이 된다 — 선택으로 새지 않게 한다.
     if (this.handMode) return;
     // 🔗 잇기 모드 — 탭한 접속구(티·노즐·배관 끝)까지 커서에서 바로 배관을 연결한다.
@@ -4753,6 +4807,44 @@ class App {
 
     // 속성 패널 이벤트 (위임)
     const body = $('#propBody');
+    // 고스트 클릭 차단 — 창을 연 직후 350ms 동안 창 안으로 들어오는 터치·마우스·클릭·초점을
+    // 캡처 단계에서 먼저 잡아 막는다. 그래야 3D 탭의 후속 click이 '이름' 입력칸에 닿지 않고,
+    // 같은 좌표에 있던 [삭제]·[위치 이동] 버튼이 잘못 눌리지도 않는다.
+    const propsPanel = $('#props');
+    const swallow = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    };
+    const blockGhost = (ev) => {
+      const now = performance.now();
+      const isStart = ev.type === 'pointerdown' || ev.type === 'touchstart';
+      if (isStart) {
+        // 창 안을 손·마우스로 직접 누른 것 — 하드 창(350ms) 안이면 이 누름도 버퍼고,
+        // 그 뒤라면 이제부터 오는 클릭·초점은 모두 정상이다.
+        if (now < this.propsGuardUntil) { swallow(ev); return; }
+        this.propsRealDownAt = now;
+        this.propsGhostUntil = 0;
+        return;
+      }
+      const hard = now < this.propsGuardUntil;
+      // 앞선 '창 안 누름'도, 키 입력도 없이 오는 마우스·클릭·초점 = 3D 탭의 후속(고스트)
+      const compat = /^(mousedown|mouseup|click|focusin)$/.test(ev.type);
+      const ghostLike = compat && now < this.propsGhostUntil
+        && (now - this.propsRealDownAt) > 400 && (now - this.propsLastKeyAt) > 400;
+      if (!hard && !ghostLike) return;
+      if (ev.type === 'focusin') {
+        const t = ev.target;
+        if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName || '') && typeof t.blur === 'function') t.blur();
+        return;
+      }
+      swallow(ev);
+    };
+    ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown', 'mouseup', 'click', 'focusin']
+      .forEach((type) => propsPanel.addEventListener(type, blockGhost, { capture: true, passive: false }));
+    // 키보드로 옮겨 다니는 초점은 막지 않는다.
+    document.addEventListener('keydown', () => { this.propsLastKeyAt = performance.now(); }, true);
+
     body.addEventListener('input', (ev) => {
       const spec = this.getSelectedSpec();
       if (!spec) return;
