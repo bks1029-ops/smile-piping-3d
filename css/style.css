@@ -574,6 +574,8 @@ input[type="color"] {
 .prop-body .field { margin-bottom: 10px; }
 .prop-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
 .prop-section { font-size: 10.5px; letter-spacing: 0.4px; color: var(--dim2); margin: 14px 0 7px; }
+/* 3축 회전 — 제목 옆에 지금 각도를 함께 (좌우 · 위아래 · 축) */
+.prop-section .rot3-now { margin-left: 6px; color: var(--accent); letter-spacing: 0; font-weight: 700; }
 /* 노즐 설정 — 방향 4칸(펌프는 IN·OUT 2칸)을 두 열로 컴팩트하게 */
 .noz-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .noz-grid .field { margin-bottom: 0; }
@@ -1148,8 +1150,9 @@ canvas.move-drag:active { cursor: grabbing; }
     position: fixed;
     top: auto; left: 0; right: 0; bottom: 0;
     width: auto;
-    /* 3D 시야를 덜 가리게 56dvh — 노즐 카드·위치 이동은 안에서 스크롤한다 */
-    max-height: 56dvh;
+    /* 3D 시야를 덜 가리게 40dvh(v67) — 고른 부속이 시트 위 화면에서 돌아가는 게 보이도록,
+       나머지 항목(노즐 카드·위치 이동·크기)은 시트 안에서 스크롤한다. */
+    max-height: 40dvh;
     border-radius: 18px 18px 0 0;
     border-bottom: 0;
     z-index: 45;

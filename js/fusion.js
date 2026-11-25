@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, handleRotOf, flangeOd } from './store.js?v=66';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, handleRotOf, flangeOd, equipBasis } from './store.js?v=67';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -38,45 +38,23 @@ export function buildFusionScript(state) {
         // 이 관경의 KS 10K 플랜지 외경(m) — 부속 자기 플랜지도 배관 끝 플랜지와 같은 크기로.
         fod: e.bore && HANDLE_TYPES.has(e.type) || e.type === 'flange' ? flangeOd(e.bore) : null,
       };
-      // 엘보는 관경과 두 다리 방향을 함께 넘겨야 Fusion에서도 배관과 같은 방향으로 앉는다.
+      // 자세 — 웹앱 buildEquipment()와 **같은 함수**(store.js equipBasis)로 회전행렬을 만든다.
+      //  · 기본 자세(계기 법선 · 엘보 두 다리 · 진행 방향 dir · 수직 axis:'y' · rot)
+      //  · 3축 회전 좌·우(yaw)·위·아래(pitch)와 축 회전(roll)까지 그대로 들어간다.
+      //  행 우선 3×3의 각 열 = 로컬 X·Y·Z가 향하는 월드 방향.
+      item.rmat = equipBasis(e).map((v) => Math.round(v * 1e6) / 1e6);
+      // 엘보·배관 끝 부속은 방향 벡터도 함께 넘긴다(스크립트 안에서 참고·디버깅용).
       if (e.type === 'elbow' || e.type === 'elbow45') {
         item.bore = e.bore || e.bore1 || '100A';
         if (Array.isArray(e.inDir) && Array.isArray(e.outDir)) {
           item.inDir = e.inDir;
           item.outDir = e.outDir;
-          item.rmat = elbowBasis(e.inDir, e.outDir).map((v) => Math.round(v * 1e6) / 1e6);
-        } else {
-          const th = (Number(e.rot) || 0) * Math.PI / 180;
-          const c = Math.cos(th);
-          const s = Math.sin(th);
-          item.rmat = [c, 0, s, 0, 1, 0, -s, 0, c];
         }
       }
-      // 계기는 다이얼 정면(배관 바깥 법선)으로 축을 잡는다 — 웹앱 gaugeBasis와 같은 행렬.
-      // (니쁠은 로컬 −Z로 배관 중심을 향해 꽂힌다)
-      if (e.type === 'gauge' && Array.isArray(e.normal) && e.normal.length === 3
-          && e.normal.every((v) => Number.isFinite(Number(v)))) {
-        item.normal = e.normal.map((v) => Math.round(v * 1e6) / 1e6);
-        item.rmat = gaugeBasis(e.normal).map((v) => Math.round(v * 1e6) / 1e6);
-      }
-      // 배관 끝 부속(플랜지·밸브·피팅)은 진행 방향 벡터를 함께 넘긴다 —
-      // 웹앱과 같은 축 정렬(수직·좌우·45° 경사)로 Fusion에 놓인다.
-      if (!item.rmat && Array.isArray(e.dir) && e.dir.length === 3) {
-        item.dir = e.dir;
-        item.rmat = dirBasis(e.dir).map((v) => Math.round(v * 1e6) / 1e6);
-      }
-      // 수직 배관 위에 세운 부속(axis: 'y')도 웹앱과 같은 자세로 놓는다.
-      // (안전밸브·계기는 제 몸으로 세로·수평을 잡으므로 제외)
-      if (!item.rmat && item.axis === 'y'
-          && e.type !== 'gauge' && e.type !== 'safety_valve') {
-        item.rmat = verticalMatrix(e.rot);
-      }
-      // 핸들 방향 — 웹앱 buildEquipment와 같은 자리에서 관 축(로컬 +X) 둘레로 돈다.
-      // (유로 축은 그대로라 플랜지·몸체가 맟물린 자리는 바뀌지 않는다)
-      if (item.rmat && handleRotOf(e) && HANDLE_TYPES.has(e.type)) {
-        item.roll = handleRotOf(e);
-        item.rmat = rollBasis(item.rmat, item.roll);
-      }
+      if (Array.isArray(e.dir) && e.dir.length === 3) item.dir = e.dir;
+      if (e.yaw) item.yaw = e.yaw;
+      if (e.pitch) item.pitch = e.pitch;
+      if (e.roll) item.roll = handleRotOf(e);
       // 노즐 — 웹앱과 **같은 끝점 좌표**를 넘겨 Fusion에도 같은 자리에 목·플랜지가 생긴다.
       // 노즐을 쓰는 장비는 빈 목록이라도 넣어, 각 타입 빌더의 고정 노즐은 그리지 않게 한다.
       if (NOZZLE_TYPES.has(e.type)) {

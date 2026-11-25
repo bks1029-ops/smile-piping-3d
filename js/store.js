@@ -439,6 +439,115 @@ export function rollBasis(b, deg) {
   return out.map(round6);
 }
 
+// ── 3축 회전 — 모든 장비·부속 ─────────────────────────────────────────────
+// 사용자 요청(2026-11-25 `31577` 캡처): 어떤 장비·부속을 골라도
+//   좌·우(수평) 45° → yaw   : 월드 Y축 둘레
+//   위·아래      45° → pitch : 지금 유로(로컬 +X)에 수직인 수평축 둘레
+//   축 회전      45° → roll  : 제 유로 축(로컬 +X) 둘레 (밸브·스트레이너는 핸들만)
+// 로 돌릴 수 있다. 값은 도(deg)이고 yaw·pitch 는 -180~180으로 정규화해 저장한다.
+// builders.js(Three.js 회전)·fusion.js(rmat)·store.js(노즐·접합면)가 같은 식을 쓴다.
+export function norm180(deg) {
+  const v = num(deg, 0);
+  const w = ((v % 360) + 360) % 360;
+  return Math.round(w > 180 ? w - 360 : w);
+}
+
+// 월드 축 ax 둘레로 deg 만큼 도는 3×3 (행 우선) — 로드리게스 공식.
+function axisRot(ax, deg) {
+  const t = (Number(deg) || 0) * Math.PI / 180;
+  if (!t) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const l = Math.hypot(ax[0], ax[1], ax[2]) || 1;
+  const x = ax[0] / l, y = ax[1] / l, z = ax[2] / l;
+  const c = Math.cos(t), s = Math.sin(t), k = 1 - c;
+  return [
+    c + x * x * k, x * y * k - z * s, x * z * k + y * s,
+    y * x * k + z * s, c + y * y * k, y * z * k - x * s,
+    z * x * k - y * s, z * y * k + x * s, c + z * z * k,
+  ];
+}
+
+// 위·아래(pitch) 회전축 — 지금 유로(수평 성분)에 수직인 수평축. 유로가 세로면 월드 X.
+function pitchAxisOf(h) {
+  const ax = [-h[2], 0, h[0]];      // cross(유로, 월드 위쪽) — 양의 각이 유로를 들어 올린다
+  return Math.hypot(ax[0], ax[2]) < 1e-6 ? [1, 0, 0] : ax;
+}
+
+// 벡터에 yaw·pitch 를 적용 (몸체와 같은 순서: yaw → pitch).
+export function extraRotVec(v, yawDeg, pitchDeg) {
+  const yaw = num(yawDeg, 0);
+  const pitch = num(pitchDeg, 0);
+  const h = yaw ? matVec(rotYM(yaw), [v[0], v[1], v[2]]) : [v[0], v[1], v[2]];
+  if (!pitch) return h;
+  return matVec(axisRot(pitchAxisOf(h), pitch), h);
+}
+
+// 회전행렬(행 우선 3×3)에 yaw·pitch 를 덧씌운다 — R = Rpitch · Ryaw · B.
+export function extraBasis(b, yawDeg, pitchDeg) {
+  const yaw = num(yawDeg, 0);
+  const pitch = num(pitchDeg, 0);
+  if (!yaw && !pitch) return b.slice();
+  let m = yaw ? matMul(rotYM(yaw), b) : b.slice();
+  if (pitch) m = matMul(axisRot(pitchAxisOf([m[0], m[3], m[6]]), pitch), m);
+  return m;
+}
+
+// 축 회전(roll) 값 — 밸브·스트레이너는 핸들만, 나머지는 몸체가 유로 축 둘레로 돈다.
+export function rollOf(spec) {
+  return num(spec && spec.roll, 0);
+}
+
+// 장비·부속의 최종 자세(행 우선 3×3, 각 열 = 로컬 X·Y·Z가 향하는 월드 방향).
+// builders.js buildEquipment()와 fusion.js rmat 이 **같은 이 함수**를 쓴다.
+//  · 기본 자세: 계기(법선) → 엘보(두 다리) → 진행 방향(dir) → 수직(axis: 'y') → 회전(rot)
+//  · 그 위에 3축 회전(yaw·pitch)을 덧씌우고, 마지막에 유로 축 둘레 roll 을 건다.
+export function equipBasis(spec) {
+  if (!spec) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const type = spec.type;
+  const verticalNative = type === 'safety_valve' || type === 'gauge';
+  const elbowLike = type === 'elbow' || type === 'elbow45';
+  const dirOk = Array.isArray(spec.dir) && spec.dir.length === 3
+    && Math.hypot(num(spec.dir[0], 0), num(spec.dir[1], 0), num(spec.dir[2], 0)) > 1e-6;
+  let b;
+  if (type === 'gauge' && Array.isArray(spec.normal)) {
+    b = gaugeBasis(spec.normal);
+  } else if (elbowLike && Array.isArray(spec.inDir) && Array.isArray(spec.outDir)) {
+    b = elbowBasis(spec.inDir, spec.outDir);
+  } else if (!verticalNative && dirOk) {
+    b = dirBasis(spec.dir);
+  } else if (spec.axis === 'y' && !verticalNative) {
+    b = matMul(rotYM(num(spec.rot, 0)), dirBasis([0, 1, 0]));
+  } else if (type === 'gauge' && (spec.axis === 'x' || spec.axis === 'z')) {
+    // 계기를 배관 옆면에 붙일 때 — 스템(+Y)을 수평으로 눕히고 다이얼은 앞을 본다.
+    const base = spec.axis === 'x'
+      ? [0, 1, 0, -1, 0, 0, 0, 0, 1]     // Rz(-90°)
+      : [1, 0, 0, 0, 0, -1, 0, 1, 0];    // Rx(+90°)
+    b = matMul(rotYM(num(spec.rot, 0)), base);
+  } else {
+    b = rotYM(num(spec.rot, 0));
+  }
+  return rollBasis(extraBasis(b, spec.yaw, spec.pitch), rollOf(spec));
+}
+
+// 장비·부속의 유로 축(월드 단위벡터) — 3축 회전까지 반영한 실제 축.
+// 플랜지 접합면·노즐·맞물림 판이 모두 이 축을 쓴다.
+export function equipFlowAxis(e) {
+  let ax = [1, 0, 0];
+  if (Array.isArray(e.dir) && e.dir.length === 3) {
+    const l = Math.hypot(num(e.dir[0], 0), num(e.dir[1], 0), num(e.dir[2], 0));
+    if (l > 1e-6) ax = [num(e.dir[0], 0) / l, num(e.dir[1], 0) / l, num(e.dir[2], 0) / l];
+  } else if (e.axis === 'y') {
+    ax = [0, 1, 0];
+  } else {
+    const rot = ((Number(e.rot) || 0) % 360 + 360) % 360;
+    if (rot === 90) ax = [0, 0, 1];
+    else if (rot === 270) ax = [0, 0, -1];
+    else if (rot === 180) ax = [-1, 0, 0];
+  }
+  const v = extraRotVec(ax, e.yaw, e.pitch);
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return { x: v[0] / l, y: v[1] / l, z: v[2] / l };
+}
+
 let seq = 0;
 export function uid(prefix) {
   seq += 1;
@@ -488,8 +597,12 @@ export function makeEquipment(type, opts) {
   // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
   if (AXIS_VALUES.has(o.axis)) spec.axis = o.axis;
   else if (t.vertical) spec.axis = 'y';
-  // 핸들 방향 — 배관(유로)은 그대로 두고 손잡이만 관 축 둘레로 돈 각도(0~359°).
-  if (HANDLE_TYPES.has(type) && num(o.roll, 0)) spec.roll = handleRotOf({ roll: o.roll });
+  // 축 회전(roll) — 밸브·스트레이너는 관 축은 두고 손잡이만, 그 밖의 부속·장비는
+  // 몸체가 유로 축 둘레로 돈다(0~359°).
+  if (num(o.roll, 0)) spec.roll = handleRotOf({ roll: o.roll });
+  // 좌·우(yaw)·위·아래(pitch) 회전 — 모든 장비·부속 공통(2026-11-25 `31577` 요청).
+  if (num(o.yaw, 0)) spec.yaw = norm180(o.yaw);
+  if (num(o.pitch, 0)) spec.pitch = norm180(o.pitch);
   // 옆에서 니쁠로 달린 계기 — builders.js가 연결 니쁠을 그린다
   if (o.mount === 'side') spec.mount = 'side';
   // 계기 정면 방향(배관 외벽 바깥 단위벡터) — 다이얼이 이쪽을 보고 니쁠은 반대로 꽂힌다.
@@ -953,20 +1066,27 @@ function hxNozzleAnchor(spec, n) {
   return { p: [xAt, B.cy, -rad], axis: [0, 0, -1] };
 }
 
-// 노즐 하나를 월드 좌표로 — 장비 회전(rot)만 적용하고, 끝점은 목+플랜지 두께만큼 바깥.
+// 노즐 하나를 월드 좌표로 — 장비 자세(rot · 3축 회전)를 그대로 적용하고,
+// 끝점은 목+플랜지 두께만큼 바깥.
 function nozzleEntry(spec, dir, bore, a, extra) {
   if (!a) return null;
   const r = boreOd(bore) / 2;
   const neck = Math.max(NOZZLE_NECK_MIN, Math.min(NOZZLE_NECK_MAX, 0.10 + 2.0 * r));
-  const th = num(spec.rot, 0) * Math.PI / 180;
-  const c = Math.cos(th);
-  const s = Math.sin(th);
-  const toWorld = (p) => ({
-    x: round3(num(spec.x, 0) + p[0] * c + p[2] * s),
-    y: round3(Math.max(0, num(spec.y, 0) + p[1])),
-    z: round3(num(spec.z, 0) - p[0] * s + p[2] * c),
-  });
-  const rotV = (v) => ({ x: v[0] * c + v[2] * s, y: v[1], z: -v[0] * s + v[2] * c });
+  // 몸체와 같은 회전행렬 — 회전(rot)·좌우(yaw)·위아래(pitch)·축(roll)을 모두 반영해
+  // 노즐도 몸체와 함께 돈다 (buildEquipment와 같은 식).
+  const M = equipBasis(spec);
+  const toWorld = (p) => {
+    const w = matVec(M, p);
+    return {
+      x: round3(num(spec.x, 0) + w[0]),
+      y: round3(Math.max(0, num(spec.y, 0) + w[1])),
+      z: round3(num(spec.z, 0) + w[2]),
+    };
+  };
+  const rotV = (v) => {
+    const w = matVec(M, [v[0], v[1], v[2]]);
+    return { x: w[0], y: w[1], z: w[2] };
+  };
   const axis = rotV(a.axis);
   const base = toWorld(a.p);
   const tip = a.tip
@@ -1021,6 +1141,52 @@ export function equipNozzles(spec) {
     if (e) out.push(e);
   });
   return out;
+}
+
+// 부속의 접속면 전체(플랜지 체결·용접 모두) — **회전해도 연결을 유지**할 때 쓴다.
+// 회전 버튼은 부속을 제 중심으로 돌리므로, 아래에 닿아 있던 면이 공중으로 떠 버린다.
+// main.js가 회전 전에 이 목록에서 '지금 붙어 있는 면'을 기억하고, 회전 뒤 같은 면이
+// 그 자리에 0mm로 다시 앉도록 중심(x·y·z)을 옮긴다 (2026-11-25 `31585` 캡처).
+export function equipConnectFaces(spec) {
+  if (!spec || !spec.type) return [];
+  // 티 — 직진 A·B + 분기 세 접속구
+  if (spec.type === 'tee') return teePorts(spec);
+  // 엘보 — 두 다리 끝면 (elbowDims().face)
+  if (spec.type === 'elbow' || spec.type === 'elbow45') {
+    const dims = elbowDims(spec.type, spec.bore || '100A');
+    const b = equipBasis(spec);
+    return [0, 1].map((i) => {
+      const ax = { x: b[i], y: b[3 + i], z: b[6 + i] };
+      return {
+        nid: i === 0 ? 'legA' : 'legB',
+        tip: {
+          x: round3(num(spec.x, 0) + ax.x * dims.face),
+          y: round3(num(spec.y, 0) + ax.y * dims.face),
+          z: round3(num(spec.z, 0) + ax.z * dims.face),
+        },
+        axis: ax,
+      };
+    });
+  }
+  // 플랜지로 체결하는 부속(밸브·신축관·유량계·플랜지) — 양쪽 접합면
+  const fl = flangedPorts(spec);
+  if (fl.length) return fl;
+  // 레듀샤·니쁠·캡·유니온 — 유로 축 양끝 면(용접·나사)
+  const half = Math.abs(num(spec.w, 0)) / 2;
+  if (!(half > 0.005)) return [];
+  const a = equipFlowAxis(spec);
+  return [-1, 1].map((sg) => {
+    const axis = { x: a.x * sg, y: a.y * sg, z: a.z * sg };
+    return {
+      nid: sg < 0 ? 'faceA' : 'faceB',
+      tip: {
+        x: round3(num(spec.x, 0) + axis.x * half),
+        y: round3(Math.max(0, num(spec.y, 0) + axis.y * half)),
+        z: round3(num(spec.z, 0) + axis.z * half),
+      },
+      axis,
+    };
+  });
 }
 
 // ── 티(분기관) 접속구 — 직진 양끝 + 분기 끝 ────────────────────────────────
@@ -1080,6 +1246,8 @@ function teeFrame(spec) {
     ? spec.dir.map((v) => Number(v)) : null;
   if (dv && Math.hypot(dv[0], dv[1], dv[2]) > 1e-6) M = dirBasis(dv);
   else if (spec.axis === 'y') M = matMul(rotYM(num(spec.rot, 0)), dirBasis([0, 1, 0]));
+  // 3축 회전도 몸체와 같이 적용 — 분기 방향·접속구 좌표가 같이 돈다.
+  M = rollBasis(extraBasis(M, spec.yaw, spec.pitch), rollOf(spec));
   return { b1, b2, r1, r2: boreOd(b2) / 2, L, H, s, M };
 }
 
@@ -1121,11 +1289,54 @@ export function teePorts(spec) {
   ];
 }
 
-// 장비·부속의 접속구 — 노즐이 있는 장비는 노즐, 티는 직진 양끝 + 분기 끝.
+// 장비·부속의 접속구 — 노즐이 있는 장비는 노즐, 티는 직진 양끝 + 분기 끝,
+// 플랜지로 체결하는 부속(밸브·신축관·유량계·플랜지)은 **양쪽 플랜지 접합면**이다.
 export function equipPorts(spec) {
   if (!spec) return [];
   if (spec.type === 'tee') return teePorts(spec);
-  return equipNozzles(spec);
+  return [...equipNozzles(spec), ...flangedPorts(spec)];
+}
+
+// 플랜지로 체결하는 부속 — 배관이 이 접합면에 맞물림 플랜지로 붙는다.
+// (엘보·티·레듀샤는 용접, 장비는 제 노즐 플랜지가 있다)
+export const FLANGE_MATE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'flow']);
+
+// 부속의 플랜지 접합면 두 곳 — 손 그리기·잇기가 이 자리에 배관을 붙이고,
+// 그 자리에 90°로 들어가면 엘보가 서고 맞물림 플랜지가 붙는다 (2026-11-25 `31578`).
+export function flangedPorts(spec) {
+  if (!spec || !spec.type) return [];
+  const standalone = spec.type === 'flange';
+  if (!standalone && !FLANGE_MATE_TYPES.has(spec.type)) return [];
+  if (!standalone && (spec.conn || 'flange') === 'forged') return [];
+  const half = Math.abs(num(spec.w, 0)) / 2;
+  if (!(half > 0.005)) return [];
+  const a = equipFlowAxis(spec);
+  const bore = BORES[spec.bore] ? spec.bore : null;
+  const r = flangeOd(bore || SIZE_REF_BORE) / 2;
+  const out = [];
+  [-1, 1].forEach((sg) => {
+    const axis = { x: a.x * sg, y: a.y * sg, z: a.z * sg };
+    const tip = {
+      x: round3(num(spec.x, 0) + axis.x * half),
+      y: round3(Math.max(0, num(spec.y, 0) + axis.y * half)),
+      z: round3(num(spec.z, 0) + axis.z * half),
+    };
+    out.push({
+      nid: sg < 0 ? 'faceA' : 'faceB',
+      dir: null,
+      bore,
+      label: '접합면',
+      r: round3(r),
+      base: { x: round3(tip.x - axis.x * 0.02), y: round3(Math.max(0, tip.y - axis.y * 0.02)), z: round3(tip.z - axis.z * 0.02) },
+      tip,
+      axis: { x: round3(axis.x), y: round3(axis.y), z: round3(axis.z) },
+      len: 0.02,
+      seat: 'flange',
+      equipId: spec.id,
+      equipName: spec.name || '',
+    });
+  });
+  return out;
 }
 
 // ── 장비 본체가 차지하는 공간 ────────────────────────────────────────
@@ -2136,8 +2347,12 @@ export function normalizeState(raw) {
       // 세워 놓은 방향(axis: 'y')도 그대로 살린다.
       if (AXIS_VALUES.has(e.axis)) item.axis = e.axis;
       else if (t.vertical) item.axis = 'y';
-      // 핸들 방향도 저장한다 — 다시 열어도 손잡이가 돌아간 자리를 유지한다.
-      if (HANDLE_TYPES.has(type) && num(e.roll, 0)) item.roll = handleRotOf(e);
+      // 핸들·축 회전도 저장한다 — 다시 열어도 손잡이·몸체가 돌아간 자리를 유지한다.
+      // (밸브·스트레이너는 손잡이만, 다른 부속·장비는 몸체가 유로 축 둘레로 돈다)
+      if (num(e.roll, 0)) item.roll = handleRotOf(e);
+      // 좌·우(yaw)·위·아래(pitch) 회전 — 모든 장비·부속 공통.
+      if (num(e.yaw, 0)) item.yaw = norm180(e.yaw);
+      if (num(e.pitch, 0)) item.pitch = norm180(e.pitch);
       if (e.mount === 'side') item.mount = 'side';
       // 계기 정면 방향(배관 외벽 바깥)도 살린다 — 열이 열리면 니쁠이 다시 빗나간다.
       if (type === 'gauge' && Array.isArray(e.normal) && e.normal.length === 3

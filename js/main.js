@@ -12,15 +12,15 @@ import {
   HX_AT, HX_AT_LABELS, HX_NOZ_DIRS, HX_NOZ_DIR_LABELS, HX_PRESETS,
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
   equipPorts, teePorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
-  HANDLE_TYPES, handleRotOf,
-} from './store.js?v=66';
-import { buildScene } from './builders.js?v=66';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=66';
-import { buildOBJ } from './obj.js?v=66';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=66';
-import { parseCommand, CMD_HELP } from './cmd.js?v=66';
-import { buildDimItems } from './dims.js?v=66';
-import { buildAiImageParts } from './zoom.js?v=66';
+  HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces,
+} from './store.js?v=67';
+import { buildScene } from './builders.js?v=67';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=67';
+import { buildOBJ } from './obj.js?v=67';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=67';
+import { parseCommand, CMD_HELP } from './cmd.js?v=67';
+import { buildDimItems } from './dims.js?v=67';
+import { buildAiImageParts } from './zoom.js?v=67';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -147,6 +147,7 @@ class App {
     this.inPopState = false;
     // ✏️ 손 그리기 — 한 손가락 드래그가 카메라 회전 대신 배관 그리기가 된다.
     this.handMode = false;
+    this.focusKey = null;   // 속성 시트 초점을 마지막으로 맞춘 선택(같은 선택은 다시 옮기지 않는다)
     this.handAnchor = null;      // 이번 구간을 시작하는 점 {x,y,z}
     this.handDown = null;        // 지금 누르고 있는 손가락
     this.handTap = null;         // 두 점 찍기 — 첫 점을 찍어 둔 상태 ({ point })
@@ -552,6 +553,92 @@ class App {
     window.addEventListener('orientationchange', () => setTimeout(() => this.applyKeyboardInset(), 200));
   }
 
+  // ── 선택한 것이 속성 시트에 가리지 않게 ────────────────────────────────
+  // 모바일 속성 시트(화면 아래 40dvh)가 열리면, 방금 고른 부속·배관이 시트 뒤로 숨어
+  // 회전을 눌러도 돌아가는 게 보이지 않던 문제(2026-11-25 `31583` 캡처).
+  //  · 시트 위에 남은 3D 영역의 한가운데로 **카메라와 표적을 함께 옮긴다**(방향·거리 그대로).
+  //  · 같은 선택이 유지되는 동안(회전 버튼을 여러 번 눌러도)은 다시 옮기지 않는다 — 화면이 흔들리지 않게.
+  focusSelectedInView(dur) {
+    if (!this.camera || !this.controls || !this.renderer) return;
+    if (window.innerWidth > 860) return;            // 넓은 화면은 옆 패널이라 가리지 않는다
+    const props = $('#props');
+    if (!props || props.hidden) return;
+    const sel = this.selection;
+    if (!sel) return;
+    const key = `${sel.kind}:${sel.id}`;
+    if (this.focusKey === key) return;
+    const cRect = this.renderer.domElement.getBoundingClientRect();
+    const sRect = props.getBoundingClientRect();
+    if (!cRect.height) return;
+    const top = Math.max(cRect.top, 0);
+    const bottom = Math.min(sRect.top || cRect.bottom, cRect.bottom);
+    const bandH = bottom - top;
+    if (bandH < 120) return;                       // 남은 3D 자리가 너무 좁으면 그대로 둔다
+    // 대상의 세계 중심 — 실제 메시 묶음의 경계 상자 중심(배관은 선 전체의 가운데)
+    let center = null;
+    const obj = this.findObject(sel);
+    if (obj) {
+      const box = new THREE.Box3().setFromObject(obj);
+      if (!box.isEmpty()) center = box.getCenter(new THREE.Vector3());
+    }
+    if (!center) {
+      const spec = this.getSelectedSpec();
+      if (!spec) return;
+      if (Array.isArray(spec.points) && spec.points.length) {
+        const n = spec.points.length;
+        center = new THREE.Vector3(
+          spec.points.reduce((a, p) => a + p.x, 0) / n,
+          spec.points.reduce((a, p) => a + p.y, 0) / n,
+          spec.points.reduce((a, p) => a + p.z, 0) / n,
+        );
+      } else {
+        center = new THREE.Vector3(spec.x || 0, (spec.y || 0) + (spec.h || 0.3) * 0.5, spec.z || 0);
+      }
+    }
+    this.focusKey = key;
+    const proj = center.clone().project(this.camera);
+    if (proj.z > 1 || proj.z < -1) return;
+    const sy = cRect.top + (-proj.y * 0.5 + 0.5) * cRect.height;
+    const want = (top + bottom) / 2;
+    const bandMidOk = Math.abs(sy - want) < bandH * 0.18;
+    // ① 표적을 대상으로 옮긴다 — 보는 방향(각도)은 그대로.
+    const off = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+    const dir = off.clone().normalize();
+    const dist0 = off.length();
+    const tanHalf = Math.tan((this.camera.fov * Math.PI / 180) / 2);
+    // ② 대상이 화면에서 너무 작으면(멀리서 고른 경우) 적당히 당겨 온다 — 돌아가는 게 보이게.
+    let radius = 0.3;
+    if (obj) {
+      const sp = new THREE.Box3().setFromObject(obj).getBoundingSphere(new THREE.Sphere());
+      if (sp.radius > 0.02) radius = sp.radius;
+    }
+    const sizePx = (2 * radius / (2 * dist0 * tanHalf)) * cRect.height;
+    let dist = dist0;
+    if (sizePx < 120) dist = Math.min(dist0, Math.max(1.2, radius * 4.2));
+    if (bandMidOk && dist === dist0) return;          // 이미 시야 안에 또렷하게 보인다 — 그대로
+    const t1 = center.clone();
+    const p1 = center.clone().addScaledVector(dir, dist);
+    // ③ 남은 3D 영역(시트 위) 한가운데로 화면에서 올린다 — 캔버스 중심과의 차이만큼만.
+    const visibleH = 2 * dist * tanHalf;
+    const wpp = visibleH / cRect.height;
+    const canvasMid = cRect.top + cRect.height / 2;
+    const shift = Math.max(-visibleH * 0.4, Math.min(visibleH * 0.4, (canvasMid - want) * wpp));
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    p1.addScaledVector(up, -shift);
+    t1.addScaledVector(up, -shift);
+    // 지면(0m) 아래로 내려가지 않게 — 카메라가 바닥 밑에서 지면을 보는 일을 막는다.
+    if (p1.y < 0.8) {
+      const lift = 0.8 - p1.y;
+      p1.y += lift;
+      t1.y += lift;
+    }
+    this.camAnim = {
+      p0: this.camera.position.clone(), p1,
+      t0: this.controls.target.clone(), t1,
+      start: performance.now(), dur: dur == null ? 380 : dur,
+    };
+  }
+
   // 확대된 채로 들어온 경우(브라우저 '강제 확대'·접근성 설정, 예전 캐시)에도 속성 창·서랍이
   // 화면 밖으로 잘리지 않게, 지금 보이는 영역(visualViewport) 크기로 줄여 그 안에 붙인다.
   // 확대가 풀리면(scale 1) 인라인 값을 지워 원래 CSS 배치로 되돌린다.
@@ -848,7 +935,7 @@ class App {
     if (!s1) return null;
     const v = new THREE.Vector3();
     let best = null;
-    const take = (p, label, bore, dir) => {
+    const take = (p, label, bore, dir, extra) => {
       if (Math.hypot(p.x - to.x, p.y - to.y, p.z - to.z) > 0.3) return;
       if (this.handAnchor && Math.hypot(p.x - this.handAnchor.x, p.y - this.handAnchor.y, p.z - this.handAnchor.z) < 0.05) return;
       v.set(p.x, p.y, p.z).project(this.camera);
@@ -857,10 +944,12 @@ class App {
       const sy = (-v.y * 0.5 + 0.5) * rect.height;
       const d = Math.hypot(sx - s1.x, sy - s1.y);
       if (d > 26 || (best && d >= best.d)) return;
-      best = { anchor: { p: { x: p.x, y: p.y, z: p.z }, label, bore: bore || null, dir: dir || null }, d };
+      best = { anchor: { p: { x: p.x, y: p.y, z: p.z }, label, bore: bore || null, dir: dir || null, ...(extra || {}) }, d };
     };
     this.state.equipment.forEach((e) => {
-      equipPorts(e).forEach((n) => take(n.tip, `${e.name} ${n.label || ''}`.trim(), n.bore, n.axis));
+      equipPorts(e).forEach((n) => take(n.tip, `${e.name} ${n.label || ''}`.trim(), n.bore, n.axis, {
+        seat: n.seat || null, portAxis: n.axis, equipId: e.id, portNid: n.nid || null,
+      }));
     });
     this.state.pipes.forEach((pipe) => {
       const pts = pipe.points || [];
@@ -873,6 +962,58 @@ class App {
     return best;
   }
 
+  // 플랜지 접합면에 배관을 딱 체결시킨다 — 90°(또는 45°)로 꺾여 들어가면 그 꺾임에
+  // 엘보를 세우고 배관을 엘보 접합면에서 끊는다. 그러면 부속 플랜지 ↔ 맞물림 플랜지가
+  // 맞물린 두 장으로 보이고, 배관 끝은 용접 비드만 된다.
+  //  (2026-11-25 `31578` "자동으로 엘보 쓰고 플렌지 써주면 좋겠는데")
+  seatAtFlangePort(from, snap) {
+    const p = snap.p;
+    const a = snap.portAxis || { x: 0, y: 0, z: 1 };
+    const bore = BORES[snap.bore] ? snap.bore : this.cmdBore;
+    const v = { x: p.x - from.x, y: p.y - from.y, z: p.z - from.z };
+    const L = Math.hypot(v.x, v.y, v.z);
+    if (L < 0.05) return { path: [{ ...from }, { ...p }], elbow: null };
+    const u = { x: v.x / L, y: v.y / L, z: v.z / L };
+    const da = u.x * a.x + u.y * a.y + u.z * a.z;   // 진행 방향 · 바깥 법선
+    // 배관이 바깥에서 접합면 축을 따라 곧장 들어오면 엘보 없이 면에 붙인다.
+    if (da < -0.9) return { path: [{ ...from }, { ...p }], elbow: null };
+    // 법선 반대(부속 안쪽에서 바깥으로)로 가는 배관이면 이 면이 아니다 — 그냥 직교 경로.
+    if (da > 0.9) return { path: this.orthoPath(from, p), elbow: null };
+    // 꺽임 각도에 맞는 엘보 — 90°면 엘보, 45°면 45° 엘보.
+    const bend = Math.acos(Math.max(-1, Math.min(1, da))) * 180 / Math.PI;
+    const type = (bend > 30 && bend < 60) ? 'elbow45' : 'elbow';
+    const face = elbowDims(type, bore).face;
+    // 엘보는 부속 밖에 서서 바깥 다리 끝면이 정확히 접합면 p에 앉는다.
+    const corner = { x: p.x + a.x * face, y: Math.max(0, p.y + a.y * face), z: p.z + a.z * face };
+    const path = this.orthoPath(from, corner);
+    if (path.length < 2) return { path: this.orthoPath(from, p), elbow: null };
+    const last = path[path.length - 1];
+    const prev = path[path.length - 2];
+    const sg = { x: last.x - prev.x, y: last.y - prev.y, z: last.z - prev.z };
+    const sgLen = Math.hypot(sg.x, sg.y, sg.z);
+    if (sgLen < 1e-4) return { path: this.orthoPath(from, p), elbow: null };
+    const d = { x: sg.x / sgLen, y: sg.y / sgLen, z: sg.z / sgLen };
+    // 마지막 구간이 이미 접합면 축과 나란하면 엘보 없이 면까지 붙인다.
+    if (d.x * a.x + d.y * a.y + d.z * a.z < -0.9) return { path: [...path, { ...p }], elbow: null };
+    // 배관 끝을 엘보 접합면(face)만큼 당겨 엘보 자리를 남긴다.
+    if (sgLen < face + 0.02) return { path: [...path, { ...p }], elbow: null };
+    const cut = {
+      x: r3(last.x - d.x * face),
+      y: Math.max(0, r3(last.y - d.y * face)),
+      z: r3(last.z - d.z * face),
+    };
+    return {
+      path: path.slice(0, -1).concat([cut]),
+      elbow: {
+        at: corner,
+        type,
+        bore,
+        inDir: [-d.x, -d.y, -d.z],
+        outDir: [-a.x, -a.y, -a.z],
+      },
+    };
+  }
+
   // 자석으로 붙은 자리까지 배관을 만든다 — 직선으로 닿으면 직선, 아니면 90° 꺾임 경로.
   commitHandSnap() {
     const snap = this.handSnap;
@@ -881,13 +1022,27 @@ class App {
     const from = { x: a.x, y: a.y, z: a.z };
     const d = Math.hypot(snap.p.x - from.x, snap.p.y - from.y, snap.p.z - from.z);
     if (d < 0.05) { this.clearHandPreview(); return null; }
-    const path = this.orthoPath(from, snap.p);
+    // 플랜지 접합면이면 축 방향으로 꺾어 앉힌다 (엘보 + 맞물림 플랜지).
+    const seated = snap.seat === 'flange' ? this.seatAtFlangePort(from, snap) : null;
+    const path = seated ? seated.path : this.orthoPath(from, snap.p);
     const bore = BORES[snap.bore] ? snap.bore : this.cmdBore;
     this.pushUndo('🧲 자석 연결');
     const pipe = makePipe({
       name: this.nextPipeName(), bore, material: this.cmdMaterial, conn: this.cmdConn, points: path,
     });
     this.state.pipes.push(pipe);
+    // 꺾여 들어갔으면 그 꺾임에 엘보를 세운다 — 배관 끝은 엘보 접합면에서 끊긴다.
+    let elbow = null;
+    if (seated && seated.elbow) {
+      const e = seated.elbow;
+      elbow = makeEquipment(e.type, {
+        name: `EL-${100 + this.state.equipment.filter((q) => q.type === e.type).length + 1} 엘보`,
+        x: e.at.x, y: e.at.y, z: e.at.z, bore: e.bore,
+        inDir: e.inDir, outDir: e.outDir,
+        rot: this.rotForDir({ x: e.outDir[0], y: e.outDir[1], z: e.outDir[2] }, this.cmdRot),
+      });
+      this.state.equipment.push(elbow);
+    }
     this.lastAdded = { kind: 'pipe', id: pipe.id };
     const prev = path[path.length - 2] || from;
     const last = path[path.length - 1];
@@ -904,7 +1059,9 @@ class App {
     this.setCmdCursor(snap.p, true);
     this.rebuild();
     this.showHandAnchor();
-    this.toast(`🧲 ${snap.label} ${bore}에 붙여 연결했습니다 · ${fmt(d)}m`, {
+    this.toast(elbow
+      ? `🧲 ${snap.label} ${bore}에 엘보로 체결했습니다 · ${fmt(d)}m`
+      : `🧲 ${snap.label} ${bore}에 붙여 연결했습니다 · ${fmt(d)}m`, {
       action: '되돌리기', onAction: () => this.undo(),
     });
     return pipe;
@@ -1532,6 +1689,7 @@ class App {
 
   clearSelection() {
     this.selection = null;
+    this.focusKey = null;
     this.moveDrag = false;
     this.moveDragState = null;
     if (this.renderer) this.renderer.domElement.classList.remove('move-drag');
@@ -1562,6 +1720,9 @@ class App {
     }
     // 티는 흐름이 나가는 쪽(직진 B)에서 이어 그린다 — 들어온 쪽(A)은 이미 배관이 물려 있다.
     if (spec.type === 'tee') return list.find((n) => n.nid === 'runB') || list[0];
+    // 플랜지 접합면만 있는 부속(밸브·신축관·유량계·플랜지)은 흐름이 나가는 쪽(+유로 축) 면에서 이어 그린다.
+    const seat = list.filter((n) => n.seat);
+    if (seat.length) return seat.find((n) => n.nid === 'faceB') || seat[0];
     return list[0];
   }
 
@@ -1666,12 +1827,12 @@ class App {
     };
     const dist = (p) => Math.hypot(p.x - cursor.x, p.y - cursor.y, p.z - cursor.z);
     let best = null;
-    const consider = (p, label, bore) => {
+    const consider = (p, label, bore, extra) => {
       const dx = p.x - cursor.x, dy = p.y - cursor.y, dz = p.z - cursor.z;
       const d = Math.hypot(dx, dy, dz);
       if (d < 0.02) return;
       if (!dirOk(dx, dy, dz)) return;
-      if (!best || d < best.d) best = { d, p: { x: p.x, y: p.y, z: p.z }, label, bore: bore || null };
+      if (!best || d < best.d) best = { d, p: { x: p.x, y: p.y, z: p.z }, label, bore: bore || null, ...(extra || {}) };
     };
 
     if (wantPipe) {
@@ -1688,7 +1849,8 @@ class App {
         // (노즐이 없을 때만 본체 출구를 후보로 둔다)
         const noz = equipPorts(e);
         if (!noz.length) consider(this.equipExit(e), e.name);
-        noz.forEach((n) => consider(n.tip, `${e.name} ${n.label || NOZZLE_LABELS[n.dir] || ''} 노즐`, n.bore));
+        noz.forEach((n) => consider(n.tip, `${e.name} ${n.label || NOZZLE_LABELS[n.dir] || ''}`, n.bore,
+          n.seat ? { seat: n.seat, portAxis: n.axis } : null));
       });
     }
     return best;
@@ -2157,7 +2319,7 @@ class App {
   renderProps() {
     const panel = $('#props');
     const spec = this.getSelectedSpec();
-    if (!spec) { panel.hidden = true; this.releaseOverlayEntry(); return; }
+    if (!spec) { panel.hidden = true; this.focusKey = null; this.releaseOverlayEntry(); return; }
     const wasHidden = panel.hidden;
     panel.hidden = false;
     // 속성 창을 열 때 다른 곳(명령창 등)에 잡혀 있던 초점은 놓아 준다.
@@ -2171,6 +2333,7 @@ class App {
     if (spec.kind === 'equipment' || this.state.equipment.includes(spec)) {
       $('#propBadge').textContent = EQUIP_TYPES[spec.type].label;
       body.innerHTML = `
+        ${this.rot3Field(spec)}
         <label class="field">이름<input type="text" data-f="name" value="${esc(spec.name)}"></label>
         ${this.boreFields(spec)}
         ${this.connField(spec)}
@@ -2268,6 +2431,8 @@ class App {
     }
     // 화면이 확대된 상태에서 창을 열어도 잘리지 않게 보이는 영역에 맞춘다.
     this.fitPanelsToView();
+    // 시트에 가리지 않게 고른 것을 남은 3D 영역 한가운데로 (v67 `31583`).
+    this.focusSelectedInView();
   }
 
   // 레듀샤·티는 1차/2차 관경을 속성 패널에서 바꿀 수 있다 (바꾸면 길이도 실제 관경에 맞춰 다시 잡는다).
@@ -2302,6 +2467,102 @@ class App {
           <label class="field">${tee ? '주배관' : '1차'}<select data-f="bore1">${opts(spec.bore1 || '100A')}</select></label>
           <label class="field">${tee ? '분기' : '2차'}<select data-f="bore2">${opts(spec.bore2 || '50A')}</select></label>
         </div>`;
+  }
+
+  // ── 회전해도 연결면 유지 ────────────────────────────────────────────────
+  // 회전 버튼은 부속을 제 중심으로 돌리므로, 아래에 딱 붙어 있던 면이 공중으로 떠 버린다.
+  // (2026-11-25 `31585` 캡처 — 수직 게이트밸브 위 티가 20cm 떠 버렸다)
+  //  · 회전 전: 지금 닿아 있는 접속면(플랜지 면·티 접속구·엘보 다리 끝)과 그 상대 점을 기억
+  //  · 회전 뒤: 같은 면이 그 점에 0mm로 다시 앉도록 중심(x·y·z)만 옮긴다(자세는 그대로)
+  connectionAnchor(spec) {
+    const faces = equipConnectFaces(spec);
+    if (!faces.length) return null;
+    const pts = [];
+    this.state.equipment.forEach((e) => {
+      if (!e || e.id === spec.id) return;
+      equipPorts(e).forEach((n) => pts.push({ x: n.tip.x, y: n.tip.y, z: n.tip.z, ax: n.axis || null }));
+    });
+    // 배관 점 — 끝·꼭짓점. 이웃 점에서 이 점으로 향하는 방향이 그 면의 바깥 법선이 된다.
+    this.state.pipes.forEach((pl) => {
+      const q = pl.points || [];
+      q.forEach((pt, i) => {
+        const nb = i === 0 ? q[1] : q[i - 1];
+        let ax = null;
+        if (nb) {
+          const dx = pt.x - nb.x, dy = pt.y - nb.y, dz = pt.z - nb.z;
+          const l = Math.hypot(dx, dy, dz);
+          if (l > 1e-6) ax = { x: dx / l, y: dy / l, z: dz / l };
+        }
+        pts.push({ x: pt.x, y: pt.y, z: pt.z, ax });
+      });
+    });
+    let best = null;
+    faces.forEach((f) => {
+      pts.forEach((q) => {
+        const d = Math.hypot(f.tip.x - q.x, f.tip.y - q.y, f.tip.z - q.z);
+        if (d > 0.16) return;                       // 닿아 있다고 볼 거리
+        if (!best || d < best.d) best = { d, nid: f.nid, point: { x: q.x, y: q.y, z: q.z }, ax: q.ax };
+      });
+    });
+    return best;
+  }
+
+  // 회전한 부속을 기억해 둔 접합면에 다시 앉힌다 — 옮겼으면 true.
+  //  · 상대 면의 바깥 법선을 알고 있으면 **마주 보는 포트**(법선이 반대)를 고른다.
+  //    티는 직진 A·B·분기 3개 포트를 모두 대칭으로 본다 — 세우든 눕히든 붙는 쪽이 이긴다.
+  //  · 법선이 없으면(꼭짓점) 그 점에 가장 가까운 포트.
+  reseatFitting(spec, anchor) {
+    if (!anchor) return false;
+    const faces = equipConnectFaces(spec);
+    if (!faces.length) return false;
+    let pick = null;
+    if (anchor.ax) {
+      faces.forEach((f) => {
+        const facing = -(f.axis.x * anchor.ax.x + f.axis.y * anchor.ax.y + f.axis.z * anchor.ax.z);
+        const d = Math.hypot(f.tip.x - anchor.point.x, f.tip.y - anchor.point.y, f.tip.z - anchor.point.z);
+        const score = facing - d * 0.35;
+        if (facing > 0.5 && (!pick || score > pick.score)) pick = { f, score, d };
+      });
+    }
+    if (!pick) {
+      faces.forEach((f) => {
+        const d = Math.hypot(f.tip.x - anchor.point.x, f.tip.y - anchor.point.y, f.tip.z - anchor.point.z);
+        if (!pick || d < pick.d) pick = { f, d };
+      });
+    }
+    const f = pick && pick.f;
+    if (!f) return false;
+    const dx = anchor.point.x - f.tip.x;
+    const dy = anchor.point.y - f.tip.y;
+    const dz = anchor.point.z - f.tip.z;
+    if (Math.hypot(dx, dy, dz) < 1e-4) return false;
+    spec.x = r3((spec.x || 0) + dx);
+    spec.y = r3((spec.y || 0) + dy);
+    spec.z = r3((spec.z || 0) + dz);
+    return true;
+  }
+
+  // ── 3축 회전 — 모든 장비·부속 공통(좌·우 / 위·아래 / 축) ───────────────
+  // 키보드가 올라오지 않는 버튼만 쓴다. 속성 창 맨 위에 둔다.
+  // (2026-11-25 `31577` — "모든걸 회전할 수 있게 … 좌 우 위 아래 회전 기능을 넣는거야")
+  rot3Field(spec) {
+    const yaw = norm180(spec.yaw);
+    const pitch = norm180(spec.pitch);
+    const roll = handleRotOf(spec);
+    const btn = (k, d, label, title) => `<button type="button" class="noz-chip"
+            data-act="rot3" data-k="${k}" data-d="${d}" title="${title}">${label}</button>`;
+    return `
+        <div class="prop-section">3축 회전 <span class="rot3-now">좌우 ${yaw}° · 위아래 ${pitch}° · 축 ${roll}°</span></div>
+        <div class="noz-presets">
+          ${btn('yaw', -45, '↺ 좌 45°', '수평으로 왼쪽 45°')}
+          ${btn('yaw', 45, '↻ 우 45°', '수평으로 오른쪽 45°')}
+          ${btn('pitch', 45, '⤴ 위 45°', '앞머리를 위로 45°')}
+          ${btn('pitch', -45, '⤵ 아래 45°', '앞머리를 아래로 45°')}
+          ${btn('roll', -45, '⟲ -45°', '제 축 둘레로 -45°')}
+          ${btn('roll', 45, '⟳ +45°', '제 축 둘레로 +45°')}
+          ${(yaw || pitch || roll) ? '<button type="button" class="noz-chip" data-act="rot3" data-k="reset" title="세 회전을 모두 처음(0°)으로">0° 초기화</button>' : ''}
+        </div>
+        <p class="hint">좌·우는 세로축, 위·아래는 지금 배관 축에 수직인 수평축 둘레로 돕니다. 밸브·스트레이너는 축 회전이 손잡이만 돌립니다.</p>`;
   }
 
   // ── 핸들(손잡이) 방향 — 유로는 그대로, 손잡이만 관 축 둘레로 45°·90° ───────────
@@ -3481,7 +3742,11 @@ class App {
           this.toast(op.target === 'pipe' ? '연결할 다른 배관을 찾지 못했습니다.' : '연결할 부속·장비를 찾지 못했습니다.', { type: 'err' });
           continue;
         }
-        const path = this.orthoPath(cursor, hit.p);
+        // 플랜지 접합면이면 축 방향으로 꺾어 앉힌다 — 엘보 + 맞물림 플랜지 (v67).
+        const seated = hit.seat === 'flange'
+          ? this.seatAtFlangePort(cursor, { p: hit.p, portAxis: hit.portAxis, bore: hit.bore || bore })
+          : null;
+        const path = seated ? seated.path : this.orthoPath(cursor, hit.p);
         // 노즐 끝에 붙었으면 그 노즐 관경으로 배관을 뽑는다(이후 명령도 그 관경으로 이어진다).
         if (hit.bore && BORES[hit.bore]) {
           bore = hit.bore;
@@ -3492,6 +3757,16 @@ class App {
           name: `PL-${String(pipeSeq).padStart(3, '0')} 연결`,
           bore, material, conn, points: path,
         }));
+        if (seated && seated.elbow) {
+          const eb = seated.elbow;
+          equip.push(makeEquipment(eb.type, {
+            name: `${EQUIP_TYPES[eb.type].short}-${100 + this.state.equipment.filter((q) => q.type === eb.type).length + equip.filter((q) => q.type === eb.type).length + 1} ${EQUIP_TYPES[eb.type].label}`,
+            x: eb.at.x, y: eb.at.y, z: eb.at.z, bore: eb.bore,
+            inDir: eb.inDir, outDir: eb.outDir,
+            rot: this.rotForDir({ x: eb.outDir[0], y: eb.outDir[1], z: eb.outDir[2] }, rot),
+          }));
+          notes.push('엘보 자동');
+        }
         // 마지막 구간 방향으로 다음 명령을 이어갈 수 있게 방향을 맞춘다.
         const prev = path[path.length - 2] || cursor;
         const last = path[path.length - 1];
@@ -5108,6 +5383,27 @@ class App {
         this.renderProps();
       }
       else if (act === 'dup') this.duplicateSelected();
+      else if (act === 'rot3') {
+        // 3축 회전 — 어떤 장비·부속이든 좌·우(yaw)·위·아래(pitch)·축(roll)으로 45°씩.
+        const k = btn.dataset.k;
+        this.pushUndo('3축 회전');
+        // 회전 전에 '지금 닿아 있는 접속면'을 기억해 둔다 — 회전 뒤 그 자리에 다시 앉힌다.
+        const anchor = this.connectionAnchor(spec);
+        if (k === 'reset') {
+          delete spec.yaw; delete spec.pitch; delete spec.roll;
+        } else if (k === 'roll') {
+          const next = ((handleRotOf(spec) + Number(btn.dataset.d)) % 360 + 360) % 360;
+          if (next) spec.roll = next; else delete spec.roll;
+        } else if (k === 'yaw' || k === 'pitch') {
+          const next = norm180(norm180(spec[k]) + Number(btn.dataset.d));
+          if (next) spec[k] = next; else delete spec[k];
+        }
+        const kept = this.reseatFitting(spec, anchor);
+        this.refreshScene();
+        this.renderProps();
+        this.toast(`회전 — 좌우 ${norm180(spec.yaw)}° · 위아래 ${norm180(spec.pitch)}° · 축 ${handleRotOf(spec)}°`
+          + (kept ? ' · 연결면 유지' : ''));
+      }
       else if (act === 'hrot') {
         // 핸들 방향 — 유로·플랜지·몸체는 그대로 두고 손잡이만 관 축 둘레로 돈다.
         const cur0 = handleRotOf(spec);
@@ -5115,7 +5411,9 @@ class App {
         const next = Number.isFinite(want) ? ((want % 360) + 360) % 360 : cur0;
         if (next === cur0) return;
         this.pushUndo('핸들 방향');
+        const anchor = this.connectionAnchor(spec);
         if (next) spec.roll = next; else delete spec.roll;
+        this.reseatFitting(spec, anchor);
         this.refreshScene();
         this.renderProps();
         this.toast(`핸들 ${next}° — 배관 축은 그대로입니다`);
