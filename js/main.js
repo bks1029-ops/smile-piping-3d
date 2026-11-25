@@ -11,16 +11,19 @@ import {
   hxNozzlesOf, hxBody, hxNozzleLabel, setHxNozzle, addHxNozzle, removeHxNozzle, applyHxPreset,
   HX_AT, HX_AT_LABELS, HX_NOZ_DIRS, HX_NOZ_DIR_LABELS, HX_PRESETS,
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
+  TANK_NOZ_TYPES, TANK_NOZ_FACES, TANK_NOZ_FACE_LABELS, TANK_TYPE_LABELS, TANK_HPOS, TANK_PRESETS,
+  tankDims, tankNozzlesOf, tankNozzleLabel, setTankNozzle, addTankNozzle, removeTankNozzle,
+  applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=71';
-import { buildScene } from './builders.js?v=71';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=71';
-import { buildOBJ } from './obj.js?v=71';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=71';
-import { parseCommand, CMD_HELP } from './cmd.js?v=71';
-import { buildDimItems } from './dims.js?v=71';
-import { buildAiImageParts } from './zoom.js?v=71';
+} from './store.js?v=72';
+import { buildScene } from './builders.js?v=72';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=72';
+import { buildOBJ } from './obj.js?v=72';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=72';
+import { parseCommand, CMD_HELP } from './cmd.js?v=72';
+import { buildDimItems } from './dims.js?v=72';
+import { buildAiImageParts } from './zoom.js?v=72';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -81,6 +84,10 @@ const HAND_UP = { x: 0, y: 1, z: 0 };   // 원기둥 미리보기의 기본 축
 const HAND_MIN_MM = 300;                // 최소 구간 길이
 const HAND_STEP_MM = 100;               // 100mm 단위 반올림
 const HAND_SNAP_PX = 40;                // 손끝이 기존 배관(끝·몸통)·커서에 붙는 화면 거리
+// 탱크 벽면 자동 노즐 맞춤 (v72) — 배관 끝이 이 거리 안에서 벽을 향해 들어오면 노즐이 따라간다.
+const TANK_FIT_DIST = 0.35;             // 외벽에서 0.35m 안
+const TANK_FIT_DOT = 0.7;               // 진행 방향이 벽 바깥 법선의 **반대**와 이만큼 나란해야(벽으로 45° 이내)
+const TANK_NOZ_MERGE = 0.35;            // 같은 벽면의 기존 노즐을 옮겨 쓸 최대 거리(높이·가로 m)
 
 // 배관을 끊고 그 자리에 앉는 부속(인라인) — 실제 길이(spec.w)만큼 커서가 전진한다.
 const INLINE_TYPES = new Set([
@@ -135,6 +142,8 @@ class App {
     this.moveStep = 500;
     this.moveDrag = false;
     this.moveDragState = null;
+    // 📋 복사한 장비·배관 (v72) — [📌 붙여넣기]가 이 사양으로 옆에 하나 더 세운다.
+    this.clipboard = null;
     this.padOpen = false;
     this.viewbarOpen = false;   // 모바일 보기 바 펼침 상태(기본은 '등각' 1개로 접힘)
     // 방향 기준: 'me' = 지금 보는 화면 기준(기본), 'plan' = 도면 축 기준
@@ -1352,7 +1361,7 @@ class App {
       this.showHandAnchor();
     }
     this.closeHandDim();
-    if (r.changed) this.toast(`치수 ${r.oldMm} → ${r.newMm}mm`);
+    if (r.changed) this.toast(`치수 ${r.oldMm} → ${r.newMm}mm${r.fit ? ` · ${r.fit}` : ''}`);
   }
 
   // ── 씬 갱신 ──────────────────────────────────────────────
@@ -1548,7 +1557,7 @@ class App {
       return;
     }
     this.closeModal();
-    if (r.changed) this.toast(`치수 수정 · ${r.oldMm} → ${r.newMm}mm`);
+    if (r.changed) this.toast(`치수 수정 · ${r.oldMm} → ${r.newMm}mm${r.fit ? ` · ${r.fit}` : ''}`);
   }
 
   // 배관 한 구간의 길이(mm)를 바꿈다 — 그 구간 끝과 뒤로 이어진 배관·장비까지 연쇄로 함께 옮긴다.
@@ -1611,10 +1620,13 @@ class App {
       });
     }
 
+    // v72 — 끝점이 탱크 벽면 가까이 오면 그 높이·자리에 노즐을 맞춘다.
+    const fit = this.autoFitTankNozzle(pipe, i);
     this.rebuild();
     const end = pipe.points[i];
     return {
       ok: true, changed: true, oldMm, newMm,
+      fit: fit ? fit.text : null,
       end: end ? { x: end.x, y: end.y, z: end.z } : null,
     };
   }
@@ -1921,6 +1933,102 @@ class App {
     this.aimAtNozzle(n);
     this.clearSelection();
     this.toast(`📍 ${n.label || NOZZLE_LABELS[n.dir]} 노즐 ${n.bore}에서 이어 그립니다 · 커서 (${fmt(n.tip.x)}, ${fmt(n.tip.y)}, ${fmt(n.tip.z)})m`);
+  }
+
+  // ── 탱크 벽면에 배관 끝을 대면 노즐을 그 높이·자리에 맞춘다 (v72) ──────────
+  // 사용자: "배관을 가까이 가져다 놓으면 그 높이나 위치에 맞게 자동으로 변경해줘".
+  // 배관 끝이 탱크 외벽 TANK_FIT_DIST 안에 와서 그 벽을 향해 들어오면
+  //  ① 같은 벽면에 이미 있는 노즐 중 가장 가까운 것을 그 높이·가로로 옮기고
+  //  ② 그 노즐에 다른 배관이 이미 물려 있으면 떼지 않고 그 자리에 새 노즐을 뽑아
+  //  ③ 맞춘 노즐의 플랜지 면(tip)에 배관 끝을 앉힌다 — 0mm로 맞물린다.
+  // 벽과 나란히 지나가는 배관은 건드리지 않는다(자동으로 망가지는 일이 없게).
+  nozzleInUse(noz, exceptPipeId) {
+    if (!noz) return false;
+    const T = 0.08;
+    return this.state.pipes.some((pp) => pp && pp.id !== exceptPipeId && (pp.points || []).some(
+      (pt) => Math.hypot(pt.x - noz.tip.x, pt.y - noz.tip.y, pt.z - noz.tip.z) < T,
+    ));
+  }
+
+  autoFitTankNozzle(pipe, index) {
+    if (!pipe || !Array.isArray(pipe.points)) return null;
+    const i = Number(index);
+    const p = pipe.points[i];
+    const other = pipe.points[i === 0 ? 1 : i - 1];
+    if (!p || !other) return null;
+    const dx = p.x - other.x;
+    const dy = p.y - other.y;
+    const dz = p.z - other.z;
+    const L = Math.hypot(dx, dy, dz);
+    if (L < 0.05) return null;
+    const dir = { x: dx / L, y: dy / L, z: dz / L };
+    // 가장 가까운 벽면 하나를 고른다 — 여러 탱크 사이면 더 가까운 쪽.
+    let best = null;
+    this.state.equipment.forEach((e) => {
+      if (!TANK_NOZ_TYPES.has(e.type)) return;
+      const fit = tankWallFit(e, p, TANK_FIT_DIST);
+      if (!fit) return;
+      const dot = dir.x * fit.axis.x + dir.y * fit.axis.y + dir.z * fit.axis.z;
+      // 노즐 축은 탱크 바깥을 향한다 — 배관은 그 반대로(벽을 향해) 들어와야 한다.
+      if (dot > -TANK_FIT_DOT) return;
+      const score = fit.dist + (1 - dot) * 0.05;
+      if (!best || score < best.score) best = { e, fit, score };
+    });
+    if (!best) return null;
+    const e = best.e;
+    const fit = best.fit;
+    const list = tankNozzlesOf(e);
+    const span = tankHeightSpan(e);
+    // ① 이 배관을 따라다니는 노즐이 이미 있으면 그것을 옮긴다 — 같은 배관을 다시
+    //    옮길 때마다 노즐이 하나씩 늘어나지 않게(사용자가 점 좌표를 고치는 동안에도).
+    let target = list.find((n) => n.pipe === pipe.id) || null;
+    if (target) {
+      const lv = equipNozzles(e).find((x) => x.nid === target.nid);
+      if (lv && this.nozzleInUse(lv, pipe.id)) target = null;
+    }
+    // ② 없으면 같은 벽면에서 가장 가까운 노즐 — 높이·가로를 m로 환산해 거리를 잰다.
+    if (!target) {
+      let pick = null;
+      let pickD = Infinity;
+      list.forEach((n) => {
+        if (n.face !== fit.face) return;
+        const dh = (n.h - fit.h) * span;
+        const du = (n.u - fit.u) * tankLatScale(e, n.face);
+        const dv = (n.v - fit.v) * tankDepthScale(e);
+        const d = Math.hypot(dh, du, dv);
+        if (d < pickD) { pickD = d; pick = n; }
+      });
+      target = pick && pickD <= TANK_NOZ_MERGE ? pick : null;
+      if (target) {
+        const liveT = equipNozzles(e).find((n) => n.nid === target.nid);
+        if (liveT && this.nozzleInUse(liveT, pipe.id)) target = null;
+      }
+    }
+    const moved = !!target;
+    const n = target
+      ? setTankNozzle(e, target.nid, { face: fit.face, h: fit.h, u: fit.u, v: fit.v, pipe: pipe.id })
+      : addTankNozzle(e, {
+        face: fit.face, h: fit.h, u: fit.u, v: fit.v, pipe: pipe.id,
+        bore: BORES[pipe.bore] ? pipe.bore : this.cmdBore,
+      });
+    if (!n) return null;
+    const live = equipNozzles(e).find((x) => x.nid === n.nid);
+    if (!live) return null;
+    // 맞춘 노즐의 플랜지 면에 배관 끝을 앉힌다 — 배관은 벽 쪽으로 몇 cm 늘어난다.
+    pipe.points[i] = { x: live.tip.x, y: Math.max(0, live.tip.y), z: live.tip.z };
+    const hyd = TANK_TYPE_LABELS[e.type] || '탱크';
+    const faceL = TANK_NOZ_FACE_LABELS[fit.face];
+    return {
+      spec: e,
+      nozzle: n,
+      face: fit.face,
+      moved,
+      bore: n.bore,
+      y: live.tip.y,
+      text: moved
+        ? `📍 ${hyd} ${faceL} 노즐을 배관 높이(${fmt(live.tip.y)}m)에 맞췄어요`
+        : `📍 ${hyd} ${faceL}에 새 노즐(${n.bore})을 뽑아 배관 높이(${fmt(live.tip.y)}m)에 맞췄어요`,
+    };
   }
 
   // ── 정렬 안내선 (이동할 때 나란히 맞추기) ───────────────────────────────
@@ -2467,6 +2575,7 @@ class App {
         ${this.nozzleFields(spec)}
         ${this.teeFields(spec)}
         ${this.portFields(spec)}
+        ${this.copyPasteRow(spec)}
         <div class="prop-section">위치 (m)</div>
         <div class="prop-grid3">
           <label class="field">X<input type="number" step="0.1" data-f="x" value="${fmt(spec.x)}"></label>
@@ -2540,6 +2649,7 @@ class App {
         <div class="prop-actions">
           <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
         </div>
+        ${this.copyPasteRow(spec)}
         <div class="prop-actions">
           <button class="btn small ghost" data-act="addpt">점 추가</button>
           <button class="btn small danger" data-act="del">배관 삭제</button>
@@ -2944,6 +3054,8 @@ class App {
   // 열교환기는 노즐이 정해져 있지 않으므로 자유 배치(hxNozzleFields)로 넘긴다.
   nozzleFields(spec) {
     if (spec.type === 'hx') return this.hxNozzleFields(spec);
+    // 탱크 3종(사각·원통·대형)은 노즐 위치가 자유롭다 — wall·높이·가로를 직접 고른다 (v72).
+    if (TANK_NOZ_TYPES.has(spec.type)) return this.tankNozzleFields(spec);
     const dirs = nozzleDirsOf(spec.type);
     if (!dirs.length) return '';
     const cur = nozzlesOf(spec);
@@ -3022,6 +3134,108 @@ class App {
         </div>
         <p class="noz-tip">${heights}</p>
         <p class="hint">열교환기는 노즐이 정해져 있지 않습니다 — 쉘 좌측·중앙·우측, 좌·우 헤드 중 원하는 자리에서 위·아래·앞·뒤, 또는 좌·우 끝(경판 축방향)으로 뽑습니다. 3D에서 노즐 끝을 톡 눌러도 그 노즐로 커서·관경이 바뀌고, ✏️ 손 그리기 스냅도 같은 자리입니다.</p>`;
+  }
+
+  // ── 탱크 3종(사각 · 원통 · 대형) 노즐 — 자유 배치 ───────────────────────
+  // 노즐마다 [벽면][높이][가로 위치][관경]을 그대로 고르고, [+ 노즐]로 더 뽑고 [✕]로 지운다.
+  // 예전에 끄던 방향별 관경(nozzles: {left:'50A'})과 기본 노즐은 같은 자리·같은 관경의
+  // 노즐 카드로 보인다(하위 호환). 모바일 390px에서도 두 줄씩 접혀 들어간다.
+  tankNozzleFields(spec) {
+    const list = tankNozzlesOf(spec);
+    const live = equipNozzles(spec);
+    const G = tankDims(spec);
+    const hyd = TANK_TYPE_LABELS[spec.type] || '탱크';
+    const span = tankHeightSpan(spec);
+    const topDepth = tankDepthScale(spec);
+    // 면 안 가로 위치 1.0이 몇 m인가 — 사각 옆면은 반폭, 원통은 원주 45° 호 길이
+    const latOf = (face) => tankLatScale(spec, face);
+    void G;
+    const faceOpts = (cur) => TANK_NOZ_FACES.map((f) =>
+      `<option value="${f}"${f === cur ? ' selected' : ''}>${TANK_NOZ_FACE_LABELS[f]}</option>`).join('');
+    const boreOpts = (cur) => NOZZLE_SIZES.map((b) =>
+      `<option value="${b}"${b === cur ? ' selected' : ''}>${b}</option>`).join('');
+    // 위치 빠른 선택 — 왼쪽/가운데/오른쪽 + 직접(mm 입력으로 미세 조정)
+    const spotOpts = (v, labels) => {
+      const keys = [['-1', labels[0]], ['-0.5', `${labels[0]}¼`], ['0', '가운데'], ['0.5', `${labels[1]}¼`], ['1', labels[1]]];
+      const hit = keys.find(([k]) => Math.abs(Number(k) - v) < 0.04);
+      return keys.map(([k, label]) => `<option value="${k}"${hit && hit[0] === k ? ' selected' : ''}>${label}</option>`)
+        .concat(`<option value="custom"${hit ? '' : ' selected'}>직접</option>`).join('');
+    };
+    const hOpts = (h) => {
+      const hit = TANK_HPOS.find(([, v]) => Math.abs(v - h) < 0.06);
+      return TANK_HPOS.map(([k, v, label]) =>
+        `<option value="${v}"${hit && hit[0] === k ? ' selected' : ''}>${label}</option>`)
+        .concat(`<option value="custom"${hit ? '' : ' selected'}>직접</option>`).join('');
+    };
+    const cards = list.map((n, i) => {
+      const liveN = live.find((x) => x.nid === n.nid);
+      const where = liveN ? `(${fmt(liveN.tip.x)}, ${fmt(liveN.tip.y)}, ${fmt(liveN.tip.z)})m` : '';
+      const cap = n.face === 'top' || n.face === 'bottom';
+      const hmm = Math.round(n.h * span * 1000);
+      const lat = Math.round(n.u * latOf(n.face) * 1000);
+      const dep = Math.round(n.v * topDepth * 1000);
+      const nid = esc(n.nid);
+      return `
+        <div class="noz-card" data-nid="${nid}">
+          <div class="noz-card-head">
+            <b>N${i + 1}</b>
+            <span class="noz-card-at">${tankNozzleLabel(n)} · ${n.bore}</span>
+            <button type="button" class="noz-mini" data-act="nozgo" data-nid="${nid}"
+              title="이 노즐 끝 ${where}에서 이어 그리기">📍</button>
+            <button type="button" class="noz-mini del" data-act="nozdel" data-nid="${nid}"
+              title="이 노즐 삭제">✕</button>
+          </div>
+          <div class="noz-grid">
+            <label class="field">벽면<select data-tnz-face="${nid}">${faceOpts(n.face)}</select></label>
+            <label class="field">관경<select data-tnz-bore="${nid}">${boreOpts(n.bore)}</select></label>
+          </div>
+          ${cap ? `
+          <div class="noz-grid">
+            <label class="field">좌우<select data-tnz-u="${nid}">${spotOpts(n.u, ['왼쪽', '오른쪽'])}</select></label>
+            <label class="field">좌우 (mm)<input type="number" inputmode="numeric" step="10" data-tnz-umm="${nid}" value="${lat}"></label>
+          </div>
+          <div class="noz-grid">
+            <label class="field">앞뒤<select data-tnz-v="${nid}">${spotOpts(n.v, ['앞', '뒤'])}</select></label>
+            <label class="field">앞뒤 (mm)<input type="number" inputmode="numeric" step="10" data-tnz-vmm="${nid}" value="${dep}"></label>
+          </div>` : `
+          <div class="noz-grid">
+            <label class="field">높이<select data-tnz-h="${nid}">${hOpts(n.h)}</select></label>
+            <label class="field">바닥에서 (mm)<input type="number" inputmode="numeric" step="10" data-tnz-hmm="${nid}" value="${hmm}"></label>
+          </div>
+          <div class="noz-grid">
+            <label class="field">가로<select data-tnz-u="${nid}">${spotOpts(n.u, ['왼쪽', '오른쪽'])}</select></label>
+            <label class="field">가로 (mm)<input type="number" inputmode="numeric" step="10" data-tnz-umm="${nid}" value="${lat}"></label>
+          </div>`}
+        </div>`;
+    }).join('');
+    const presetBtns = TANK_PRESETS.map((p) => `<button type="button" class="noz-chip${p.key === 'clear' ? ' ghost' : ''}"
+            data-act="nozpreset" data-preset="${p.key}">${p.label}</button>`).join('');
+    const heights = live.length
+      ? `노즐 ${live.length}개 · ${live.map((n) => `${n.label} ${fmt(n.tip.y)}m`).join(' · ')}`
+      : '지금은 노즐이 없습니다.';
+    return `
+        <div class="prop-section">노즐 (${hyd} · 자유 배치)</div>
+        <div class="noz-presets">${presetBtns}</div>
+        <div class="noz-cards">${cards || '<p class="noz-tip">노즐이 없습니다. [+ 노즐 추가]로 원하는 벽면·높이에 뽑으세요.</p>'}</div>
+        <div class="prop-actions">
+          <button class="btn small accent" data-act="nozadd">＋ 노즐 추가</button>
+        </div>
+        <p class="noz-tip">${heights}</p>
+        <p class="hint">벽면은 탱크 기준 왼쪽·오른쪽·앞쪽·뒤쪽·위·아래입니다. 높이는 바닥에서 mm로, 가로는 그 면의 가운데에서 mm로 맞춥니다(원통은 둘레 45°까지). 3D에서 노즐 끝을 톡 누르면 그 노즐로 커서·관경이 바뀌고, ✏️ 손 그림기 스냅도 같은 자리입니다. 배관 끝을 탱크 벽면 가까이 가져가면 그 높이·자리에 노즐이 저절로 맞춰집니다.</p>`;
+  }
+
+  // 복사 · 붙여넣기 줄 — 장비·배관 속성 창의 액션 버튼 줄에 들어간다 (v72).
+  // 펌프·탱크를 나란히 여러 대 놓을 때 한 번씩만 누르면 된다.
+  copyPasteRow(spec) {
+    const has = !!(this.clipboard && this.clipboard.spec);
+    const nm = has ? this.clipboard.spec.name : '';
+    return `
+        <div class="prop-actions copy-actions">
+          <button class="btn small ghost" data-act="copy"
+            title="이 장비의 사양(관경·노즐 배치·회전·색)을 통째로 복사합니다">📋 복사</button>
+          <button class="btn small ghost" data-act="paste"
+            title="${has ? `복사한 ${esc(nm)}을(를) 바로 옆에 나란히 붙입니다` : '붙여넣을 것이 없습니다 — 먼저 [📋 복사]를 누르세요'}">📌 붙여넣기</button>
+        </div>`;
   }
 
   updatePipeSummary() {
@@ -3334,6 +3548,111 @@ class App {
     this.selection = { kind: 'equipment', id: copy.id };
     this.rebuild();
     this.toast('장비를 복제했습니다.');
+  }
+
+  // ── 복사 · 붙여넣기 (v72) ────────────────────────────────────────────────
+  // 펌프·탱크는 나란히 여러 대 놓는 일이 많다. 고른 장비의 사양(관경·노즐 배치·회전·
+  // 색·헤드 타입…)을 통째로 기억해 두고, [📌 붙여넣기]로 바로 옆에 같은 것을 세운다.
+  // 이름은 같은 꼬리표의 마지막 번호 +1 (PUMP-101 → PUMP-102).
+  copySelected() {
+    const spec = this.getSelectedSpec();
+    if (!spec) { this.toast('복사할 장비·배관을 먼저 고르세요.', { type: 'err' }); return; }
+    const isPipe = Array.isArray(spec.points);
+    this.clipboard = {
+      kind: isPipe ? 'pipe' : 'equipment',
+      id: spec.id,
+      spec: JSON.parse(JSON.stringify(spec)),
+    };
+    this.renderProps();
+    this.toast(`📋 ${spec.name} 복사됨 — [📌 붙여넣기]로 바로 옆에 붙이세요.`);
+  }
+
+  // 이름의 마지막 번호를 하나 올린다 — 같은 앞뒤 글자를 쓰는 이름 중 가장 큰 번호 +1.
+  nextCopyName(name) {
+    const s = String(name || '');
+    const m = s.match(/^(.*?)(\d+)(\D*)$/);
+    if (!m) return s ? `${s} (2)` : s;
+    const prefix = m[1];
+    const digits = m[2];
+    const suffix = m[3];
+    let max = Number(digits);
+    const lists = [this.state.equipment, this.state.pipes];
+    lists.forEach((ls) => (ls || []).forEach((x) => {
+      const mm = String(x.name || '').match(/^(.*?)(\d+)(\D*)$/);
+      if (!mm || mm[1] !== prefix || mm[3] !== suffix) return;
+      max = Math.max(max, Number(mm[2]));
+    }));
+    return `${prefix}${String(max + 1).padStart(digits.length, '0')}${suffix}`;
+  }
+
+  // 붙일 자리 — 원본이 아직 있으면 그 옆, 없으면 지금 고른 것 옆, 그것도 없으면 커서.
+  // 긴 축을 따라 나란히 세우고(펌프·헤더), 이미 다른 장비가 있으면 한 칸씩 더 밀어 놓는다.
+  pasteSpot(src) {
+    const live = this.state.equipment.find((e) => e.id === (this.clipboard && this.clipboard.id));
+    const sel = this.getSelectedSpec();
+    const anchor = live || (sel && !Array.isArray(sel.points) ? sel : null);
+    const w = Math.max(0.2, Number(src.w) || 0.6);
+    const d = Math.max(0.2, Number(src.d) || 0.6);
+    // 짧은 쪽(보통 깊이)을 따라 나란히 — 펌프는 옆으로, 탱크는 앞뒤로 줄을 선다.
+    const alongZ = d <= w;
+    const step = (alongZ ? d : w) + 0.4;
+    const base = anchor ? { x: anchor.x, z: anchor.z } : { x: this.cmdCursor.x, z: this.cmdCursor.z };
+    const hit = (x, z) => this.state.equipment.some((e) => Math.abs(e.x - x) < (w + Number(e.w || 0)) / 2 + 0.15
+      && Math.abs(e.z - z) < (d + Number(e.d || 0)) / 2 + 0.15);
+    let x = base.x;
+    let z = base.z;
+    for (let i = 0; i < 8; i += 1) {
+      if (alongZ) z = base.z + step * (i + 1); else x = base.x + step * (i + 1);
+      if (!hit(x, z)) break;
+    }
+    return { x, z, alongZ };
+  }
+
+  pasteClipboard() {
+    const cb = this.clipboard;
+    if (!cb || !cb.spec) {
+      this.toast('복사한 것이 없습니다 — 먼저 [📋 복사]를 누르세요.', { type: 'err' });
+      return;
+    }
+    const src = cb.spec;
+    const spot = this.pasteSpot(src);
+    this.pushUndo('붙여넣기');
+    if (cb.kind === 'pipe' || Array.isArray(src.points)) {
+      // 배관 — 점 전체를 1m 옆으로 옮긴 채 같은 관경·재질·연결로 붙인다.
+      const dx = 1.0;
+      const pipe = makePipe({
+        name: this.nextCopyName(src.name),
+        bore: src.bore,
+        material: src.material,
+        conn: src.conn,
+        points: src.points.map((p) => ({ x: r3(p.x + dx), y: Math.max(0, p.y), z: p.z })),
+      });
+      this.state.pipes.push(pipe);
+      this.selection = { kind: 'pipe', id: pipe.id };
+      this.rebuild();
+      this.renderProps();
+      this.renderLists();
+      this.toast(`📌 ${pipe.name} 붙여넣음 · 옆으로 1m`);
+      return;
+    }
+    const copy = makeEquipment(src.type, {
+      ...src,
+      id: undefined,
+      x: spot.x,
+      z: spot.z,
+      name: this.nextCopyName(src.name),
+    });
+    if (copy.type === 'gauge') attachGaugeToPipe(this.state.pipes, copy);
+    this.state.equipment.push(copy);
+    // 다음 붙여넣기도 이 새 장비 옆으로 이어지게 원본을 새 장비로 바꿔 둔다.
+    this.clipboard = { kind: 'equipment', id: copy.id, spec: JSON.parse(JSON.stringify(copy)) };
+    this.selection = { kind: 'equipment', id: copy.id };
+    this.lastAdded = { kind: 'equipment', id: copy.id };
+    this.rebuild();
+    this.refreshHighlight();
+    this.renderProps();
+    this.renderLists();
+    this.toast(`📌 ${copy.name} 붙여넣음 · ${spot.alongZ ? '앞뒤' : '좌우'}로 나란히 (${fmt(copy.x)}, ${fmt(copy.z)})m`);
   }
 
   // "지워/삭제/빼" — 선택한 것, 없으면 방금 추가한 것
@@ -4250,6 +4569,17 @@ class App {
     }
 
     this.commitCmd(pipes, equip, edits);
+    // v72 — 방금 그린 배관 끝이 탱크 외벽 가까이오면 그 높이·자리에 노즐을 맞춘다.
+    let fitNote = null;
+    if (pipes.length) {
+      const lastPipe = pipes[pipes.length - 1];
+      const fi = this.autoFitTankNozzle(lastPipe, lastPipe.points.length - 1);
+      if (fi) {
+        fitNote = fi.text;
+        cursor = { ...lastPipe.points[lastPipe.points.length - 1] };
+        this.rebuild();
+      }
+    }
     // 다음 명령이 같은 자리에서 이어지도록 커서를 남긴다 (선택은 비어 있어도 커서는 유지).
     this.setCmdCursor(cursor, true);
 
@@ -4260,6 +4590,7 @@ class App {
       bits.push(equip.length > 1 ? `부속 ${equip.length}개 (${last} 등)` : last);
     }
     if (notes.length) bits.push(notes.join(' · '));
+    if (fitNote) bits.push(fitNote);
     this.toast(`${bits.join(' · ')} · ${bore} · 커서 (${fmt(cursor.x)}, ${fmt(cursor.y)}, ${fmt(cursor.z)})m`);
     return { cursor };
   }
@@ -5735,6 +6066,40 @@ class App {
         this.renderProps();
         return;
       }
+      // 탱크 자유 노즐 — 벽면·높이·가로·관경을 바꾸면 3D와 노즐 카드를 바로 다시 그린다.
+      if (t.dataset.tnzFace || t.dataset.tnzBore || t.dataset.tnzH || t.dataset.tnzHmm
+        || t.dataset.tnzU || t.dataset.tnzUmm || t.dataset.tnzV || t.dataset.tnzVmm) {
+        const d = t.dataset;
+        const nid = d.tnzFace || d.tnzBore || d.tnzH || d.tnzHmm || d.tnzU || d.tnzUmm || d.tnzV || d.tnzVmm;
+        const cur = tankNozzlesOf(spec).find((n) => n.nid === nid);
+        if (!cur) return;
+        const patch = {};
+        const span = tankHeightSpan(spec);
+        if (d.tnzFace) patch.face = t.value;
+        else if (d.tnzBore) patch.bore = t.value;
+        else if (d.tnzH) { if (t.value !== 'custom') patch.h = Number(t.value); else return; }
+        else if (d.tnzHmm) {
+          const mm = parseFloat(t.value);
+          if (!Number.isFinite(mm)) return;
+          patch.h = Math.max(0, Math.min(1, mm / 1000 / span));
+        } else if (d.tnzU) { if (t.value !== 'custom') patch.u = Number(t.value); else return; }
+        else if (d.tnzUmm) {
+          const mm = parseFloat(t.value);
+          if (!Number.isFinite(mm)) return;
+          patch.u = Math.max(-1, Math.min(1, mm / 1000 / tankLatScale(spec, cur.face)));
+        } else if (d.tnzV) { if (t.value !== 'custom') patch.v = Number(t.value); else return; }
+        else if (d.tnzVmm) {
+          const mm = parseFloat(t.value);
+          if (!Number.isFinite(mm)) return;
+          patch.v = Math.max(-1, Math.min(1, mm / 1000 / tankDepthScale(spec)));
+        }
+        if (!Object.keys(patch).length) return;
+        this.pushUndo('노즐 수정');
+        setTankNozzle(spec, nid, patch);
+        this.refreshScene();
+        this.renderProps();
+        return;
+      }
       if (t.dataset.f) {
         let v = t.type === 'number' ? parseFloat(t.value) : t.value;
         if (t.type === 'number' && !Number.isFinite(v)) return;
@@ -5762,6 +6127,13 @@ class App {
         spec.points[i][t.dataset.ptf] = v;
         this.refreshScene();
         this.updatePipeSummary();
+        // 점을 직접 옮겨 탱크 벽면 가까이 대면 그 자리에 노즐이 맞춰진다 (v72).
+        const fi = this.autoFitTankNozzle(spec, i);
+        if (fi) {
+          this.rebuild();
+          this.renderProps();
+          this.toast(fi.text);
+        }
       }
     });
     body.addEventListener('click', (ev) => {
@@ -5787,20 +6159,24 @@ class App {
       }
       else if (act === 'nozadd') {
         this.pushUndo('노즐 추가');
-        addHxNozzle(spec);
+        if (TANK_NOZ_TYPES.has(spec.type)) addTankNozzle(spec); else addHxNozzle(spec);
         this.refreshScene();
         this.renderProps();
       } else if (act === 'nozdel') {
         this.pushUndo('노즐 삭제');
-        removeHxNozzle(spec, btn.dataset.nid);
+        if (TANK_NOZ_TYPES.has(spec.type)) removeTankNozzle(spec, btn.dataset.nid);
+        else removeHxNozzle(spec, btn.dataset.nid);
         this.refreshScene();
         this.renderProps();
       } else if (act === 'nozpreset') {
         this.pushUndo('노즐 프리셋');
-        applyHxPreset(spec, btn.dataset.preset);
+        if (TANK_NOZ_TYPES.has(spec.type)) applyTankPreset(spec, btn.dataset.preset);
+        else applyHxPreset(spec, btn.dataset.preset);
         this.refreshScene();
         this.renderProps();
       }
+      else if (act === 'copy') this.copySelected();
+      else if (act === 'paste') this.pasteClipboard();
       else if (act === 'dup') this.duplicateSelected();
       else if (act === 'rot3') {
         // 3축 회전 — 어떤 장비·부속이든 좌·우(yaw)·위·아래(pitch)·축(roll)으로 45°씩.

@@ -676,6 +676,11 @@ export function makeEquipment(type, opts) {
     spec.nozList = hxNozzlesOf({
       type, nozList: o.nozList, nozzles: o.nozzles,
     });
+  } else if (TANK_NOZ_TYPES.has(type)) {
+    // 탱크 3종도 자유 노즐 목록이 정본 — 예전 방향별 관경은 같은 자리의 자유 노즐로 옮긴다.
+    spec.nozList = tankNozzlesOf({
+      type, nozList: o.nozList, nozzles: o.nozzles, w: spec.w, h: spec.h, d: spec.d,
+    });
   } else if (NOZZLE_TYPES.has(type)) spec.nozzles = nozzlesOf({ type, nozzles: o.nozzles });
   // 방향 — 밸브·피팅을 수직 배관에 세울 때 axis: 'y'.
   // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
@@ -802,9 +807,10 @@ export const NOZZLE_LABELS = {
   up: '위', down: '아래', left: '왼쪽', right: '오른쪽', in: 'IN 흡입', out: 'OUT 토출',
 };
 
-// 노즐 관경 — 현장에서 쓰는 15A~200A. 'none'은 노즐 없음.
+// 노즐 관경 — 배관과 같은 KS 표준 15A~600A. 'none'은 노즐 없음.
+// (v72 — 탱크 자유 노즐에서 큰 저장탱크용 250A~600A 노즐도 뽑을 수 있게 전체 관경을 연다)
 export const NOZZLE_NONE = 'none';
-export const NOZZLE_SIZES = ['15A', '20A', '25A', '32A', '40A', '50A', '65A', '80A', '100A', '125A', '150A', '200A'];
+export const NOZZLE_SIZES = BORE_KEYS.slice();
 const NOZZLE_SIZE_SET = new Set(NOZZLE_SIZES);
 
 // 노즐을 가진 장비 — 나머지 부속(밸브·피팅·계기)은 노즐을 갖지 않는다.
@@ -837,6 +843,17 @@ export function nozzleDefaults(type) {
 // 장비의 노즐 설정 — 저장돼 있으면 그 값을, 없으면(예전 도면·새 장비) 기본값을 쓴다.
 // 값이 하나라도 저장돼 있으면 저장본이 정본이다(사용자가 '없음'으로 끈 방향을 되살리지 않는다).
 export function nozzlesOf(spec) {
+  // 탱크는 자유 목록(tankNozzlesOf)이 정본이다 — 예전 방향별 모양으로 되돌려 준다
+  // (방향별 API를 쓰는 옛 코드·내보내기가 그대로 동작하게).
+  if (spec && TANK_NOZ_TYPES.has(spec.type)) {
+    const out = {};
+    NOZZLE_DIRS.forEach((d) => { out[d] = NOZZLE_NONE; });
+    tankNozzlesOf(spec).forEach((n) => {
+      const d = tankFaceDir(n.face);
+      if (d && out[d] === NOZZLE_NONE) out[d] = n.bore;
+    });
+    return out;
+  }
   const dirs = nozzleDirsOf(spec && spec.type);
   const out = {};
   if (!dirs.length) return out;
@@ -1071,6 +1088,327 @@ export function applyHxPreset(spec, key) {
   return list;
 }
 
+// ── 탱크 자유 노즐 (사각 탱크 · 원통 탱크 · 대형 원통 저장탱크) ────────────
+// 예전에는 위·아래·왼쪽·오른쪽 네 자리에만 뽑을 수 있었다. 현장에서는 펌프 흡입관·
+// 드레인·오버플로를 맞추려고 측면 아무 높이·아무 자리에 노즐이 필요하다
+// (2026-11-26 사용자 `32078`: "노즐 위치를 내가 원하는대로 자유롭게 변경").
+//  · face : left / right / front / back / top / bottom — 탱크 자기 좌표계의 벽면
+//  · h    : 그 벽면의 높이 비율 0(바닥)~1(위)
+//  · u    : 면 안 가로 위치 -1~1 (0 = 가운데)
+//  · v    : 위·아래 면에서 앞뒤 위치 -1~1
+// 좌표는 탱크 로컬 좌표(회전 전)이고 equipNozzles()가 장비 자세를 곱해 월드로 낸다 —
+// buildNozzles()·손 그리기 스냅·Fusion 360 내보내기가 모두 같은 값을 쓴다.
+export const TANK_NOZ_TYPES = new Set(['rtank', 'tank', 'stank']);
+export const TANK_NOZ_FACES = ['left', 'right', 'front', 'back', 'top', 'bottom'];
+export const TANK_NOZ_FACE_LABELS = {
+  left: '왼쪽', right: '오른쪽', front: '앞쪽', back: '뒤쪽', top: '위', bottom: '아래',
+};
+export const TANK_TYPE_LABELS = { rtank: '사각 탱크', tank: '원통 탱크', stank: '대형 저장탱크' };
+// 높이 빠른 선택 — 하단·중간·상단. 그 밖의 높이는 mm 입력으로 맞춘다.
+export const TANK_HPOS = [['low', 0.15, '하단'], ['mid', 0.5, '중간'], ['high', 0.85, '상단']];
+const TANK_DIR_FACE = { up: 'top', down: 'bottom', left: 'left', right: 'right' };
+// 벽면 → 예전 방향 이름 (호환용)
+export function tankFaceDir(face) {
+  return face === 'top' ? 'up' : (face === 'bottom' ? 'down' : face);
+}
+// 원통 탱크에서 네 벽면이 놓이는 각도(도) — 0 = 앞(+Z), 90 = 오른쪽(+X)
+const TANK_FACE_ANGLE = { front: 0, right: 90, back: 180, left: -90 };
+
+// 본체 치수 (builders.js가 그리는 값과 같은 식, 탱크 로컬 좌표 · m)
+//  · box   : halfX / halfZ = 옆면 반폭, bottom / top = 옆면 높이 범위
+//  · round : R = 반지름, bottom / top = 옆면 높이 범위, topY = 윗면 높이
+//  · sideBottom : 옆면이 실제로 시작하는 높이 (대형 탱크는 아래 원추 헤드가 있어 바닥 노즐보다 위)
+export function tankDims(spec) {
+  const t = spec && spec.type;
+  if (t === 'rtank') {
+    const sx = Math.max(0.2, num(spec.w, 2.4) / 2.4);
+    const sy = Math.max(0.2, num(spec.h, 1.8) / 1.8);
+    const sz = Math.max(0.2, num(spec.d, 1.8) / 1.8);
+    return {
+      box: true, halfX: 1.1 * sx, halfZ: 0.81 * sz,
+      bottom: 0.1 * sy, top: 1.72 * sy, topY: 1.72 * sy, sideBottom: 0.1 * sy,
+    };
+  }
+  if (t === 'stank') {
+    const sx = Math.max(0.2, num(spec.w, 2.0) / 2.0);
+    const sy = Math.max(0.2, num(spec.h, 3.0) / 3.0);
+    return {
+      box: false, R: 0.9 * sx,
+      bottom: 0.55 * sy, top: 2.42 * sy, topY: 2.72 * sy, sideBottom: 0.79 * sy,
+    };
+  }
+  // 원통 드럼 (tank) — 본체는 h의 2%~98%
+  const r = Math.max(0.15, num(spec.w, 0.6) / 2);
+  const h = Math.max(0.2, num(spec.h, 0.9));
+  return { box: false, R: r, bottom: 0.02 * h, top: 0.98 * h, topY: 0.98 * h, sideBottom: 0.02 * h };
+}
+
+// 옆면 높이 범위(m) — 높이 비율(h)을 mm로 보여 줄 때 쓴다.
+export function tankHeightSpan(spec) {
+  const G = tankDims(spec);
+  return Math.max(1e-6, G.top - G.bottom);
+}
+
+// 가로 위치 비율(u) 1.0이 몇 m인가 — 사각 옆면은 반폭, 원통은 원주 45° 호 길이.
+export function tankLatScale(spec, face) {
+  const G = tankDims(spec);
+  if (face === 'top' || face === 'bottom') return G.box ? G.halfX : G.R * 0.85;
+  if (!G.box) return G.R * Math.PI / 4;
+  return (face === 'left' || face === 'right') ? G.halfZ : G.halfX;
+}
+
+// 위·아래 면의 앞뒤 위치 비율(v) 1.0이 몇 m인가.
+export function tankDepthScale(spec) {
+  const G = tankDims(spec);
+  return G.box ? G.halfZ : G.R * 0.85;
+}
+
+// 예전 고정 노즐(위·아래·왼쪽·오른쪽)이 서던 옆면 높이 — 저장본 호환용.
+function tankLegacySideY(spec) {
+  if (spec.type === 'rtank') return 1.0 * Math.max(0.2, num(spec.h, 1.8) / 1.8);
+  if (spec.type === 'stank') return 1.55 * Math.max(0.2, num(spec.h, 3.0) / 3.0);
+  return 0.55 * Math.max(0.2, num(spec.h, 0.9));
+}
+
+// 노즐 한 개 정규화 — 모르는 값은 가운데로, 비율은 -1~1 / 0~1로 자른다.
+function normTankNozzle(n, idx) {
+  if (!n || typeof n !== 'object') return null;
+  let face = TANK_NOZ_FACES.includes(n.face) ? n.face
+    : (TANK_DIR_FACE[n.face] || TANK_DIR_FACE[n.dir] || null);
+  if (!face) face = 'left';
+  const nid = typeof n.nid === 'string' && n.nid ? n.nid
+    : (typeof n.id === 'string' && n.id ? n.id : `n${(idx || 0) + 1}`);
+  const cl = (v, d) => (Number.isFinite(Number(v)) ? Math.max(-1, Math.min(1, Number(v))) : d);
+  const h = Number.isFinite(Number(n.h)) ? Math.max(0, Math.min(1, Number(n.h))) : 0.5;
+  return {
+    nid,
+    face,
+    h: round3(h),
+    u: round3(cl(n.u, 0)),
+    v: round3(cl(n.v, 0)),
+    bore: NOZZLE_SIZE_SET.has(n.bore) ? n.bore : '100A',
+    // 이 노즐을 따라 움직이는 배관(자동 맞춤으로 생긴 노즐) — 같은 배관을 다시 옮겨도
+    // 노즐을 새로 뽑지 않고 이 노즐이 따라간다.
+    ...(typeof n.pipe === 'string' && n.pipe ? { pipe: n.pipe } : {}),
+  };
+}
+
+// 기본 노즐 목록 — 예전 방향별 기본값(nozzleDefaults)을 같은 자리의 자유 노즐로 옮긴다.
+function tankDefaultList(spec) {
+  const d = nozzleDefaults(spec.type);
+  const G = tankDims(spec);
+  const span = Math.max(1e-6, G.top - G.bottom);
+  const sideH = round3(Math.max(0, Math.min(1, (tankLegacySideY(spec) - G.bottom) / span)));
+  const out = [];
+  NOZZLE_DIRS.forEach((dir) => {
+    const bore = d[dir];
+    if (!NOZZLE_SIZE_SET.has(bore)) return;
+    const face = TANK_DIR_FACE[dir];
+    out.push({
+      nid: `n${out.length + 1}`, face, h: (face === 'top' || face === 'bottom') ? 0 : sideH, u: 0, v: 0, bore,
+    });
+  });
+  return out;
+}
+
+// 탱크의 노즐 목록 — 저장본(nozList)이 정본이다.
+// ① nozList 배열 → 그대로 (자유 배치)
+// ② 예전 방향별 관경(nozzles: {left:'50A', top:'50A'}) → 같은 자리·같은 관경의 자유 노즐로
+// ③ 둘 다 없으면(새 장비) 장비별 기본값
+// 목록이 빈 배열이면 '노즐 없음'이 그대로 유지된다.
+export function tankNozzlesOf(spec) {
+  if (!spec || !TANK_NOZ_TYPES.has(spec.type)) return [];
+  const src = Array.isArray(spec.nozList) ? spec.nozList
+    : (Array.isArray(spec.nozzles) ? spec.nozzles : null);
+  if (src) {
+    const out = [];
+    const seen = new Set();
+    src.forEach((n, i) => {
+      const v = normTankNozzle(n, i);
+      if (!v) return;
+      if (seen.has(v.nid)) v.nid = freshHxNid(out);
+      seen.add(v.nid);
+      out.push(v);
+    });
+    return out;
+  }
+  const legacy = (spec.nozzles && typeof spec.nozzles === 'object')
+    ? spec.nozzles : nozzleDefaults(spec.type);
+  const G = tankDims(spec);
+  const span = Math.max(1e-6, G.top - G.bottom);
+  const sideH = round3(Math.max(0, Math.min(1, (tankLegacySideY(spec) - G.bottom) / span)));
+  const out = [];
+  NOZZLE_DIRS.forEach((dir) => {
+    const bore = legacy[dir];
+    if (!NOZZLE_SIZE_SET.has(bore)) return;
+    const face = TANK_DIR_FACE[dir];
+    out.push({
+      nid: `n${out.length + 1}`, face, h: (face === 'top' || face === 'bottom') ? 0 : sideH, u: 0, v: 0, bore,
+    });
+  });
+  return out;
+}
+
+// 노즐 이름 — 화면·토스트용 ("오른쪽 하단")
+export function tankNozzleLabel(n) {
+  if (!n) return '';
+  const face = TANK_NOZ_FACE_LABELS[n.face] || '';
+  if (n.face === 'top' || n.face === 'bottom') return face;
+  if (n.h <= 0.06) return `${face} 하단`;
+  if (n.h >= 0.94) return `${face} 상단`;
+  const p = TANK_HPOS.find(([, v]) => Math.abs(v - n.h) < 0.06);
+  return `${face} ${p ? p[2] : `${Math.round(n.h * 100)}%`}`.trim();
+}
+
+// 노즐 한 개 바꾸기 — 넘어온 값만 바꾼다(위치·높이·가로·관경).
+export function setTankNozzle(spec, nid, patch) {
+  if (!spec || !TANK_NOZ_TYPES.has(spec.type)) return null;
+  const list = tankNozzlesOf(spec);
+  const i = list.findIndex((n) => n.nid === nid);
+  if (i < 0) return null;
+  const next = normTankNozzle({ ...list[i], ...(patch || {}) }, i);
+  list[i] = next;
+  spec.nozList = list;
+  delete spec.nozzles;
+  return next;
+}
+
+// 노즐 추가 — 자리가 비어 있는(노즐이 가장 적은) 벽면 가운데에 하나 뽑아 둔다.
+export function addTankNozzle(spec, patch) {
+  if (!spec || !TANK_NOZ_TYPES.has(spec.type)) return null;
+  const list = tankNozzlesOf(spec);
+  const p = patch || {};
+  let face = p.face;
+  if (!TANK_NOZ_FACES.includes(face)) {
+    const count = {};
+    TANK_NOZ_FACES.forEach((f) => { count[f] = 0; });
+    list.forEach((n) => { count[n.face] = (count[n.face] || 0) + 1; });
+    face = ['left', 'right', 'front', 'back'].reduce((a, f) => (count[f] < count[a] ? f : a), 'left');
+  }
+  const n = normTankNozzle({
+    nid: freshHxNid(list), face, h: p.h, u: p.u, v: p.v, bore: p.bore || '50A', pipe: p.pipe,
+  }, list.length);
+  list.push(n);
+  spec.nozList = list;
+  delete spec.nozzles;
+  return n;
+}
+
+// 노즐 삭제 — 남은 노즐 id는 그대로 둔다.
+export function removeTankNozzle(spec, nid) {
+  if (!spec || !TANK_NOZ_TYPES.has(spec.type)) return null;
+  const list = tankNozzlesOf(spec).filter((n) => n.nid !== nid);
+  spec.nozList = list;
+  delete spec.nozzles;
+  return list;
+}
+
+// 프리셋 — 목록을 통째로 바꾼다. (기본값 / 측면 하단 2 / 상단 2 / 모두 비우기)
+export const TANK_PRESETS = [
+  { key: 'default', label: '기본' },
+  { key: 'bottom2', label: '측면 하단 2', list: [['left', 0.12, '100A'], ['right', 0.12, '100A']] },
+  { key: 'top2', label: '상단 2', list: [['top', 0.5, '100A']] },
+  { key: 'clear', label: '모두 비우기', list: [] },
+];
+
+export function applyTankPreset(spec, key) {
+  const p = TANK_PRESETS.find((x) => x.key === key);
+  if (!spec || !TANK_NOZ_TYPES.has(spec.type) || !p) return null;
+  const list = p.key === 'default'
+    ? tankDefaultList(spec)
+    : (p.list || []).map(([face, h, bore], i) => normTankNozzle({ nid: `n${i + 1}`, face, h, bore }, i));
+  spec.nozList = list;
+  delete spec.nozzles;
+  return list;
+}
+
+// 노즐이 붙는 자리 (탱크 로컬 좌표) — p = 외벽 접합점, axis = 바깥 방향.
+// 사각 탱크는 네 옆면·윗면·바닥, 원통 탱크는 원주(각도 ±45° 안에서 u로 이동)·윗면·바닥.
+function tankNozzleAnchor(spec, n) {
+  const G = tankDims(spec);
+  const face = n.face;
+  const u = Math.max(-1, Math.min(1, num(n.u, 0)));
+  const v = Math.max(-1, Math.min(1, num(n.v, 0)));
+  if (face === 'top' || face === 'bottom') {
+    const up = face === 'top';
+    const y = up ? G.topY : G.bottom;
+    const halfX = G.box ? G.halfX : G.R * 0.85;
+    const halfZ = G.box ? G.halfZ : G.R * 0.85;
+    return { p: [u * halfX, y, v * halfZ], axis: [0, up ? 1 : -1, 0] };
+  }
+  const y = Math.max(G.sideBottom, G.bottom + Math.max(0, Math.min(1, num(n.h, 0.5))) * (G.top - G.bottom));
+  if (G.box) {
+    if (face === 'left') return { p: [-G.halfX, y, u * G.halfZ], axis: [-1, 0, 0] };
+    if (face === 'right') return { p: [G.halfX, y, u * G.halfZ], axis: [1, 0, 0] };
+    if (face === 'front') return { p: [u * G.halfX, y, G.halfZ], axis: [0, 0, 1] };
+    return { p: [u * G.halfX, y, -G.halfZ], axis: [0, 0, -1] };
+  }
+  // 원통 — 네 벽면 중심 각도 사이를 u로 오간다(±45°).
+  const deg = (TANK_FACE_ANGLE[face] || 0) + u * 45;
+  const th = deg * Math.PI / 180;
+  const sn = Math.sin(th);
+  const cs = Math.cos(th);
+  return { p: [G.R * sn, y, G.R * cs], axis: [sn, 0, cs] };
+}
+
+// ── 탱크 벽면 근처의 배관 끝 맞춤 (v72) ───────────────────────────────────
+// 배관 끝이 탱크 외벽 0.35m 안에 오면 그 벽면·높이·가로 위치를 돌려준다.
+// main.js가 이 값으로 노즐을 옮기거나 새로 뽑고, 배관 끝을 노즐 플랜지 면에 앉힌다
+// (사용자: "배관을 가까이 가져다 놓으면 그 높이나 위치에 맞게 자동으로 변경해줘").
+export function tankWallFit(spec, p, tol) {
+  if (!spec || !TANK_NOZ_TYPES.has(spec.type) || !p) return null;
+  const G = tankDims(spec);
+  const M = equipBasis(spec);
+  const dx = num(p.x, 0) - num(spec.x, 0);
+  const dy = Math.max(0, num(p.y, 0)) - num(spec.y, 0);
+  const dz = num(p.z, 0) - num(spec.z, 0);
+  const lx = M[0] * dx + M[3] * dy + M[6] * dz;
+  const ly = M[1] * dx + M[4] * dy + M[7] * dz;
+  const lz = M[2] * dx + M[5] * dy + M[8] * dz;
+  const t = Math.max(0.02, num(tol, 0.35));
+  const clamp = (x) => Math.max(-1, Math.min(1, x));
+  const span = Math.max(1e-6, G.top - G.bottom);
+  const hOf = (y) => clamp((y - G.bottom) / span);
+  const worldAxis = (a) => ({ x: M[0] * a[0] + M[1] * a[1] + M[2] * a[2], y: M[3] * a[0] + M[4] * a[1] + M[5] * a[2], z: M[6] * a[0] + M[7] * a[1] + M[8] * a[2] });
+  let best = null;
+  const take = (dist, face, u, v, h, axis) => {
+    if (!(dist >= -0.02) || dist > t) return;
+    if (best && dist >= best.dist) return;
+    best = { dist, face, h: round3(h), u: round3(clamp(u)), v: round3(clamp(v)), axis: worldAxis(axis), local: { x: lx, y: ly, z: lz } };
+  };
+  if (G.box) {
+    const inY = ly >= G.bottom - t && ly <= G.topY + t;
+    if (inY) {
+      if (Math.abs(lz) <= G.halfZ + t) {
+        take(lx - G.halfX, 'right', clamp(lz / G.halfZ), 0, hOf(ly), [1, 0, 0]);
+        take(-G.halfX - lx, 'left', clamp(lz / G.halfZ), 0, hOf(ly), [-1, 0, 0]);
+      }
+      if (Math.abs(lx) <= G.halfX + t) {
+        take(lz - G.halfZ, 'front', clamp(lx / G.halfX), 0, hOf(ly), [0, 0, 1]);
+        take(-G.halfZ - lz, 'back', clamp(lx / G.halfX), 0, hOf(ly), [0, 0, -1]);
+      }
+    }
+    if (ly > G.top) take(ly - G.topY, 'top', clamp(lx / G.halfX), clamp(lz / G.halfZ), 1, [0, 1, 0]);
+    if (ly < G.bottom) take(G.bottom - ly, 'bottom', clamp(lx / G.halfX), clamp(lz / G.halfZ), 0, [0, -1, 0]);
+    return best;
+  }
+  // 원통 — 원주에서 가장 가까운 벽면(4분면)과 각도, 그리고 윗면·바닥
+  const r = Math.hypot(lx, lz);
+  const th = Math.atan2(lx, lz) * 180 / Math.PI;
+  if (ly >= G.sideBottom - t && ly <= G.top + t) {
+    const idx = Math.round(th / 90);
+    const center = ((idx % 4) + 4) % 4;
+    const face = ['front', 'right', 'back', 'left'][center];
+    let diff = th - idx * 90;
+    while (diff >= 180) diff -= 360;
+    while (diff < -180) diff += 360;
+    take(r - G.R, face, clamp(diff / 45), 0, hOf(ly), [Math.sin(th * Math.PI / 180), 0, Math.cos(th * Math.PI / 180)]);
+  }
+  if (ly > G.top) take(ly - G.topY, 'top', clamp(lx / (G.R * 0.85)), clamp(lz / (G.R * 0.85)), 1, [0, 1, 0]);
+  if (ly < G.sideBottom) take(G.bottom - ly, 'bottom', clamp(lx / (G.R * 0.85)), clamp(lz / (G.R * 0.85)), 0, [0, -1, 0]);
+  return best;
+}
+
 // ── 노즐이 붙는 외벽 자리 (장비 로컬 좌표) ────────────────────────────────
 // builders.js가 그리는 본체 치수와 정확히 같은 식을 쓴다. p = 외벽 접합점,
 // axis = 노즐이 뻗는 바깥 방향(단위벡터).
@@ -1220,6 +1558,17 @@ function nozzleEntry(spec, dir, bore, a, extra) {
 //  · hx는 nid·at·label이 함께 온다 (같은 방향에 여러 개가 있을 수 있어 id로 구분)
 export function equipNozzles(spec) {
   if (!spec) return [];
+  // 탱크 3종 — 자유 노즐 목록(nozList)이 정본. 벽면·높이·가로 위치·개수·관경이 모두 자유롭다.
+  if (TANK_NOZ_TYPES.has(spec.type)) {
+    const out = [];
+    tankNozzlesOf(spec).forEach((n) => {
+      const e = nozzleEntry(spec, n.face, n.bore, tankNozzleAnchor(spec, n), {
+        nid: n.nid, face: n.face, tankNoz: true, h: n.h, u: n.u, v: n.v, label: tankNozzleLabel(n),
+      });
+      if (e) out.push(e);
+    });
+    return out;
+  }
   // 열교환기 — 자유 노즐 목록(nozList)이 정본이다. 위치·방향·개수·관경이 모두 자유롭다.
   if (spec.type === 'hx') {
     const out = [];
@@ -2496,6 +2845,11 @@ export function normalizeState(raw) {
       if (type === 'hx') {
         item.hxType = HX_TYPES.includes(e.hxType) ? e.hxType : 'both';
         item.nozList = hxNozzlesOf({ type, nozList: e.nozList, nozzles: e.nozzles });
+      }
+      else if (TANK_NOZ_TYPES.has(type)) {
+        item.nozList = tankNozzlesOf({
+          type, nozList: e.nozList, nozzles: e.nozzles, w: item.w, h: item.h, d: item.d,
+        });
       }
       else if (NOZZLE_TYPES.has(type)) item.nozzles = nozzlesOf({ type, nozzles: e.nozzles });
       if (type === 'elbow' || type === 'elbow45') {
