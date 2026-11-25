@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=70';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=71';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -37,7 +37,8 @@ export function buildFusionScript(state) {
         conn: e.conn === 'forged' ? 'forged' : 'flange',
         // 이 관경의 KS 10K 플랜지 외경·두께(m) — 부속 자기 플랜지도 배관 끝 플랜지와 같은 크기로.
         // (yvalve는 v69에서 HANDLE_TYPES에서 빠졌지만 플랜지 부속이므로 FLANGE_MATE_TYPES로 잡는다)
-        fod: e.bore && (HANDLE_TYPES.has(e.type) || FLANGE_MATE_TYPES.has(e.type) || e.type === 'flange')
+        fod: e.bore && (HANDLE_TYPES.has(e.type) || FLANGE_MATE_TYPES.has(e.type)
+          || e.type === 'flange' || e.type === 'safety_valve')
           ? flangeOd(e.bore) : null,
         ft: e.bore ? flangeTh(e.bore) : null,
       };
@@ -63,6 +64,7 @@ export function buildFusionScript(state) {
       if (NOZZLE_TYPES.has(e.type)) {
         item.nozzles = equipNozzles(e).map((n) => ({
           dir: n.dir, bore: n.bore, r: n.r,
+          fod: flangeOd(n.bore),          // 노즐 판도 배관 끝 플랜지와 같은 KS 10K 외경
           base: [n.base.x, n.base.y, n.base.z],
           tip: [n.tip.x, n.tip.y, n.tip.z],
           axis: [n.axis.x, n.axis.y, n.axis.z],
@@ -300,7 +302,9 @@ def build_nozzles(comp, e, tag):
         dr = nz.get('dir', 'x')
         if add_cylinder(comp, base, neck_end, r, tag + '_Noz_' + dr):
             made += 1
-        if add_cylinder(comp, neck_end, tip, r * 1.55, tag + '_NozFlg_' + dr):
+        # 플랜지 판 반지름 — 웹앱과 같은 KS 10K 표(fod). 없으면 예전처럼 노즐 외경의 1.55배.
+        fr = (float(nz.get('fod')) / 2.0) if nz.get('fod') else r * 1.55
+        if add_cylinder(comp, neck_end, tip, fr, tag + '_NozFlg_' + dr):
             made += 1
     return made
 
@@ -523,17 +527,17 @@ def build_safety_valve(comp, e, tag):
     def P(lx, ly, lz):
         return local_to_world(e, (lx * sx, ly * sy, lz * sz))
 
-    if add_cylinder(comp, P(0, -0.17, 0), P(0, -0.14, 0), 0.085 * sx, tag + '_InletFlange'):
+    if add_cylinder(comp, P(0, -0.17, 0), P(0, -0.14, 0), flange_radius(e, 0.085 * sx), tag + '_InletFlange'):
         made += 1
     if add_cylinder(comp, P(0, -0.16, 0), P(0, -0.06, 0), 0.045 * sx, tag + '_Neck'):
         made += 1
     if add_cylinder(comp, P(0, -0.085, 0), P(0, 0.065, 0), 0.068 * sx, tag + '_Body'):
         made += 1
-    if add_cylinder(comp, P(0, 0.055, 0), P(0, 0.075, 0), 0.088 * sx, tag + '_MidFlange'):
+    if add_cylinder(comp, P(0, 0.055, 0), P(0, 0.075, 0), flange_radius(e, 0.088 * sx) * 0.88, tag + '_MidFlange'):
         made += 1
     if add_cylinder(comp, P(0.04, -0.01, 0), P(0.185, -0.01, 0), 0.04 * sx, tag + '_Outlet'):
         made += 1
-    if add_cylinder(comp, P(0.175, -0.01, 0), P(0.2, -0.01, 0), 0.065 * sx, tag + '_OutletFlange'):
+    if add_cylinder(comp, P(0.175, -0.01, 0), P(0.2, -0.01, 0), flange_radius(e, 0.065 * sx) * 0.75, tag + '_OutletFlange'):
         made += 1
     if add_cylinder(comp, P(0, 0.075, 0), P(0, 0.125, 0), 0.06 * sz, tag + '_Bonnet'):
         made += 1

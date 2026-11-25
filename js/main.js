@@ -13,14 +13,14 @@ import {
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=70';
-import { buildScene } from './builders.js?v=70';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=70';
-import { buildOBJ } from './obj.js?v=70';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=70';
-import { parseCommand, CMD_HELP } from './cmd.js?v=70';
-import { buildDimItems } from './dims.js?v=70';
-import { buildAiImageParts } from './zoom.js?v=70';
+} from './store.js?v=71';
+import { buildScene } from './builders.js?v=71';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=71';
+import { buildOBJ } from './obj.js?v=71';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=71';
+import { parseCommand, CMD_HELP } from './cmd.js?v=71';
+import { buildDimItems } from './dims.js?v=71';
+import { buildAiImageParts } from './zoom.js?v=71';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];

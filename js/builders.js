@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=70';
+import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=71';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -33,16 +33,6 @@ function add(parent, geo, material, x, y, z, rx, ry, rz) {
   return m;
 }
 
-
-// 관경별 KS 10K 플랜지 외경에 맞춘 **로컬 반지름 배율**.
-//  · 부속의 로컬 폭 배율은 plan(= d / 기본 d)이므로, 로컬 반지름 × plan = 월드 반지름이 된다.
-//  · 그래서 baseR 에 이 배율을 곱하면 월드 외경이 정확히 flangeOd(bore)가 된다 —
-//    배관 끝 플랜지·플랜지 부속과 같은 크기(100A 210mm > 80A 185mm > 50A 155mm).
-function flangeK(spec, baseR) {
-  const plan = boreScale(spec.bore || SIZE_REF_BORE).plan || 1;
-  const want = flangeOd(spec.bore) / 2;
-  return (want / plan) / baseR;
-}
 
 const cyl = (r, h, seg = 24) => G(`cyl|${r.toFixed(4)}|${h.toFixed(4)}|${seg}`, () => new THREE.CylinderGeometry(r, r, h, seg));
 const cyl2 = (rt, rb, h, seg = 24) => G(`cyl2|${rt.toFixed(4)}|${rb.toFixed(4)}|${h.toFixed(4)}|${seg}`, () => new THREE.CylinderGeometry(rt, rb, h, seg));
@@ -94,13 +84,16 @@ function flangeGeo(R, boreR, T, b) {
 }
 
 // 판 한 장 — pos 중심, dir 축(+Z를 dir로 돌린다), 외경 R, 내경 boreR, 두께 T.
-function flangeMesh(parent, pos, dir, R, boreR, T, material) {
+// bore를 주면 이 판이 그 관경의 배관 접합 플랜지라는 표시(userData.flange.bore)를 남긴다 —
+// v71 전수 검증(모든 판 월드 외경 = flangeOd(bore))이 장면을 훑어 확인하는 데 쓴다.
+function flangeMesh(parent, pos, dir, R, boreR, T, material, bore) {
   const b = flangeBolts(R);
   const mesh = new THREE.Mesh(flangeGeo(R, boreR, T, b), material || MAT('#9aa3ab', 0.4, 0.85));
   mesh.position.copy(pos);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  mesh.userData.flange = { R, boreR, T, bore: bore || null, metres: true };
   parent.add(mesh);
   // 구멍 속을 채우는 어두운 속판 — 판 몸 안에 숨어 있다가 내경·볼트 구멍으로만 보인다.
   // (구멍으로 배경이 비쳐 밝은 점처럼 보이던 것을 막아, 가까이서도 '뚫린 구멍'으로 읽힌다)
@@ -116,30 +109,65 @@ function flangeMesh(parent, pos, dir, R, boreR, T, material) {
   return mesh;
 }
 
+// ── 플랜지 판을 부모의 w/h/d 배율에서 떼어내는 'm 단위 자식 좌표계' ─────────────
+// 부속(게이트밸브·볼밸브·체크밸브·유량계·벨로우즈·버터플라이)은 로컬 형상에 마지막으로
+// g.scale.set(w/defW, h/defH, d/defD)를 곱한다. 그런데 h는 rise(외경비의 0.65제곱),
+// d는 plan(외경비)이라 두 배율이 다르다 — 그 안에 원형으로 그린 판은 월드에서 **타원**이
+// 되고 외경도 표 값에서 벗어났다(50A 게이트밸브 판이 194×155mm, 2026-11-26 `32074`).
+//  · 판은 (1/xs, 1/ys, 1/zs)를 곱한 자식 그룹에 그린다. 부모 배율과 곱해져 상쇄되므로
+//    월드에서 **정확한 원**이 되고, 그룹 안 좌표는 그대로 m(월드와 같은 단위)다.
+//  · 그룹 원점 = 판 중심. 그래서 판 안쪽 좌표는 '판 중심에서 잰 m'이다.
+function flangeFrame(parent, at, s) {
+  const xs = Math.abs(Number(s && s.x)) || 1;
+  const ys = Math.abs(Number(s && s.y)) || 1;
+  const zs = Math.abs(Number(s && s.z)) || 1;
+  const fg = new THREE.Group();
+  fg.position.set((at.x || 0) / xs, (at.y || 0) / ys, (at.z || 0) / zs);
+  fg.scale.set(1 / xs, 1 / ys, 1 / zs);
+  parent.add(fg);
+  return fg;
+}
+
 // 부속 로컬 X축 플랜지 판 — 판의 **바깥면이 접합면(±w/2)** 에 정확히 닿는다.
 // (예전에는 판은 0.045 두께인데 접합면은 w/2=0.03이라 7~15mm 어긋나 있었고,
 //  플랜지 위에 엘보를 올리면 엘보가 판 속으로 파묻히거나 떠 보였다 — 2026-11-25 `31589`)
-//  · opt.baseR  : 판 로컬 반지름 기준(flangeK가 KS 10K 외경으로 맞춰 준다)
-//  · opt.defW   : 이 부속의 기본 폭 = 로컬 좌표계의 폭(접합면은 ±defW/2)
+//  · 판 외경 = flangeOd(bore), 두께 = flangeTh(bore) — Y 스트레이너·단독 플랜지·배관 끝
+//    플랜지·장비 노즐 플랜지와 **같은 KS 10K 표**를 쓴다(v71: 전 관경 1:1 일치).
+//  · opt.defW/defH/defD : 이 빌더가 마지막에 곱하는 g.scale의 기준값(로컬 기본 치수)
 //  · opt.bodyEnd·neckR : 판 안쪽 면과 몸체 끝이 벌어지면 그 사이를 목으로 메운다
-function equipFlangeSide(g, spec, sx, opt) {
+//  · opt.T : 판 두께를 표 값 대신 직접 줄 때(m). opt.od : 판 외경을 직접 줄 때(m)
+function equipFlangeSide(g, spec, sgn, opt) {
   const o = opt || {};
   const bore = spec.bore || SIZE_REF_BORE;
   const plan = boreScale(bore).plan || 1;
   const defW = o.defW || 0.2;
-  const xs = (Number(spec.w) || defW * plan) / defW;   // 로컬 X 배율(보통 plan)
-  const baseR = o.baseR || 0.12;
-  const R = baseR * flangeK(spec, baseR);
-  const Tl = (o.T || flangeTh(bore)) / xs;
-  const half = defW / 2;                               // 로컬 접합면
-  const inner = half - Tl;
+  const defH = o.defH || defW;
+  const defD = o.defD || defW;
+  // 각 빌더의 g.scale.set(...)과 **같은 식** — 판을 이 배율에서 되돌린다.
+  const S = {
+    x: (Number(spec.w) || defW * plan) / defW,
+    y: (Number(spec.h) || defH) / defH,
+    z: (Number(spec.d) || defD) / defD,
+  };
+  const W = Math.abs(Number(spec.w) || defW * plan);     // 면간거리(월드 m)
+  // 판 두께 — KS 10K 표. 다만 아주 작은 관경(15A 등)은 면간거리보다 판이 두꺼워
+  // 양쪽 판이 몸통 안에서 겹치므로, 그릴 수 있는 한도(면간의 45%)까지만 쓴다.
+  const T = Math.min(Number(o.T) || flangeTh(bore), W * 0.45);   // 판 두께(월드 m)
+  const R = (Number(o.od) || flangeOd(bore)) / 2;       // 판 외경 반지름(월드 m)
   const mat = o.mat || MAT(spec.color, 0.35, 0.9);
-  if (o.neckR && inner - (o.bodyEnd || 0) > 0.002) {
-    add(g, cyl(o.neckR, inner - (o.bodyEnd || 0), 20), o.neckMat || mat,
-      sx * ((o.bodyEnd || 0) + inner) / 2, 0, 0, 0, 0, Math.PI / 2);
+  const face = W / 2;                                    // 접합면(월드 x)
+  const fg = flangeFrame(g, { x: sgn * (face - T / 2), y: 0, z: 0 }, S);
+  // 목 — 몸체 끝(로컬 bodyEnd × 배율)에서 판 안쪽 면까지. 반지름은 관경 비례(plan).
+  const bodyEndW = S.x * (o.bodyEnd || 0);
+  const innerW = face - T;
+  const len = innerW - bodyEndW;
+  if (o.neckR && len > 0.002) {
+    const nr = o.neckR * plan;
+    add(fg, cyl(nr, len, 20), o.neckMat || mat,
+      -sgn * (len / 2 + T / 2), 0, 0, 0, 0, Math.PI / 2);
   }
-  flangeMesh(g, new THREE.Vector3(sx * (half + inner) / 2, 0, 0), new THREE.Vector3(1, 0, 0),
-    R, (boreOd(bore) / 2 * 1.03) / plan, Tl, mat);
+  flangeMesh(fg, new THREE.Vector3(0, 0, 0), new THREE.Vector3(sgn, 0, 0),
+    R, boreOd(bore) / 2 * 1.03, T, mat, bore);
 }
 
 // 두 점을 잇는 원통(단위 높이 원통을 회전·스케일) — 경사 분기관·타이로드·지주 등
@@ -462,7 +490,7 @@ function buildValve(spec) {
       return;
     }
     // 얇은 링 판(내경·볼트 구멍) — 바깥면이 접합면(±w/2)에 정확히 닿는다.
-    equipFlangeSide(g, spec, sx, { baseR: 0.13, defW: 0.264, bodyEnd: 0.07, neckR: 0.085, mat: bodyMat });
+    equipFlangeSide(g, spec, sx, { defW: 0.264, defH: 0.58, defD: 0.3, bodyEnd: 0.07, neckR: 0.085, mat: bodyMat });
   });
   // 보닛 · 스템
   add(g, cyl(0.07, 0.09, 20), bodyMat, 0, 0.11, 0);
@@ -634,7 +662,7 @@ function buildButterfly(spec) {
       socketBoss(g, [sx * 0.058, 0, 0], [sx, 0, 0], 0.115, bodyMat, steel);
       return;
     }
-    equipFlangeSide(g, spec, sx, { baseR: 0.165, defW: 0.174, bodyEnd: 0.05, neckR: 0.115, mat: bodyMat });
+    equipFlangeSide(g, spec, sx, { defW: 0.174, defH: 0.46, defD: 0.32, bodyEnd: 0.05, neckR: 0.115, mat: bodyMat });
   });
   // 상·하 루그
   add(g, box(0.09, 0.09, 0.06), bodyMat, 0, 0.13, 0);
@@ -691,7 +719,7 @@ function buildYValve(spec) {
       return;
     }
     flangeMesh(g, new THREE.Vector3(sx * (half - T / 2), 0, 0), new THREE.Vector3(sx, 0, 0),
-      R, boreR, T, bodyMat);
+      R, boreR, T, bodyMat, bore);
   });
 
   // ── Y 바스켓 — 아래로 45°, 하류 쪽으로 비스듬히 뻗고 끝에 볼트 캡(플러그) ──
@@ -741,7 +769,7 @@ function buildBall(spec) {
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) socketBoss(g, [sx * 0.092, 0, 0], [sx, 0, 0], 0.055, bodyMat, steel);
-    else equipFlangeSide(g, spec, sx, { baseR: 0.085, defW: 0.234, bodyEnd: 0.1, mat: steel });
+    else equipFlangeSide(g, spec, sx, { defW: 0.234, defH: 0.34, defD: 0.24, bodyEnd: 0.1, mat: steel });
   });
   add(g, cyl(0.03, 0.04, 14), bodyMat, 0, 0.075, 0);
   add(g, cyl(0.024, 0.06, 12), steel, 0, 0.11, 0);
@@ -768,7 +796,7 @@ function buildCheck(spec) {
   const forged = isForged(spec);
   [-1, 1].forEach((sx) => {
     if (forged) socketBoss(g, [sx * 0.042, 0, 0], [sx, 0, 0], 0.09, bodyMat, steel);
-    else equipFlangeSide(g, spec, sx, { baseR: 0.115, defW: 0.108, bodyEnd: 0.03, neckR: 0.1, mat: steel });
+    else equipFlangeSide(g, spec, sx, { defW: 0.108, defH: 0.26, defD: 0.22, bodyEnd: 0.03, neckR: 0.1, mat: steel });
   });
   add(g, box(0.1, 0.045, 0.06), bodyMat, 0, 0.105, 0);
   add(g, cyl(0.011, 0.05, 8), steel, 0, 0.14, 0);
@@ -790,18 +818,28 @@ function buildSafetyValve(spec) {
   const dark = MAT('#2c3238', 0.65, 0.5);
 
   // 입구 (아래) — 얇은 링 플랜지 + 목
+  // 안전밸브는 세로 몸체라 g.scale의 y(h)·z(d) 배율이 달라 판이 타원이 되었다 — 판은
+  // flangeFrame()으로 배율을 되돌려 월드에서 정확한 원으로 그린다(v71).
+  const bore = spec.bore || SIZE_REF_BORE;
   const rise = (Number(spec.h) || 0.52) / 0.52;
-  const plan = boreScale(spec.bore || SIZE_REF_BORE).plan || 1;
+  const S = { x: (Number(spec.w) || 0.22) / 0.22, y: rise, z: (Number(spec.d) || 0.22) / 0.22 };
   const Y = new THREE.Vector3(0, 1, 0);
-  flangeMesh(g, new THREE.Vector3(0, -0.16, 0), Y, 0.085, 0.045, 0.018 / rise, steel);
+  const FR = flangeOd(bore) / 2;                     // KS 10K 판 외경 반지름
+  const FT = flangeTh(bore);                         // KS 10K 판 두께
+  const ORIGIN = new THREE.Vector3(0, 0, 0);
+  const plate = (frame, dir, R, T, material, b) => flangeMesh(frame, ORIGIN, dir, R,
+    Math.min(R * 0.8, boreOd(bore) / 2 * 1.03), T, material, b);
+  // 입구 — 배관이 체결되는 자리라 외경·두께가 배관 끝 플랜지와 똑같다
+  plate(flangeFrame(g, { x: 0, y: -0.16 * S.y, z: 0 }, S), Y, FR, FT, steel, bore);
   add(g, cyl(0.045, 0.09, 18), bodyMat, 0, -0.11, 0);
-  // 본체 (세로) + 중간 플랜지 2개
+  // 본체 (세로) + 중간 플랜지 2개 — 보닛·몸체 이음판이라 한 치수 작다
   add(g, cyl(0.068, 0.15, 22), bodyMat, 0, -0.01, 0);
-  flangeMesh(g, new THREE.Vector3(0, 0.065, 0), Y, 0.088, 0.068, 0.018 / rise, steel);
-  flangeMesh(g, new THREE.Vector3(0, -0.075, 0), Y, 0.082, 0.068, 0.014 / rise, steel);
+  plate(flangeFrame(g, { x: 0, y: 0.065 * S.y, z: 0 }, S), Y, FR * 0.88, FT * 0.9, steel);
+  plate(flangeFrame(g, { x: 0, y: -0.075 * S.y, z: 0 }, S), Y, FR * 0.84, FT * 0.85, steel);
   // 측면 토출구 (+X) + 플랜지
   add(g, cyl(0.04, 0.16, 18), bodyMat, 0.1, -0.01, 0, 0, 0, Math.PI / 2);
-  flangeMesh(g, new THREE.Vector3(0.185, -0.01, 0), new THREE.Vector3(1, 0, 0), 0.065, 0.04, 0.014 / plan, steel);
+  plate(flangeFrame(g, { x: 0.185 * S.x, y: -0.01 * S.y, z: 0 }, S), new THREE.Vector3(1, 0, 0),
+    FR * 0.75, FT * 0.85, steel);
   // 보닛 · 스프링 하우징 · 캡 · 조정 나사
   add(g, cyl2(0.048, 0.07, 0.05, 20), bonnetMat, 0, 0.1, 0);
   add(g, cyl(0.056, 0.15, 22), bonnetMat, 0, 0.2, 0);
@@ -838,7 +876,7 @@ function buildBellows(spec) {
       socketBoss(g, [sx * len / 2, 0, 0], [sx, 0, 0], 0.098, bodyMat, steel);
       return;
     }
-    equipFlangeSide(g, spec, sx, { baseR: 0.15, defW: 0.304, bodyEnd: 0.12, neckR: 0.098, mat: steel });
+    equipFlangeSide(g, spec, sx, { defW: 0.304, defH: 0.34, defD: 0.34, bodyEnd: 0.12, neckR: 0.098, mat: steel });
   });
 
   // 타이로드 4개 + 너트
@@ -1066,7 +1104,7 @@ function buildFlow(spec) {
       socketBoss(g, [sx * 0.1, 0, 0], [sx, 0, 0], 0.06, bodyMat, steel, { collar: 1.3, hex: 1.42, neck: 1.05 });
       return;
     }
-    equipFlangeSide(g, spec, sx, { baseR: 0.1, defW: 0.24, bodyEnd: 0.09, neckR: 0.06, mat: steel });
+    equipFlangeSide(g, spec, sx, { defW: 0.24, defH: 0.42, defD: 0.24, bodyEnd: 0.09, neckR: 0.06, mat: steel });
   });
   // 상부 스템 · 트랜스미터 헤드 · 표시창
   add(g, cyl(0.035, 0.1, 18), steel, 0, 0.11, 0);
@@ -1091,7 +1129,7 @@ function buildFlange(spec) {
   const T = Math.max(0.008, Number(spec.w) || flangeTh(bore));
   const boreR = Math.min(R * 0.78, boreOd(bore) / 2 * 1.03);
   // 판은 로컬 X축(유로 축)으로 세운다 — 부속 자세(equipBasis)가 이 축을 돌린다.
-  flangeMesh(g, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), R, boreR, T, MAT(spec.color, 0.45, 0.8));
+  flangeMesh(g, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), R, boreR, T, MAT(spec.color, 0.45, 0.8), bore);
   return g;
 }
 
@@ -1274,7 +1312,7 @@ export function buildPipe(spec, equipments, pipes) {
       if (connMode === 'none') return;
       if (connMode === 'forged') socketBoss(g, [p.x, p.y, p.z], [out.x, out.y, out.z], radius, mat, flangeMat, { collar: 1.42, hex: 1.56 });
       // 배관 끝 플랜지 — 두께 KS 10K 표. 접합면(p)이 곧 판 앞뒤의 중심값이다.
-      else addFlange(g, p, out, radius, flangeMat, flangeOd(spec.bore) / 2, flangeTh(spec.bore) || FLANGE_PIPE_T);
+      else addFlange(g, p, out, radius, flangeMat, flangeOd(spec.bore) / 2, flangeTh(spec.bore) || FLANGE_PIPE_T, spec.bore);
     };
     // 같은 배관끼리 맞닿은 끝 — 다른 배관의 끝점과 거의 같은 자리인가 (다른 배관은 넘겨받은 목록).
     // 같은 관경·같은 방향으로 이어진 직선 이음이므로 플랜지 원판 대신 용접 비드만 두른다.
@@ -1307,12 +1345,12 @@ export function buildPipe(spec, equipments, pipes) {
   return g;
 }
 
-function addFlange(g, pos, dir, r, material, outer, thick) {
+function addFlange(g, pos, dir, r, material, outer, thick, bore) {
   // outer를 주면 그 반지름으로(맞대는 플랜지와 같은 외경), 없으면 배관 외경의 1.9배.
   // 판 가운데에 배관이 지나가는 내경을 뚫어 두고, PCD 원주에 볼트 구멍을 낸다.
   const R = outer || r * 1.9;
   const T = thick || FLANGE_PIPE_T;
-  flangeMesh(g, pos, dir, R, r * 1.03, T, material);
+  flangeMesh(g, pos, dir, R, r * 1.03, T, material, bore);
 }
 
 // ── 장비 노즐 (목 + 플랜지) ──────────────────────────────
@@ -1330,16 +1368,19 @@ function buildNozzles(spec) {
     const len = dir.length();
     if (len < 1e-4) return;
     dir.normalize();
-    // 노즐 끝 플랜지 — 얇은 링 판(내경·볼트 구멍). 배관 끝 플랜지와 같은 규칙으로 앉힌다.
-    const fl = Math.min(0.020, len * 0.35);            // 플랜지 판 두께
+    // 노즐 끝 플랜지 — 얇은 링 판(내경·볼트 구멍). 외경·두께는 **배관 끝 플랜지와 같은
+    // KS 10K 표**(flangeOd·flangeTh)를 그대로 쓴다 — 예전에는 노즐 외경의 1.55배(50A
+    // 노즐 94mm)라 같은 관경 게이트밸브 판(155mm)보다 훨씬 작아 나란히 보면 크기가 달라
+    // 보였다(2026-11-26 `32076` 사용자: "배관 플렌지랑 스트레이너, 벨브, 크기가 다 달라").
+    const T = Math.min(flangeTh(n.bore), Math.max(0.008, len * 0.35));
     const at = (t) => [
       n.base.x + dir.x * t, n.base.y + dir.y * t, n.base.z + dir.z * t,
     ];
     // 벽 접합 보강 칼라 → 노즐 목 → 플랜지 판 (판 바깥면 = 끝면 = 스냅 좌표)
     addTube(g, at(0), at(0.012), n.r * 1.26, ring, 20);
-    addTube(g, at(0), at(len - fl), n.r, steel, 22);
-    const c = new THREE.Vector3(...at(len - fl / 2));
-    flangeMesh(g, c, dir, n.r * 1.55, n.r * 1.03, fl, ring);
+    addTube(g, at(0), at(len - T), n.r, steel, 22);
+    const c = new THREE.Vector3(...at(len - T / 2));
+    flangeMesh(g, c, dir, flangeOd(n.bore) / 2, n.r * 1.03, T, ring, n.bore);
   });
   return g;
 }
