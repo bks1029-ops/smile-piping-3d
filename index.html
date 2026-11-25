@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=63">
+<link rel="stylesheet" href="./css/style.css?v=64">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -102,6 +102,9 @@
         <button class="btn small accent cmd-run" id="cmdRun" type="submit">실행</button>
         <button class="btn small ghost cmd-mic" id="cmdMic" type="button" aria-pressed="false"
                 title="말로 명령 (예: 50에이 오른쪽 1000)" aria-label="음성 명령">🎤</button>
+        <button class="btn small ghost cmd-link" id="cmdLink" type="button" aria-pressed="false"
+                title="잇기 — 커서에서 탭한 접속구(티·노즐·배관 끝)까지 배관을 바로 연결합니다"
+                aria-label="잇기">🔗</button>
         <button class="btn small ghost cmd-undo" id="cmdUndo" type="button"
                 title="실행취소 (직전 명령·부속 추가와 커서를 되돌립니다)" aria-label="실행취소">
           <span class="undo-ico">↩</span><span class="undo-txt">실행취소</span>
@@ -265,6 +268,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=63"></script>
+<script type="module" src="./js/main.js?v=64"></script>
 </body>
 </html>

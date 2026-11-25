@@ -417,7 +417,13 @@ export function makeEquipment(type, opts) {
   if (bore) spec.bore = bore;
   // 노즐 — 열교환기·헤더·탱크(원형·사각)·펌프. o.nozzles가 있으면 그 값을,
   // 없으면 장비별 기본값(현장 설비처럼 보이는 값)을 그대로 적어 둔다.
-  if (NOZZLE_TYPES.has(type)) spec.nozzles = nozzlesOf({ type, nozzles: o.nozzles });
+  // 열교환기는 자유 노즐 목록(nozList)이 정본 — 위치·방향·개수·관경을 사용자가 직접 고른다.
+  if (type === 'hx') {
+    spec.hxType = HX_TYPES.includes(o.hxType) ? o.hxType : 'both';
+    spec.nozList = hxNozzlesOf({
+      type, nozList: o.nozList, nozzles: o.nozzles,
+    });
+  } else if (NOZZLE_TYPES.has(type)) spec.nozzles = nozzlesOf({ type, nozzles: o.nozzles });
   // 방향 — 밸브·피팅을 수직 배관에 세울 때 axis: 'y'.
   // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
   if (AXIS_VALUES.has(o.axis)) spec.axis = o.axis;
@@ -452,6 +458,8 @@ export function makeEquipment(type, opts) {
     const d2 = type === 'tee' ? spec.bore1 : (t.bore2 || '50A');
     spec.bore2 = BORES[o.bore2] ? o.bore2 : d2;
     if (o.w == null) spec.w = fittingNaturalWidth(type, spec.bore1, spec.bore2);
+    // 티의 분기 방향 — 본관 축 둘레 위·아래·앞·뒤 (기본 위)
+    if (type === 'tee') spec.branch = TEE_BRANCHES.includes(o.branch) ? o.branch : 'up';
   }
   return spec;
 }
@@ -581,27 +589,218 @@ export function setNozzle(spec, dir, bore) {
   return all;
 }
 
+// ── 열교환기 본체 치수 ───────────────────────────────────────────────────
+// 현장 사진(2026-11-25)의 쉘앤튜브형: 쉘 양끝에 볼트 체결 바디 플랜지 2쌍 + 둥근 경판(채널),
+// 아래에 사각 새들 2개와 가로 보강 바. builders.js·fusion.js·노즐 좌표가 모두 이 식을 쓴다.
+//  · w = 전체 길이(양 끝 경판 포함), h = 쉘 지름, y = 바닥, cy = 쉘 중심 높이
+export function hxBody(spec) {
+  const L = Math.max(0.6, num(spec && spec.w, 3));
+  const dia = Math.max(0.2, num(spec && spec.h, 0.75));
+  const R = dia / 2;
+  const leg = Math.max(0.22, Math.min(0.55, dia * 0.62));
+  const cy = leg + R;
+  const bodyLen = Math.max(0.3, L * 0.58);                       // 쉘 길이 — 양끝 플랜지·경판 자리를 남긴다
+  const flangeT = Math.min(0.09, Math.max(0.04, R * 0.18));       // 플랜지 한 장 두께
+  const flangeR = R * 1.2;                                        // 플랜지 반지름(볼트 자리)
+  const headLen = Math.max(0.06, Math.min(bodyLen * 0.2, R * 0.85)); // 경판 원통 길이
+  const headR = R * 0.86;
+  const capDepth = headR * 0.6;                                    // 둥근 경판 깊이(반구를 X로 누른 값)
+  const endX = bodyLen / 2 + flangeT * 2 + headLen + capDepth;     // 경판 꼭대기 = 장비 양 끝
+  const flatR = flangeR * 0.92;                                    // 평판 커버(블라인드 플랜지) 반지름
+  return { L, dia, R, leg, cy, bodyLen, flangeT, flangeR, headLen, headR, capDepth, endX, flatR, saddleX: bodyLen * 0.31 };
+}
+
+// ── 열교환기 자유 노즐 ───────────────────────────────────────────────────
+// 열교환기는 현장마다 노즐 위치·개수·방향·관경이 다르다 — 고정 4방향이 아니라
+// 원하는 자리에 원하는 만큼 뽑을 수 있게 목록(nozList)으로 기억한다.
+//  · at  : 쉘 길이 방향 자리 (좌측 헤드·쉘 좌측·쉘 중앙·쉘 우측·우측 헤드)
+//  · dir : 뽑는 방향 (위·아래·앞·뒤 / 좌측 끝·우측 끝 = 경판 중심 축방향)
+//  · bore: KS 표준 관경
+// 좌·우 끝 노즐은 경판 꼭대기에서 축방향으로 나오므로 at이 좌·우 헤드로 고정된다.
+export const HX_AT = ['headL', 'shellL', 'shellC', 'shellR', 'headR'];
+export const HX_AT_LABELS = {
+  headL: '좌측 헤드', shellL: '쉘 좌측', shellC: '쉘 중앙', shellR: '쉘 우측', headR: '우측 헤드',
+};
+export const HX_NOZ_DIRS = ['up', 'down', 'front', 'back', 'left', 'right'];
+export const HX_NOZ_DIR_LABELS = {
+  up: '위', down: '아래', front: '앞', back: '뒤', left: '좌측 끝', right: '우측 끝',
+};
+const HX_AXIAL = new Set(['left', 'right']);
+
+// ── 열교환기 헤드 타입 ─────────────────────────────────────────────────
+// both : 양쪽 둥근 타입 — 좌·우 모두 볼트 플랜지 + 둥근 경판
+// one  : 한쪽 둥근 타입 — 왼쪽은 둥근 경판, 오른쪽은 평판 커버 (rot 180°로 반전)
+// flat : 양쪽 평판 타입 — 좌·우 모두 볼트 플랜지 + 평판 커버
+export const HX_TYPES = ['both', 'one', 'flat'];
+export const HX_TYPE_LABELS = { both: '양쪽 둥근', one: '한쪽 둥근', flat: '양쪽 평판' };
+export const HX_TYPE_DESC = {
+  both: '좌·우 모두 볼트 플랜지 + 둥근 경판',
+  one: '왼쪽 둥근 경판 · 오른쪽 평판 커버 (회전 180°로 반전)',
+  flat: '좌·우 모두 볼트 플랜지 + 평판 커버',
+};
+
+export function hxTypeOf(spec) {
+  const t = spec && spec.hxType;
+  return HX_TYPES.includes(t) ? t : 'both';
+}
+
+// 그쪽(+1 오른쪽 / -1 왼쪽) 헤드가 둥근가? 평판인가?
+export function hxHeadRound(spec, side) {
+  const t = hxTypeOf(spec);
+  if (t === 'both') return true;
+  if (t === 'flat') return false;
+  return side < 0;   // one — 왼쪽만 둥글다
+}
+
+// 새 열교환기의 기본 노즐 — 사진처럼 상단(쉘 좌측) 100A · 하단 드레인(쉘 우측) 50A
+const HX_DEFAULT_LIST = [
+  ['shellL', 'up', '100A'],
+  ['shellR', 'down', '50A'],
+];
+
+export function hxDefaultNozzles() {
+  return HX_DEFAULT_LIST.map(([at, dir, bore], i) => ({ nid: `n${i + 1}`, at, dir, bore }));
+}
+
+// 빠른 프리셋 — 모바일에서 한 번에 고르고 아래에서 미세 조정한다.
+export const HX_PRESETS = [
+  { key: 'basic', label: '기본 (상2·하2)', list: [
+    ['shellL', 'up', '100A'], ['shellR', 'up', '100A'], ['shellL', 'down', '50A'], ['shellR', 'down', '50A'],
+  ] },
+  { key: 'top2end', label: '상단 좌/우 + 우측', list: [
+    ['shellL', 'up', '100A'], ['shellR', 'up', '80A'], ['headR', 'right', '150A'],
+  ] },
+  { key: 'minimal', label: '최소 (상1·하1)', list: [
+    ['shellC', 'up', '100A'], ['shellC', 'down', '50A'],
+  ] },
+  { key: 'heads', label: '헤드 좌·우 (끝)', list: [
+    ['headL', 'left', '150A'], ['headR', 'right', '150A'],
+  ] },
+  { key: 'clear', label: '모두 비우기', list: [] },
+];
+
+function freshHxNid(list) {
+  const used = new Set((list || []).map((n) => n && n.nid));
+  let i = 1;
+  while (used.has(`n${i}`)) i += 1;
+  return `n${i}`;
+}
+
+// 노즐 한 개 정규화 — 모르는 값은 안전한 기본으로 되돌리고, 좌·우 끝은 경판 자리로 맞춘다.
+function normHxNozzle(n, idx) {
+  if (!n || typeof n !== 'object') return null;
+  const dir = HX_NOZ_DIRS.includes(n.dir) ? n.dir : 'up';
+  let at = HX_AT.includes(n.at) ? n.at : 'shellC';
+  if (dir === 'left') at = 'headL';
+  else if (dir === 'right') at = 'headR';
+  const nid = typeof n.nid === 'string' && n.nid ? n.nid
+    : (typeof n.id === 'string' && n.id ? n.id : `n${(idx || 0) + 1}`);
+  return { nid, at, dir, bore: NOZZLE_SIZE_SET.has(n.bore) ? n.bore : '100A' };
+}
+
+// 열교환기의 노즐 목록 — 저장본(nozList)이 정본이다.
+// 예전 도면의 방향별 관경(nozzles: up/down/left/right)은 같은 자리의 자유 노즐로 옮기고,
+// 둘 다 없으면(새 장비) 기본 목록을 쓴다. 목록이 빈 배열이면 '노즐 없음'이 그대로 유지된다.
+export function hxNozzlesOf(spec) {
+  if (!spec || spec.type !== 'hx') return [];
+  // 저장본이 배열이면 그것이 목록이다 (nozList가 정본, 예전 내보내기 JSON은 nozzles 배열).
+  const src = Array.isArray(spec.nozList) ? spec.nozList
+    : (Array.isArray(spec.nozzles) ? spec.nozzles : null);
+  if (src) {
+    const out = [];
+    const seen = new Set();
+    src.forEach((n, i) => {
+      const v = normHxNozzle(n, i);
+      if (!v) return;
+      if (seen.has(v.nid)) v.nid = freshHxNid(out);
+      seen.add(v.nid);
+      out.push(v);
+    });
+    return out;
+  }
+  if (spec.nozzles && typeof spec.nozzles === 'object') {
+    const legacy = nozzlesOf({ type: 'hx', nozzles: spec.nozzles });
+    const out = [];
+    [['up', 'shellC'], ['down', 'shellC'], ['left', 'headL'], ['right', 'headR']].forEach(([d, at]) => {
+      if (NOZZLE_SIZE_SET.has(legacy[d])) out.push({ nid: `n${out.length + 1}`, at, dir: d, bore: legacy[d] });
+    });
+    return out;
+  }
+  return hxDefaultNozzles();
+}
+
+// 노즐 이름 (화면·토스트) — "쉘 좌측 위"처럼 자리와 방향을 함께 보여 준다.
+export function hxNozzleLabel(n) {
+  if (!n) return '';
+  return `${HX_AT_LABELS[n.at] || ''} ${HX_NOZ_DIR_LABELS[n.dir] || ''}`.trim();
+}
+
+// 노즐 한 개 바꾸기 — 넘어온 값(위치·방향·관경)만 바꾼다.
+export function setHxNozzle(spec, nid, patch) {
+  if (!spec || spec.type !== 'hx') return null;
+  const list = hxNozzlesOf(spec);
+  const i = list.findIndex((n) => n.nid === nid);
+  if (i < 0) return null;
+  const next = normHxNozzle({ ...list[i], ...(patch || {}) }, i);
+  list[i] = next;
+  spec.nozList = list;
+  delete spec.nozzles;
+  return next;
+}
+
+// 노즐 추가 — 아직 쓰지 않은 자리(위치+방향)를 골라 놓는다.
+// 자리가 다 찼으면 겹쳐도 하나 더 놓는다(사용자가 직접 자리를 옮길 수 있다).
+export function addHxNozzle(spec, patch) {
+  if (!spec || spec.type !== 'hx') return null;
+  const list = hxNozzlesOf(spec);
+  const p = patch || {};
+  let at = p.at;
+  let dir = p.dir;
+  if (!at || !dir) {
+    const taken = new Set(list.map((n) => `${n.at}|${n.dir}`));
+    const free = [
+      ['shellC', 'up'], ['shellL', 'up'], ['shellR', 'up'], ['headL', 'up'], ['headR', 'up'],
+      ['shellC', 'down'], ['shellL', 'down'], ['shellR', 'down'], ['headL', 'down'], ['headR', 'down'],
+      ['shellC', 'front'], ['shellL', 'front'], ['shellR', 'front'],
+      ['shellC', 'back'], ['shellL', 'back'], ['shellR', 'back'],
+      ['headL', 'left'], ['headR', 'right'],
+    ].find(([a, d]) => !taken.has(`${a}|${d}`)) || ['shellC', 'up'];
+    at = at || free[0];
+    dir = dir || free[1];
+  }
+  const n = normHxNozzle({ nid: freshHxNid(list), at, dir, bore: p.bore || '50A' }, list.length);
+  list.push(n);
+  spec.nozList = list;
+  delete spec.nozzles;
+  return n;
+}
+
+// 노즐 삭제 — 남은 노즐 id는 그대로 둔다(선택·커서가 다른 노즐로 튀지 않게).
+export function removeHxNozzle(spec, nid) {
+  if (!spec || spec.type !== 'hx') return null;
+  const list = hxNozzlesOf(spec).filter((n) => n.nid !== nid);
+  spec.nozList = list;
+  delete spec.nozzles;
+  return list;
+}
+
+// 프리셋 적용 — 목록을 통째로 바꾼다.
+export function applyHxPreset(spec, key) {
+  const p = HX_PRESETS.find((x) => x.key === key);
+  if (!spec || spec.type !== 'hx' || !p) return null;
+  const list = p.list.map(([at, dir, bore], i) => normHxNozzle({ nid: `n${i + 1}`, at, dir, bore }, i));
+  spec.nozList = list;
+  delete spec.nozzles;
+  return list;
+}
+
 // ── 노즐이 붙는 외벽 자리 (장비 로컬 좌표) ────────────────────────────────
 // builders.js가 그리는 본체 치수와 정확히 같은 식을 쓴다. p = 외벽 접합점,
 // axis = 노즐이 뻗는 바깥 방향(단위벡터).
 function nozzleAnchors(spec) {
   const t = spec && spec.type;
   const g = {};
-  if (t === 'hx') {
-    // 가로로 누운 원통(축 = 로컬 X) — 위·아래는 원통 꼭대기/바닥,
-    // 왼쪽·오른쪽은 채널 헤드(양단 경판) 끝면이다.
-    const L = Math.max(0.6, num(spec.w, 3));
-    const dia = Math.max(0.2, num(spec.h, 0.75));
-    const R = dia / 2;
-    const leg = Math.max(0.22, Math.min(0.55, dia * 0.62));
-    const cy = leg + R;
-    const endX = L * 0.37 + 0.295;
-    g.up = { p: [0, leg + dia, 0], axis: [0, 1, 0] };
-    g.down = { p: [0, leg, 0], axis: [0, -1, 0] };
-    g.left = { p: [-endX, cy, 0], axis: [-1, 0, 0] };
-    g.right = { p: [endX, cy, 0], axis: [1, 0, 0] };
-    return g;
-  }
+  // 열교환기는 자유 노즐(hxNozzleAnchor)을 쓴다 — 예전 4방향 고정 자리는 없다.
   if (t === 'header') {
     const b = headerBody(spec);
     const endX = b.L / 2 + b.R * 0.55;
@@ -667,15 +866,36 @@ const NOZZLE_NECK_MIN = 0.10;
 const NOZZLE_NECK_MAX = 0.30;
 const NOZZLE_FLANGE_T = 0.03;
 
-// 장비의 노즐 목록 (월드 좌표). 설정된 노즐만, 위→아래→왼쪽→오른쪽(펌프는 in→out) 순서.
-//  · base : 장비 외벽에 닿는 접합점
-//  · tip  : 플랜지 접합면 = 배관이 시작되는 점 (손 그리기 스냅 좌표)
-//  · axis : 바깥으로 뻗는 방향 (이어 그리는 배관의 초기 방향)
-//  · r    : 관 외경 반지름, len = 목+플랜지 길이
-export function equipNozzles(spec) {
-  const dirs = nozzleDirsOf(spec && spec.type);
-  if (!dirs.length) return [];
-  const anchors = nozzleAnchors(spec);
+// 열교환기 자유 노즐의 외벽 자리 (로컬 좌표)
+//  · 위·아래·앞·뒤는 그 자리의 외벽(쉘이면 R, 헤드면 headR)에 수직으로,
+//  · 좌·우 끝은 둥근 경판 꼭대기에서 축방향으로 나온다.
+function hxNozzleAnchor(spec, n) {
+  const B = hxBody(spec);
+  const headCenter = B.bodyLen / 2 + B.flangeT * 2 + B.headLen * 0.5;
+  const xAt = {
+    headL: -headCenter,
+    shellL: -B.bodyLen * 0.3,
+    shellC: 0,
+    shellR: B.bodyLen * 0.3,
+    headR: headCenter,
+  }[n.at] || 0;
+  if (HX_AXIAL.has(n.dir)) {
+    const sx = n.dir === 'left' ? -1 : 1;
+    return { p: [sx * B.endX, B.cy, 0], axis: [sx, 0, 0] };
+  }
+  // 위·아래·앞·뒤는 그 자리의 원통 외벽 — 헤드 쪽이면 헤드 반지름
+  const rad = (n.at === 'headL' || n.at === 'headR') ? B.headR : B.R;
+  if (n.dir === 'up') return { p: [xAt, B.cy + rad, 0], axis: [0, 1, 0] };
+  if (n.dir === 'down') return { p: [xAt, B.cy - rad, 0], axis: [0, -1, 0] };
+  if (n.dir === 'front') return { p: [xAt, B.cy, rad], axis: [0, 0, 1] };
+  return { p: [xAt, B.cy, -rad], axis: [0, 0, -1] };
+}
+
+// 노즐 하나를 월드 좌표로 — 장비 회전(rot)만 적용하고, 끝점은 목+플랜지 두께만큼 바깥.
+function nozzleEntry(spec, dir, bore, a, extra) {
+  if (!a) return null;
+  const r = boreOd(bore) / 2;
+  const neck = Math.max(NOZZLE_NECK_MIN, Math.min(NOZZLE_NECK_MAX, 0.10 + 2.0 * r));
   const th = num(spec.rot, 0) * Math.PI / 180;
   const c = Math.cos(th);
   const s = Math.sin(th);
@@ -685,35 +905,165 @@ export function equipNozzles(spec) {
     z: round3(num(spec.z, 0) - p[0] * s + p[2] * c),
   });
   const rotV = (v) => ({ x: v[0] * c + v[2] * s, y: v[1], z: -v[0] * s + v[2] * c });
+  const axis = rotV(a.axis);
+  const base = toWorld(a.p);
+  const tip = a.tip
+    ? toWorld(a.tip)
+    : {
+      x: round3(base.x + axis.x * (neck + NOZZLE_FLANGE_T)),
+      y: round3(Math.max(0, base.y + axis.y * (neck + NOZZLE_FLANGE_T))),
+      z: round3(base.z + axis.z * (neck + NOZZLE_FLANGE_T)),
+    };
+  const len = Math.hypot(tip.x - base.x, tip.y - base.y, tip.z - base.z);
+  if (len < 1e-4) return null;
+  return {
+    dir,
+    bore,
+    r: round3(r),
+    base,
+    tip,
+    axis: { x: round3(axis.x), y: round3(axis.y), z: round3(axis.z) },
+    len: round3(len),
+    ...(extra || {}),
+  };
+}
+
+// 장비의 노즐 목록 (월드 좌표).
+//  · base : 장비 외벽에 닿는 접합점
+//  · tip  : 플랜지 접합면 = 배관이 시작되는 점 (손 그리기 스냅 좌표)
+//  · axis : 바깥으로 뻗는 방향 (이어 그리는 배관의 초기 방향)
+//  · r    : 관 외경 반지름, len = 목+플랜지 길이
+//  · hx는 nid·at·label이 함께 온다 (같은 방향에 여러 개가 있을 수 있어 id로 구분)
+export function equipNozzles(spec) {
+  if (!spec) return [];
+  // 열교환기 — 자유 노즐 목록(nozList)이 정본이다. 위치·방향·개수·관경이 모두 자유롭다.
+  if (spec.type === 'hx') {
+    const out = [];
+    hxNozzlesOf(spec).forEach((n) => {
+      const e = nozzleEntry(spec, n.dir, n.bore, hxNozzleAnchor(spec, n), {
+        nid: n.nid, at: n.at, label: hxNozzleLabel(n),
+      });
+      if (e) out.push(e);
+    });
+    return out;
+  }
+  const dirs = nozzleDirsOf(spec.type);
+  if (!dirs.length) return [];
+  const anchors = nozzleAnchors(spec);
   const out = [];
   dirs.forEach((dir) => {
     const bore = nozzleBore(spec, dir);
     const a = anchors[dir];
     if (!bore || !a) return;
-    const r = boreOd(bore) / 2;
-    const neck = Math.max(NOZZLE_NECK_MIN, Math.min(NOZZLE_NECK_MAX, 0.10 + 2.0 * r));
-    const axis = rotV(a.axis);
-    const base = toWorld(a.p);
-    const tip = a.tip
-      ? toWorld(a.tip)
-      : {
-        x: round3(base.x + axis.x * (neck + NOZZLE_FLANGE_T)),
-        y: round3(Math.max(0, base.y + axis.y * (neck + NOZZLE_FLANGE_T))),
-        z: round3(base.z + axis.z * (neck + NOZZLE_FLANGE_T)),
-      };
-    const len = Math.hypot(tip.x - base.x, tip.y - base.y, tip.z - base.z);
-    if (len < 1e-4) return;
-    out.push({
-      dir,
-      bore,
-      r: round3(r),
-      base,
-      tip,
-      axis: { x: round3(axis.x), y: round3(axis.y), z: round3(axis.z) },
-      len: round3(len),
-    });
+    const e = nozzleEntry(spec, dir, bore, a);
+    if (e) out.push(e);
   });
   return out;
+}
+
+// ── 티(분기관) 접속구 — 직진 양끝 + 분기 끝 ────────────────────────────────
+// 티는 본관(1차)과 분기(2차) 관경이 다를 수 있고(이경 티), 분기 방향도 배관 축 둘레로
+// 위·아래·앞·뒤 4방향 중 고를 수 있다. 세 접속구 모두 3D에서 직접 눌러 그 자리에서
+// 배관을 이어 그린다 — 열교환기·펌프 노즐과 같은 길(equipPorts).
+export const TEE_BRANCHES = ['up', 'down', 'front', 'back'];
+export const TEE_BRANCH_LABELS = { up: '위', down: '아래', front: '앞', back: '뒤' };
+export const TEE_PORT_LABELS = { runA: '직진 A', runB: '직진 B', branch: '분기' };
+
+// 분기 방향 — 티 자신의 좌표계(본관 축 = 로컬 X)에서 수직인 네 방향.
+export function teeBranch(spec) {
+  const b = spec && spec.branch;
+  if (b === 'down') return [0, -1, 0];
+  if (b === 'front') return [0, 0, 1];
+  if (b === 'back') return [0, 0, -1];
+  return [0, 1, 0];
+}
+
+// 3x3 회전행렬 도우미 (row-major, world = M · local)
+function rotYM(deg) {
+  const t = num(deg, 0) * Math.PI / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  return [c, 0, s, 0, 1, 0, -s, 0, c];
+}
+function matMul(a, b) {
+  const o = new Array(9).fill(0);
+  for (let r = 0; r < 3; r += 1) {
+    for (let c = 0; c < 3; c += 1) {
+      o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+    }
+  }
+  return o;
+}
+function matVec(m, v) {
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+  ];
+}
+
+// buildTee()와 정확히 같은 치수·자세 — 로컬 치수를 월드로 옮기는 데 쓴다.
+//  · L = 본관 길이, H = 분기 길이, s = 배관 관경에 맞춘 배율(균등)
+//  · 자세는 builders.js buildEquipment()와 같은 순서(dir → axis:'y' → rot)
+function teeFrame(spec) {
+  const b1 = spec.bore1 && BORES[spec.bore1] ? spec.bore1 : '100A';
+  const b2 = spec.bore2 && BORES[spec.bore2] ? spec.bore2 : b1;
+  const r1 = boreOd(b1) / 2;
+  const L = Math.max(0.22, 2.6 * r1 * 2);
+  const H = Math.max(0.1, L * 0.5);
+  const w = num(spec.w, fittingNaturalWidth('tee', b1, b2));
+  const s = Math.max(0.05, w) / (L + 0.03);
+  let M = rotYM(num(spec.rot, 0));
+  const dv = Array.isArray(spec.dir) && spec.dir.length === 3
+    ? spec.dir.map((v) => Number(v)) : null;
+  if (dv && Math.hypot(dv[0], dv[1], dv[2]) > 1e-6) M = dirBasis(dv);
+  else if (spec.axis === 'y') M = matMul(rotYM(num(spec.rot, 0)), dirBasis([0, 1, 0]));
+  return { b1, b2, r1, r2: boreOd(b2) / 2, L, H, s, M };
+}
+
+// 티의 세 접속구 (월드 좌표) — nid: runA(직진 −X 끝) · runB(직진 +X 끝) · branch(분기 끝)
+export function teePorts(spec) {
+  if (!spec || spec.type !== 'tee') return [];
+  const F = teeFrame(spec);
+  const B = teeBranch(spec);
+  const at = (v) => {
+    const w = matVec(F.M, v);
+    return {
+      x: round3(num(spec.x, 0) + w[0]),
+      y: round3(Math.max(0, num(spec.y, 0) + w[1])),
+      z: round3(num(spec.z, 0) + w[2]),
+    };
+  };
+  const dirOf = (v) => {
+    const w = matVec(F.M, v);
+    const l = Math.hypot(w[0], w[1], w[2]) || 1;
+    return { x: round3(w[0] / l), y: round3(w[1] / l), z: round3(w[2] / l) };
+  };
+  const H = F.H * F.s;
+  const half = (F.L / 2) * F.s;
+  const mk = (nid, p, axis, bore) => ({
+    nid,
+    dir: nid,
+    bore,
+    label: TEE_PORT_LABELS[nid],
+    r: round3(boreOd(bore) / 2),
+    base: { x: round3(p.x - axis.x * 0.02), y: round3(Math.max(0, p.y - axis.y * 0.02)), z: round3(p.z - axis.z * 0.02) },
+    tip: p,
+    axis,
+    len: 0.02,
+  });
+  return [
+    mk('runA', at([-half, 0, 0]), dirOf([-1, 0, 0]), F.b1),
+    mk('runB', at([half, 0, 0]), dirOf([1, 0, 0]), F.b1),
+    mk('branch', at([B[0] * H, B[1] * H, B[2] * H]), dirOf(B), F.b2),
+  ];
+}
+
+// 장비·부속의 접속구 — 노즐이 있는 장비는 노즐, 티는 직진 양끝 + 분기 끝.
+export function equipPorts(spec) {
+  if (!spec) return [];
+  if (spec.type === 'tee') return teePorts(spec);
+  return equipNozzles(spec);
 }
 
 // ── 장비 본체가 차지하는 공간 ────────────────────────────────────────
@@ -1734,9 +2084,15 @@ export function normalizeState(raw) {
       if (type === 'reducer' || type === 'tee') {
         item.bore1 = BORES[e.bore1] ? e.bore1 : (t.bore1 || '100A');
         item.bore2 = BORES[e.bore2] ? e.bore2 : (type === 'tee' ? item.bore1 : (t.bore2 || '50A'));
+        if (type === 'tee') item.branch = TEE_BRANCHES.includes(e.branch) ? e.branch : 'up';
       }
       // 노즐 설정 — 저장된 방향별 관경을 살리고, 없으면 기본 노즐로 채운다.
-      if (NOZZLE_TYPES.has(type)) item.nozzles = nozzlesOf({ type, nozzles: e.nozzles });
+      // 열교환기는 자유 노즐 목록(nozList)을 살린다 — 예전 방향별 관경(nozzles)도 같은 자리로 옮긴다.
+      if (type === 'hx') {
+        item.hxType = HX_TYPES.includes(e.hxType) ? e.hxType : 'both';
+        item.nozList = hxNozzlesOf({ type, nozList: e.nozList, nozzles: e.nozzles });
+      }
+      else if (NOZZLE_TYPES.has(type)) item.nozzles = nozzlesOf({ type, nozzles: e.nozzles });
       if (type === 'elbow' || type === 'elbow45') {
         item.bore = BORES[e.bore] ? e.bore : (BORES[e.bore1] ? e.bore1 : (t.bore || '100A'));
         const dims = elbowDims(type, item.bore);

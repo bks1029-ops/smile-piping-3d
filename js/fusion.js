@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES } from './store.js?v=60';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES } from './store.js?v=64';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -337,35 +337,85 @@ def build_header(comp, e, tag):
 
 
 def build_heat_exchanger(comp, e, tag):
+    """열교환기(쉘앤튜브) — 현장 사진(2026-11-25) 형상.
+    쉘 양끝 볼트 체결 바디 플랜지 2쌍 + 둥근 접시형 경판(여러 단 원판 근사) + 사각 새들 2개와
+    가로 보강 바. 노즐은 자유 목록(nozzles)으로 build_nozzles가 그린다 — 위치·방향·개수·관경 자유."""
     made = 0
     L = max(0.6, e.get('w', 3.0))
     dia = max(0.2, e.get('h', 0.75))
     R = dia / 2.0
     leg = max(0.22, min(0.55, dia * 0.62))
-    body_len = L * 0.74
     cy = leg + R
+    body_len = max(0.3, L * 0.58)
+    ft = min(0.09, max(0.04, R * 0.18))            # 플랜지 한 장 두께
+    fr = R * 1.2                                    # 플랜지 반지름
+    head_len = max(0.06, min(body_len * 0.2, R * 0.85))
+    head_r = R * 0.86
+    cap_d = head_r * 0.6                            # 둥근 경판 깊이
+    saddle_x = body_len * 0.31
+    rot = e.get('rot', 0)
+
+    def W(x, y, z):
+        return local_to_world(e, (x, y, z))
+
     # 쉘
-    if add_cylinder(comp, local_to_world(e, (-body_len / 2, cy, 0)),
-                    local_to_world(e, (body_len / 2, cy, 0)), R, tag + '_Shell'):
+    if add_cylinder(comp, W(-body_len / 2, cy, 0), W(body_len / 2, cy, 0), R, tag + '_Shell'):
         made += 1
-    # 채널 헤드 2개
     for sx in (-1, 1):
-        a = local_to_world(e, (sx * (body_len / 2 + 0.04), cy, 0))
-        b = local_to_world(e, (sx * (body_len / 2 + 0.24), cy, 0))
-        if add_cylinder(comp, a, b, R * 0.85, tag + '_Channel'):
+        face = sx * body_len / 2.0
+        # 바디 플랜지 2쌍
+        if add_cylinder(comp, W(face, cy, 0), W(face + sx * ft, cy, 0), fr, tag + '_FlangeA'):
             made += 1
-    # 새들 지지대 2개
-    for sx in (-1, 1):
-        w = local_to_world(e, (sx * L * 0.27, 0, 0))
-        if add_box(comp, w[0], w[1], w[2], 0.14, leg, dia * 1.04, e.get('rot', 0), tag + '_Saddle'):
+        if add_cylinder(comp, W(face + sx * (ft + 0.008), cy, 0),
+                        W(face + sx * (ft * 2 + 0.008), cy, 0), fr * 0.965, tag + '_FlangeB'):
             made += 1
-    # 상부 노즐 2개 — 노즐 목록이 오면 build_nozzles가 그린다
-    if e.get('nozzles') is None:
-        for sx in (-1, 1):
-            a = local_to_world(e, (sx * L * 0.24, leg + dia - 0.02, 0))
-            b = local_to_world(e, (sx * L * 0.24, leg + dia + 0.3, 0))
-            if add_cylinder(comp, a, b, R * 0.3, tag + '_Nozzle'):
+        # 둘레 볼트 10개 (스터드)
+        ring = fr * 0.9
+        for i in range(10):
+            a = 2 * math.pi * i / 10 + 0.2
+            by = cy + math.cos(a) * ring
+            bz = math.sin(a) * ring
+            if add_cylinder(comp, W(face + sx * ft * 0.2, by, bz),
+                            W(face + sx * ft * 1.0, by, bz),
+                            max(0.008, ft * 0.16), tag + '_Bolt'):
                 made += 1
+        # 경판(채널) 원통
+        hs = face + sx * ft * 2
+        he = hs + sx * head_len
+        if add_cylinder(comp, W(hs, cy, 0), W(he, cy, 0), head_r, tag + '_Head'):
+            made += 1
+        # 둥근 접시형 경판 — 3단 원판으로 근사
+        for k in range(3):
+            t0 = cap_d * (0.16 + 0.28 * k)
+            t1 = t0 + cap_d * 0.24
+            rr = head_r * (0.9 - 0.26 * k)
+            if add_cylinder(comp, W(he + sx * t0, cy, 0), W(he + sx * t1, cy, 0), rr, tag + '_Cap'):
+                made += 1
+
+    # 새들 지지대 — 사각 기둥 2개 + 가로 보강 바 + 바닥 보
+    post_w = max(0.1, min(0.26, R * 0.55))
+    post_d = dia * 0.88
+    post_h = leg - 0.05
+    tie_h = max(0.07, leg * 0.18)
+    for sx in (-1, 1):
+        x = sx * saddle_x
+        p = W(x, 0, 0)
+        if add_box(comp, p[0], p[1], p[2], post_w * 2.1, 0.05, post_d * 1.24, rot, tag + '_SaddleBase'):
+            made += 1
+        p = W(x, 0.05, 0)
+        if add_box(comp, p[0], p[1], p[2], post_w, post_h, post_d, rot, tag + '_SaddlePost'):
+            made += 1
+        p = W(x, leg - 0.04, 0)
+        if add_box(comp, p[0], p[1], p[2], post_w * 1.2, 0.04, post_d * 1.04, rot, tag + '_SaddleTop'):
+            made += 1
+    p = W(0, leg * 0.42 - tie_h / 2, 0)
+    if add_box(comp, p[0], p[1], p[2], saddle_x * 2 - post_w * 0.5, tie_h, post_w * 0.7, rot, tag + '_SaddleTie'):
+        made += 1
+    for sz in (-1, 1):
+        p = W(0, 0, sz * post_d * 0.5)
+        if add_box(comp, p[0], p[1], p[2], saddle_x * 2 + post_w * 2.1, 0.055,
+                   max(0.07, post_d * 0.12), rot, tag + '_BaseBar'):
+            made += 1
     return made
 
 

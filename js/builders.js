@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody, equipNozzles } from './store.js?v=60';
+import { BORES, MATERIALS, boreOd, elbowDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, teeBranch } from './store.js?v=64';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -154,46 +154,111 @@ function buildHeader(spec) {
   return g;
 }
 
-// ── 열교환기 (쉘앤튜브 + 새들 지지대) ─────────────────────────────────────────
+// ── 열교환기 (쉘앤튜브 — 볼트 체결 바디 플랜지 · 둥근 경판 · 새들 프레임) ────
+// 현장 사진(2026-11-25)의 실물처럼: 쉘 양끝에 두꺼운 볼트 플랜지 2쌍,
+// 그 밖으로 둥근 접시형 경판(채널)이 붙고, 아래에는 사각 새들 2개를 가로 보강 바로 잇는다.
+// 노즐은 고정이 아니라 store.js hxNozzlesOf()의 자유 목록을 buildNozzles()가 그린다.
 function buildHX(spec) {
   const g = new THREE.Group();
-  const L = Math.max(0.6, spec.w);
-  const dia = Math.max(0.2, spec.h);
-  const R = dia / 2;
-  const legH = Math.max(0.22, Math.min(0.55, dia * 0.62));
-  const bodyLen = L * 0.74;
-  const cy = legH + R;
+  const B = hxBody(spec);
+  const { R, dia, bodyLen, flangeT, flangeR, headLen, headR, capDepth, leg, cy, saddleX } = B;
 
-  const shellMat = MAT(spec.color, 0.45, 0.72);
-  const headMat = MAT(shade(spec.color, 0.82), 0.5, 0.7);
-  const saddleMat = MAT('#6f7880', 0.65, 0.45);
-  const boltMat = MAT('#4e565d', 0.5, 0.85);
+  const shellMat = MAT(spec.color, 0.42, 0.78);
+  const flangeMat = MAT(shade(spec.color, 0.86), 0.5, 0.82);
+  const headMat = MAT(shade(spec.color, 0.95), 0.45, 0.75);
+  const boltMat = MAT('#3b444c', 0.55, 0.9);
+  const saddleMat = MAT('#8b949c', 0.62, 0.5);
+  const plateMat = MAT('#a2aab1', 0.6, 0.55);
 
-  const shell = add(g, cyl(R, bodyLen, 32), shellMat, 0, cy, 0, 0, 0, Math.PI / 2);
+  // ① 쉘 본체 + 이음매 밴드
+  add(g, cyl(R, bodyLen, 44), shellMat, 0, cy, 0, 0, 0, Math.PI / 2);
+  [-0.28, 0.28].forEach((f) => {
+    add(g, cyl(R * 1.008, 0.018, 44), flangeMat, bodyLen * f, cy, 0, 0, 0, Math.PI / 2);
+  });
 
+  // ② 양끝 — 바디 플랜지 2쌍(볼트 링) + 둥근 경판
   [-1, 1].forEach((sx) => {
-    // 채널 플랜지
-    add(g, cyl(R * 1.1, 0.075, 32), boltMat, sx * (bodyLen / 2 + 0.038), cy, 0, 0, 0, Math.PI / 2);
-    // 볼트 링
-    const ring = add(g, torus(R * 1.03, 0.017), boltMat, sx * (bodyLen / 2 + 0.078), cy, 0, 0, Math.PI / 2, 0);
-    // 채널 헤드
-    add(g, cyl2(R * 0.88, R * 0.6, 0.18, 28), headMat, sx * (bodyLen / 2 + 0.16), cy, 0, 0, 0, Math.PI / 2);
-    // 헤드 캡
-    add(g, cyl(R * 0.5, 0.05, 20), headMat, sx * (bodyLen / 2 + 0.27), cy, 0, 0, 0, Math.PI / 2);
+    const shellFace = sx * bodyLen / 2;
+    // 쉘 쪽 플랜지
+    add(g, cyl(flangeR, flangeT, 44), flangeMat, shellFace + sx * flangeT * 0.5, cy, 0, 0, 0, Math.PI / 2);
+    // 헤드 쪽 플랜지 — 살짝 작고, 사이에 개스킷 틈이 보이게 띄운다
+    add(g, cyl(flangeR * 0.965, flangeT, 44), flangeMat, shellFace + sx * (flangeT * 1.5 + 0.008), cy, 0, 0, 0, Math.PI / 2);
+    // 둘레 볼트 16개 (스터드 + 너트)
+    const ringR = flangeR * 0.9;
+    const studX = shellFace + sx * flangeT;
+    for (let i = 0; i < 16; i += 1) {
+      const a = (Math.PI * 2 * i) / 16 + 0.2;
+      const by = cy + Math.cos(a) * ringR;
+      const bz = Math.sin(a) * ringR;
+      addTube(g, [studX - sx * flangeT * 0.8, by, bz], [studX + sx * flangeT * 0.95, by, bz],
+        Math.max(0.008, flangeT * 0.16), boltMat, 8);
+      add(g, cyl(Math.max(0.011, flangeT * 0.22), flangeT * 0.5, 6), boltMat,
+        studX + sx * flangeT * 0.95, by, bz, 0, 0, Math.PI / 2);
+    }
+    // 경판(채널) 원통 + (둥근 접시형 캡 또는 평판 커버)
+    const headStart = shellFace + sx * flangeT * 2;
+    const headEnd = headStart + sx * headLen;
+    const round = hxHeadRound(spec, sx);
+    add(g, cyl(headR, headLen, 40), headMat, (headStart + headEnd) / 2, cy, 0, 0, 0, Math.PI / 2);
+    if (round) {
+      const cap = add(g, sphere(headR, 28), headMat, headEnd, cy, 0);
+      cap.scale.set(capDepth / headR, 1, 1);
+      // 경판 꼭대기 보스 — 축방향 노즐 자리(비어 있으면 캡만 보인다)
+      add(g, cyl(headR * 0.2, capDepth * 0.12, 20), flangeMat,
+        headEnd + sx * capDepth * 0.9, cy, 0, 0, 0, Math.PI / 2);
+    } else {
+      // 평판 커버 — 볼트로 조인 두꺼운 원판 + 가운데 보스(축방향 노즐 자리)
+      const coverT = Math.max(0.05, R * 0.18);
+      const flatR = flangeR * 0.92;
+      add(g, cyl(flatR, coverT, 44), headMat, headEnd + sx * coverT / 2, cy, 0, 0, 0, Math.PI / 2);
+      const hubLen = Math.max(0.04, capDepth - coverT);
+      add(g, cyl(headR * 0.62, hubLen, 32), flangeMat,
+        headEnd + sx * (coverT + hubLen / 2), cy, 0, 0, 0, Math.PI / 2);
+      // 커버 둘레 볼트
+      for (let i = 0; i < 12; i += 1) {
+        const a = (Math.PI * 2 * i) / 12 + 0.15;
+        const by = cy + Math.cos(a) * flatR * 0.82;
+        const bz = Math.sin(a) * flatR * 0.82;
+        addTube(g, [headEnd - sx * coverT * 0.2, by, bz], [headEnd + sx * coverT * 1.15, by, bz],
+          Math.max(0.008, flangeT * 0.15), boltMat, 8);
+      }
+      // 평판 면 테두리 링
+      addTube(g, [headEnd + sx * coverT * 0.98, cy, 0], [headEnd + sx * coverT * 1.06, cy, 0],
+        flatR * 0.98, plateMat, 44);
+    }
+    // 경판 하단의 작은 드레인·벤트 보스
+    add(g, cyl(Math.max(0.02, R * 0.07), Math.max(0.03, R * 0.12), 14), boltMat,
+      (headStart + headEnd) / 2, cy - headR * 0.9, 0);
   });
 
-  // 상·하·좌·우 노즐은 buildNozzles()가 그린다 (예전 고정 상부 노즐 2개·하부 드레인은 제거)
-
-  // 새들 지지대
-  [-L * 0.27, L * 0.27].forEach((sx) => {
-    add(g, box(0.14, legH, dia * 1.04), saddleMat, sx, legH / 2, 0);
-    add(g, box(0.5, 0.06, dia * 1.22), saddleMat, sx, 0.03, 0);
+  // ③ 새들 지지대 — 사각 기둥 2개 + 가로 보강 바 + 바닥 보
+  const postW = Math.max(0.1, Math.min(0.26, R * 0.55));
+  const postD = dia * 0.88;
+  const postH = leg - 0.05;
+  [-saddleX, saddleX].forEach((x) => {
+    add(g, box(postW * 2.1, 0.05, postD * 1.24), plateMat, x, 0.025, 0);            // 바닥 판
+    add(g, box(postW, postH, postD), saddleMat, x, 0.05 + postH / 2, 0);             // 기둥
+    add(g, box(postW * 1.2, 0.04, postD * 1.04), plateMat, x, leg - 0.02, 0);        // 쉘 받침판
+  });
+  // 두 새들 사이를 잇는 가로 보강 바 (사진의 아래 연결 프레임)
+  add(g, box(saddleX * 2 - postW * 0.5, Math.max(0.07, leg * 0.18), postW * 0.7), saddleMat,
+    0, leg * 0.42, 0);
+  // 바닥 앞·뒤 보
+  [-1, 1].forEach((sz) => {
+    add(g, box(saddleX * 2 + postW * 2.1, 0.055, Math.max(0.07, postD * 0.12)), plateMat,
+      0, 0.028, sz * postD * 0.5);
   });
 
-  // 명판
-  add(g, box(Math.min(0.55, L * 0.18), 0.16, 0.02), MAT('#e4ebf1', 0.4, 0.3), 0, cy + R * 0.15, R + 0.011);
-  // 리프팅 러그
-  add(g, box(0.05, 0.16, 0.16), saddleMat, -L * 0.34, cy + R + 0.02, 0);
+  // ④ 명판 · 리프팅 러그
+  add(g, box(Math.min(0.34, bodyLen * 0.18), 0.13, 0.012), MAT('#e4ebf1', 0.4, 0.3),
+    bodyLen * 0.14, cy + R * 0.12, R + 0.006);
+  [-1, 1].forEach((sx) => {
+    const lx = sx * bodyLen * 0.42;
+    add(g, box(0.05, 0.11, 0.02), saddleMat, lx, cy + R + 0.05, 0);
+    add(g, cyl(0.028, 0.026, 12), boltMat, lx, cy + R + 0.12, 0, 0, 0, Math.PI / 2);
+  });
+
+  // 노즐은 buildNozzles()가 자유 목록대로 그린다 (위치·방향·개수·관경 자유)
   return g;
 }
 
@@ -294,7 +359,8 @@ function buildValve(spec) {
       return;
     }
     add(g, cyl(0.13, 0.045, 24), bodyMat, sx * 0.095, 0, 0, 0, 0, Math.PI / 2);
-    add(g, torus(0.135, 0.012), darkMat, sx * 0.12, 0, 0, 0, Math.PI / 2, 0);
+    // (v64) 플랜지 면의 돌출 링 제거 — v63 맞물림 플랜지와 겹쳐 밖으로 튀어나와 보였다.
+    add(g, torus(0.105, 0.006), darkMat, sx * 0.117, 0, 0, 0, Math.PI / 2, 0);
   });
   // 보닛 · 스템
   add(g, cyl(0.07, 0.09, 20), bodyMat, 0, 0.11, 0);
@@ -503,7 +569,8 @@ function buildYValve(spec) {
       return;
     }
     add(g, cyl(0.135, 0.03, 26), bodyMat, sx * 0.12, 0, 0, 0, 0, Math.PI / 2);
-    add(g, torus(0.14, 0.011), steel, sx * 0.137, 0, 0, 0, Math.PI / 2, 0);
+    // (v64) 플랜지 앞 은색 고리(torus 0.14) 제거 — 맞물림 플랜지 밖으로 둥근 링이 튀어나왔다.
+    add(g, torus(0.1, 0.006), steel, sx * 0.136, 0, 0, 0, Math.PI / 2, 0);
   });
   // Y자 경사 분기 (아래·뒤 45°) + 끝 캡
   addTube(g, [0, 0, 0], [-0.02, -0.19, -0.15], 0.062, bodyMat, 20);
@@ -688,19 +755,27 @@ function buildTee(spec) {
   const branchH = Math.max(0.1, L * 0.5);
   const s = Math.max(0.05, spec.w) / (L + 0.03);
 
+  // 분기 방향 — 본관(로컬 X) 축 둘레로 위·아래·앞·뒤 (기본 위)
+  const B = teeBranch(spec);
+  const end = [B[0] * branchH, B[1] * branchH, B[2] * branchH];
+
   add(g, cyl(r1, L, 24), bodyMat, 0, 0, 0, 0, 0, Math.PI / 2); // 주배관 (1차)
   add(g, sphere(r1 * 1.1, 20), bodyMat, 0, 0, 0); // 분기 목
-  add(g, cyl(r2, branchH, 22), bodyMat, 0, branchH / 2, 0); // 분기관 (2차)
+  addTube(g, [0, 0, 0], end, r2, bodyMat, 22);   // 분기관 (2차) — 이경이면 실제 외경으로
   if (isForged(spec)) {
     // 단조형 — 분기·양단 모두 소켓 보스 (플랜지 원판 없음)
     socketBoss(g, [-L / 2, 0, 0], [-1, 0, 0], r1, bodyMat, beadMat);
     socketBoss(g, [L / 2, 0, 0], [1, 0, 0], r1, bodyMat, beadMat);
-    socketBoss(g, [0, branchH, 0], [0, 1, 0], r2, bodyMat, beadMat);
+    socketBoss(g, end, B, r2, bodyMat, beadMat);
   } else {
-    add(g, cyl(r2 * 1.4, 0.022, 22), bodyMat, 0, branchH, 0); // 분기 플랜지
+    // 분기 플랜지 — 분기 축에 수직인 얇은 원판
+    addTube(g, [end[0] - B[0] * 0.011, end[1] - B[1] * 0.011, end[2] - B[2] * 0.011],
+      [end[0] + B[0] * 0.011, end[1] + B[1] * 0.011, end[2] + B[2] * 0.011], r2 * 1.4, bodyMat, 24);
     add(g, torus(r1 * 1.03, 0.006), beadMat, L / 2, 0, 0, 0, Math.PI / 2, 0);
     add(g, torus(r1 * 1.03, 0.006), beadMat, -L / 2, 0, 0, 0, Math.PI / 2, 0);
-    add(g, torus(r2 * 1.04, 0.006), beadMat, 0, branchH - 0.014, 0, Math.PI / 2, 0, 0);
+    // 분기 끝 보강 링
+    addTube(g, [end[0] - B[0] * 0.016, end[1] - B[1] * 0.016, end[2] - B[2] * 0.016],
+      [end[0] - B[0] * 0.004, end[1] - B[1] * 0.004, end[2] - B[2] * 0.004], r2 * 1.04, beadMat, 24);
   }
 
   g.scale.set(s, s, s);
@@ -973,8 +1048,10 @@ function buildGauge(spec) {
 
 // ── 배관 (파이프 + 엘보 조인트 + 플랜지) ─────────────────────────────────────
 // 배관을 이으면 그 접합면에 배관 쪽 플랜지 한 장이 맞물리는 부속 — 실물에서 볼트 플랜지로
-// 체결하는 밸브·신축관·유량계·플랜지. (엘보·티·레듀샤는 용접, 장비는 제 노즐 플랜지가 있다)
-const FLANGE_MATE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'flow', 'flange']);
+// 체결하는 밸브·신축관·유량계. (엘보·티·레듀샤는 용접, 장비는 제 노즐 플랜지가 있다)
+// (v64) 'flange' 부속은 제 몸이 이미 플랜지 원판+볼트라 여기서 뺐다 —
+//       넣어 두면 배관이 이어질 때 매끈한 원판이 한 장 더 덧대어져 튀어나와 보였다.
+const FLANGE_MATE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'bellows', 'flow']);
 
 export function buildPipe(spec, equipments) {
   const g = new THREE.Group();
@@ -984,6 +1061,7 @@ export function buildPipe(spec, equipments) {
   // 사진에서 읽은 관 색(적색 방청관·은색 아연도)이 있으면 재질색 대신 입힌다.
   const mat = MAT(spec.color || m.color, m.roughness, m.metalness);
   const flangeMat = MAT('#6a737b', 0.55, 0.7);
+  const gasketMat = MAT('#22282e', 0.85, 0.2);   // 두 플랜지 사이 개스킷 틈
 
   const pts = (spec.points || []).map((p) => new THREE.Vector3(p.x, p.y, p.z));
   const up = new THREE.Vector3(0, 1, 0);
@@ -1030,12 +1108,26 @@ export function buildPipe(spec, equipments) {
     }
     return null;
   };
-  // 맞물림 플랜지 — 부속 플랜지 면에 바짝 붙여 배관 쪽으로 한 장(두께 40mm).
-  // 배관 끝은 부속 면에서 4mm쯤 물려 있으므로, 배관 속(inward)으로 20mm 들어가게 놓아
-  // 판이 정확히 두 플랜지의 면 사이에서 바깥으로 한 장 더 서게 한다.
-  const mateFlange = (p, inward) => {
-    const c = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.02);
-    addFlange(g, c, inward, r, flangeMat);
+  // 맞물림 플랜지 — 부속·장비의 플랜지 면에 배관 쪽 판을 한 장 맞댄다(두께 40mm).
+  //  · 두 판 사이에 3mm 개스킷 틈을 두어 '두 장이 볼트로 체결된' 모습이 한눈에 보이게 하고,
+  //  · 판 외경은 맞대는 쪽 플랜지와 같게(장비 노즐은 노즐 플랜지 1.55×, 부속은 1.8×),
+  //  · 둘레에 볼트 스터드를 꿰어 두 판을 잇는다.  (2026-11-25 사용자 지적)
+  const mateFlange = (p, inward, plateRad) => {
+    const rad = plateRad || r * 1.8;
+    // 배관 끝은 부속 면에서 4mm 물려 있다 — 판 앞면이 그 면에서 3mm 떨어지게 놓는다.
+    const c = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.027);
+    addFlange(g, c, inward, r, flangeMat, rad);
+    // 개스킷 — 두 판 사이의 얇은 어두운 링
+    const gk = new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.0055);
+    addFlange(g, gk, inward, r, gasketMat, rad * 0.94, 0.005);
+    // 둘레 볼트(두 판을 꿰는 스터드 + 너트)
+    addFlangeBolts(g, new THREE.Vector3(p.x, p.y, p.z).addScaledVector(inward, 0.009), inward, rad, flangeMat);
+  };
+  // 맞대는 쪽 플랜지 외경 — 장비 노즐 끝이면 그 노즐 플랜지(buildNozzles: 노즐 반지름×1.55)와
+  // 같은 크기로, 밸브·유량계 같은 부속이면 배관 외경의 1.8배로 맞춘다.
+  const mateRadius = (e, p) => {
+    const nz = equipNozzles(e).find((n) => Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z) < 0.09);
+    return nz ? nz.r * 1.55 : r * 1.8;
   };
 
   for (let i = 1; i < pts.length; i += 1) {
@@ -1060,7 +1152,7 @@ export function buildPipe(spec, equipments) {
     // 플랜지식 밸브 끝에서 이어 그린 배관은 그 밸브 플랜지에 맞물리는 배관 플랜지를 한 장 세운다.
     const endJoint = (p, out, inward) => {
       const mate = mateJoint(p);
-      if (mate) { mateFlange(p, inward); return; }
+      if (mate) { mateFlange(p, inward, mateRadius(mate, p)); return; }
       if (!jointAt(p)) endBoss(p, out, r);
     };
     if (i === 1) endJoint(a, dir.clone().negate(), dir.clone().normalize());
@@ -1081,12 +1173,42 @@ export function buildPipe(spec, equipments) {
   return g;
 }
 
-function addFlange(g, pos, dir, r, material) {
-  const f = new THREE.Mesh(G(`fcyl|${(r * 1.8).toFixed(4)}`, () => new THREE.CylinderGeometry(r * 1.8, r * 1.8, 0.04, 22)), material);
+function addFlange(g, pos, dir, r, material, outer, thick) {
+  // outer를 주면 그 반지름으로(맞대는 플랜지와 같은 외경), 없으면 배관 외경의 1.8배.
+  const R = outer || r * 1.8;
+  const T = thick || 0.04;
+  const f = new THREE.Mesh(G(`fcyl|${R.toFixed(4)}|${T.toFixed(3)}`, () => new THREE.CylinderGeometry(R, R, T, 22)), material);
   f.position.copy(pos);
   f.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
   f.castShadow = true;
   g.add(f);
+}
+
+// 플랜지 둘레 볼트 — 두 판을 꿰는 스터드와 너트 (맞물림 플랜지가 '체결된 두 장'으로 보이게)
+function addFlangeBolts(g, center, axis, plateR, material) {
+  const ax = new THREE.Vector3(axis.x, axis.y, axis.z).normalize();
+  const b = dirBasis([ax.x, ax.y, ax.z]);
+  const bx = new THREE.Vector3(b[0], b[3], b[6]);
+  const cx = new THREE.Vector3(b[1], b[4], b[7]);
+  const ring = plateR * 0.82;
+  const stud = G('fbolt|0.007|0.086', () => new THREE.CylinderGeometry(0.007, 0.007, 0.086, 8));
+  const nut = G('fnut|0.011|0.012', () => new THREE.CylinderGeometry(0.011, 0.011, 0.012, 6));
+  for (let i = 0; i < 8; i += 1) {
+    const a = (Math.PI * 2 * i) / 8 + Math.PI / 8;
+    const off = new THREE.Vector3().addScaledVector(bx, Math.cos(a) * ring).addScaledVector(cx, Math.sin(a) * ring);
+    const s = new THREE.Mesh(stud, material);
+    s.position.copy(center).add(off);
+    s.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax);
+    s.castShadow = true;
+    g.add(s);
+    [-1, 1].forEach((sgn) => {
+      const n = new THREE.Mesh(nut, material);
+      n.position.copy(s.position).addScaledVector(ax, sgn * 0.041);
+      n.quaternion.copy(s.quaternion);
+      n.castShadow = true;
+      g.add(n);
+    });
+  }
 }
 
 // ── 장비 노즐 (목 + 플랜지) ──────────────────────────────
