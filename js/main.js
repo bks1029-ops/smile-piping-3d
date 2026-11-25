@@ -11,16 +11,16 @@ import {
   hxNozzlesOf, hxBody, hxNozzleLabel, setHxNozzle, addHxNozzle, removeHxNozzle, applyHxPreset,
   HX_AT, HX_AT_LABELS, HX_NOZ_DIRS, HX_NOZ_DIR_LABELS, HX_PRESETS,
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
-  equipPorts, teePorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
-  HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis,
-} from './store.js?v=68';
-import { buildScene } from './builders.js?v=68';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=68';
-import { buildOBJ } from './obj.js?v=68';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=68';
-import { parseCommand, CMD_HELP } from './cmd.js?v=68';
-import { buildDimItems } from './dims.js?v=68';
-import { buildAiImageParts } from './zoom.js?v=68';
+  equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
+  HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
+} from './store.js?v=69';
+import { buildScene } from './builders.js?v=69';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=69';
+import { buildOBJ } from './obj.js?v=69';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=69';
+import { parseCommand, CMD_HELP } from './cmd.js?v=69';
+import { buildDimItems } from './dims.js?v=69';
+import { buildAiImageParts } from './zoom.js?v=69';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -881,6 +881,17 @@ class App {
           bore: n.bore, nozzleDir: n.dir, equipId: e.id, equipName: e.name,
         });
       });
+      // 플랜지 부속·밸브·스트레이너의 플랜지 접합면 — 배관 끝과 똑같이 이 자리에서
+      // 손 그리기가 시작·연결된다. (2026-11-26 사용자: "손 그리기는 배관에는 잘 이어져
+      // 플렌지는 똑같이 안 이어지고") 예전에는 이 면이 스냅 후보에 없어 손끝이 몇 cm
+      // 떨어진 자리에서 배관이 시작됐다.
+      flangedPorts(e).forEach((n) => {
+        const s = screenOf(n.tip);
+        if (!s) return;
+        take(Math.hypot(s.x - px, s.y - py), n.tip, n.axis, 'flange', {
+          bore: n.bore, equipId: e.id, equipName: e.name, portNid: n.nid, seat: 'flange',
+        });
+      });
     });
     this.state.pipes.forEach((pipe) => {
       const pts = pipe.points || [];
@@ -1111,10 +1122,12 @@ class App {
         if (near.kind === 'body' && this.lastPointerType === 'touch') {
           this.toast(`배관 몸통 ${near.y.toFixed(2)}m 높이에 붙였습니다.`);
         }
-        // 장비 노즐 끝이면 그 노즐의 관경을 이어받아 바로 배관을 뽑는다.
-        if (near.kind === 'nozzle' && near.bore) {
+        // 장비 노즐·플랜지 접합면이면 그 관경을 이어받아 바로 배관을 뽑는다.
+        if ((near.kind === 'nozzle' || near.kind === 'flange') && near.bore) {
           this.setCmdBore(near.bore, true);
-          const nm = `${near.equipName || '장비'} ${NOZZLE_LABELS[near.nozzleDir] || ''} 노즐`;
+          const nm = near.kind === 'flange'
+            ? `${near.equipName || '부속'} 플랜지 면`
+            : `${near.equipName || '장비'} ${NOZZLE_LABELS[near.nozzleDir] || ''} 노즐`;
           this.toast(`${nm} ${near.bore} · 단면 높이 ${near.y.toFixed(2)}m에서 이어 그립니다.`);
         }
         this.setCmdCursor(this.handAnchor, true);
@@ -2192,15 +2205,22 @@ class App {
     });
   }
 
-  // 티의 접속구(직진 A·직진 B·분기) 끝에서 이어 그리기 — 그 자리·방향·관경으로 커서를 옮긴다.
+  // 접속구·접합면 끝에서 이어 그리기 — 그 자리·방향·관경으로 커서를 옮긴다.
+  //  · 티 : 직진 A·직진 B·분기 3포트
+  //  · 그 밖의 2포트 부속(엘보·밸브·스트레이너·레듀샤·플랜지·벨로우즈·유량계…) : 앞·뒤 양쪽 면
+  //    (2026-11-26 사용자: "엘보 이어그리기 양쪽 다 되야하는데 한쪽만 되고" → "엘보 뿐만 아니라 모두 다")
   portContinue(key) {
     const spec = this.getSelectedSpec();
-    if (!spec || spec.type !== 'tee' || !key) return;
-    const p = teePorts(spec).find((x) => x.nid === key);
+    if (!spec || !key) return;
+    const ports = spec.type === 'tee' ? teePorts(spec) : equipConnectFaces(spec);
+    const p = ports.find((x) => x.nid === key);
     if (!p) return;
-    this.aimAtNozzle(p);
+    const meta = this.portList(spec).find((x) => x.nid === key) || {};
+    const bore = BORES[meta.bore] ? meta.bore : (BORES[spec.bore] ? spec.bore : this.cmdBore);
+    this.aimAtNozzle({ ...p, bore });
     this.clearSelection();
-    this.toast(`📍 ${TEE_PORT_LABELS[key]} ${p.bore} 끝에서 이어 그립니다 · 커서 (${fmt(p.tip.x)}, ${fmt(p.tip.y)}, ${fmt(p.tip.z)})m`);
+    const label = spec.type === 'tee' ? TEE_PORT_LABELS[key] : (meta.dirName || '접합면');
+    this.toast(`📍 ${label} ${bore} 끝에서 이어 그립니다 · 커서 (${fmt(p.tip.x)}, ${fmt(p.tip.y)}, ${fmt(p.tip.z)})m`);
   }
 
   // ── 🔗 잇기 — 커서에서 탭한 접속구까지 배관을 바로 연결 ─────────────────
@@ -2441,6 +2461,7 @@ class App {
         </div>` : ''}
         ${this.nozzleFields(spec)}
         ${this.teeFields(spec)}
+        ${this.portFields(spec)}
         <div class="prop-section">위치 (m)</div>
         <div class="prop-grid3">
           <label class="field">X<input type="number" step="0.1" data-f="x" value="${fmt(spec.x)}"></label>
@@ -2480,9 +2501,7 @@ class App {
         </div>
         ${Array.isArray(spec.dir) ? `
         <p class="hint">배관 축 정렬 — 진행 방향 (${spec.dir.join(', ')})에 맞춰 원판·바디가 배관에 수직으로 서 있습니다. 회전값을 바꾸면 도면 축 기준(수평)으로 다시 놓입니다.</p>` : ''}
-        <div class="prop-actions">
-          <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
-        </div>
+        ${this.portActionsRow(spec)}
         <div class="prop-actions">
           <button class="btn small ghost" data-act="ground">바닥에</button>
           <button class="btn small ghost" data-act="dup">복제</button>
@@ -2634,6 +2653,129 @@ class App {
     return true;
   }
 
+  // ── 관경·길이를 바꿀 때 '물려 있는 접합면'을 그 자리에 고정 ─────────────────
+  // 사용자 제보(2026-11-25 `31603`): "50a여서 80a로 변경하니까 배관을 잡아먹었어
+  // 길이나 크기가 늘어나더라도 연결부를 넘기면 안돼지"
+  //  · 바꾸기 전: 지금 0mm로 닿아 있는 접합면과 그 상대 점을 기억한다(상류 면 우선).
+  //  · 바꾼 뒤 : 그 면이 같은 점에 0mm로 다시 앉도록 중심만 옮기고(reseatFitting),
+  //              반대쪽 자유단이 밀린 만큼 그 뒤에 이어진 배관·부속을 함께 민다.
+  //              그래서 중심을 기준으로 양쪽으로 커져 상류 배관을 파고드는 일이 없다.
+  attachPoints() {
+    const pts = [];
+    this.state.equipment.forEach((e) => {
+      if (!e) return;
+      equipPorts(e).forEach((n) => pts.push({ id: e.id, x: n.tip.x, y: n.tip.y, z: n.tip.z, ax: n.axis || null }));
+    });
+    this.state.pipes.forEach((pl) => {
+      const q = pl.points || [];
+      q.forEach((pt, i) => {
+        const nb = i === 0 ? q[1] : q[i - 1];
+        let ax = null;
+        if (nb) {
+          const dx = pt.x - nb.x, dy = pt.y - nb.y, dz = pt.z - nb.z;
+          const l = Math.hypot(dx, dy, dz);
+          if (l > 1e-6) ax = { x: dx / l, y: dy / l, z: dz / l };
+        }
+        pts.push({ id: pl.id, x: pt.x, y: pt.y, z: pt.z, ax });
+      });
+    });
+    return pts;
+  }
+
+  // 지금 0mm로 물려 있는 접합면 — 유로 반대(상류) 면을 먼저 고른다.
+  matePoint(spec, tol) {
+    const faces = equipConnectFaces(spec);
+    if (!faces.length) return null;
+    const limit = tol == null ? 0.02 : tol;
+    const flow = equipFlowAxis(spec);
+    const pts = this.attachPoints().filter((q) => q.id !== spec.id);
+    let best = null;
+    faces.forEach((f) => {
+      const up = (f.axis.x * flow.x + f.axis.y * flow.y + f.axis.z * flow.z) < -0.5;
+      pts.forEach((q) => {
+        const d = Math.hypot(f.tip.x - q.x, f.tip.y - q.y, f.tip.z - q.z);
+        if (d > limit) return;
+        const score = d - (up ? limit : 0);   // 상류 면이면 거리보다 우선
+        if (!best || score < best.score) best = { score, face: f, point: { x: q.x, y: q.y, z: q.z }, ax: q.ax };
+      });
+    });
+    return best;
+  }
+
+  // 기준점에서 가장 먼 접합면 = 자유단.
+  farFaceTip(spec, from) {
+    const faces = equipConnectFaces(spec);
+    let far = null;
+    let best = -1;
+    faces.forEach((f) => {
+      const d = Math.hypot(f.tip.x - from.x, f.tip.y - from.y, f.tip.z - from.z);
+      if (d > best) { best = d; far = { x: f.tip.x, y: f.tip.y, z: f.tip.z }; }
+    });
+    return best > 0.01 ? far : null;
+  }
+
+  // 자유단이 밀린 만큼, 그 자리에 이어진 배관·부속을 같은 방향으로 통째로 민다.
+  // (밀린 것들은 서로의 상대 위치가 그대로라 이어진 자리는 유지되고, 부품이 겹쳐
+  //  파고드는 일만 없어진다. 연결된 쪽(keep)에 닿은 것은 건드리지 않는다)
+  pushDownstream(spec, from, delta, keep) {
+    const tol = 0.012;
+    const near = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) <= tol;
+    const seen = new Set([spec.id]);
+    const queue = [{ x: from.x, y: from.y, z: from.z }];
+    let pushed = 0;
+    for (let i = 0; i < queue.length && i < 80; i += 1) {
+      const q = queue[i];
+      this.state.pipes.forEach((pl) => {
+        if (!pl || seen.has(pl.id) || !pl.points) return;
+        if (!pl.points.some((pt) => near(pt, q))) return;
+        if (keep && pl.points.some((pt) => near(pt, keep))) return;   // 연결된 쪽 배관은 그대로
+        seen.add(pl.id);
+        pl.points.forEach((pt) => {
+          pt.x = r3(pt.x + delta.x);
+          pt.y = r3(Math.max(0, pt.y + delta.y));
+          pt.z = r3(pt.z + delta.z);
+          queue.push({ x: pt.x, y: pt.y, z: pt.z });
+        });
+        pushed += 1;
+      });
+      this.state.equipment.forEach((e) => {
+        if (!e || seen.has(e.id)) return;
+        const ports = equipPorts(e);
+        if (!ports.some((n) => near(n.tip, q))) return;
+        if (keep && ports.some((n) => near(n.tip, keep))) return;
+        seen.add(e.id);
+        e.x = r3((e.x || 0) + delta.x);
+        e.y = r3(Math.max(0, (e.y || 0) + delta.y));
+        e.z = r3((e.z || 0) + delta.z);
+        equipPorts(e).forEach((n) => queue.push({ x: n.tip.x, y: n.tip.y, z: n.tip.z }));
+        pushed += 1;
+      });
+    }
+    return pushed;
+  }
+
+  // 관경·길이 변경을 '물린 면 고정 + 자유단 방향 성장'으로 감싼다.
+  resizeKeepingMate(spec, apply) {
+    const anchor = this.matePoint(spec);
+    const freeBefore = anchor ? this.farFaceTip(spec, anchor.point) : null;
+    apply();
+    const kept = anchor ? this.reseatFitting(spec, anchor) : false;
+    let pushed = 0;
+    if (anchor && freeBefore) {
+      const freeAfter = this.farFaceTip(spec, anchor.point);
+      if (freeAfter) {
+        const delta = {
+          x: freeAfter.x - freeBefore.x, y: freeAfter.y - freeBefore.y, z: freeAfter.z - freeBefore.z,
+        };
+        if (Math.hypot(delta.x, delta.y, delta.z) > 0.002) {
+          pushed = this.pushDownstream(spec, freeBefore, delta, anchor.point);
+        }
+      }
+    }
+    if (spec.y < 0) spec.y = 0;
+    return { kept, pushed };
+  }
+
   // ── 3축 회전 — 모든 장비·부속 공통(좌·우 / 위·아래 / 축) ───────────────
   // 키보드가 올라오지 않는 버튼만 쓴다. 속성 창 맨 위에 둔다.
   // (2026-11-25 `31577` — "모든걸 회전할 수 있게 … 좌 우 위 아래 회전 기능을 넣는거야")
@@ -2682,6 +2824,50 @@ class App {
   // ── 티 — 분기 방향(위·아래·앞·뒤)과 세 접속구 이어그리기 ──────────────────
   // 티는 본관 축 둘레로 분기를 돌릴 수 있고, 직진 A·직진 B·분기 세 끝 모두에서
   // 커서·방향·관경을 그 접속구로 넘겨 배관을 이어 그린다(3D에서 직접 눌러도 같다).
+  // ── 2포트 부속의 접합면 — 앞·뒤 어느 쪽에서든 '이어 그리기' ─────────────────
+  // 사용자 지시(2026-11-26): "엘보 이어그리기 양쪽 다 되야하는데 한쪽만 되고" →
+  // "엘보 뿐만 아니라 모두 다". 티는 3포트 UI(teeFields), 노즐 장비는 노즐 칸이 맡는다.
+  portList(spec) {
+    if (!spec || Array.isArray(spec.points) || spec.kind === 'pipe') return [];
+    if (spec.type === 'tee' || spec.type === 'hx') return [];
+    if (nozzleDirsOf(spec.type).length) return [];
+    const faces = equipConnectFaces(spec);
+    if (faces.length < 2) return [];
+    const pts = this.attachPoints().filter((q) => q.id !== spec.id);
+    const b1 = BORES[spec.bore] ? spec.bore : (BORES[spec.bore1] ? spec.bore1 : null);
+    const b2 = BORES[spec.bore2] ? spec.bore2 : b1;
+    return faces.map((f, i) => {
+      const a = f.axis;
+      const ax = Math.abs(a.x), ay = Math.abs(a.y), az = Math.abs(a.z);
+      const dirName = (ay >= ax && ay >= az) ? (a.y >= 0 ? '위' : '아래')
+        : (ax >= az ? (a.x >= 0 ? '오른쪽' : '왼쪽') : (a.z >= 0 ? '앞' : '뒤'));
+      const used = pts.some((q) => Math.hypot(q.x - f.tip.x, q.y - f.tip.y, q.z - f.tip.z) < 0.02);
+      return {
+        nid: f.nid, tip: f.tip, axis: f.axis, bore: i === 0 ? b1 : b2, dirName, used,
+      };
+    });
+  }
+
+  portFields(spec) {
+    const list = this.portList(spec);
+    if (list.length < 2) return '';
+    const btns = list.map((p) => `<button type="button" class="btn small${p.used ? ' ghost' : ' accent'}"
+            data-act="port" data-port="${esc(p.nid)}"
+            title="${p.dirName} 접합면 (${fmt(p.tip.x)}, ${fmt(p.tip.y)}, ${fmt(p.tip.z)})m 에서 ${p.bore || ''} 배관을 이어 그립니다">📍 ${p.dirName}${p.bore ? ` ${p.bore}` : ''}${p.used ? ' · 물림' : ''}</button>`).join('');
+    return `
+        <div class="prop-section">접합면 · 이어 그리기 (양쪽)</div>
+        <div class="prop-actions noz-actions">${btns}</div>
+        <p class="hint">앞·뒤 두 접합면 어디서든 그 자리·방향·관경 그대로 배관을 이어 그립니다. 3D에서 그 면을 손가락으로 톡 눌러도 같은 자리로 커서가 갑니다.</p>`;
+  }
+
+  // 양쪽 접합면 버튼이 있으면 아래의 기본 한 개짜리 버튼은 숨긴다.
+  portActionsRow(spec) {
+    if (this.portList(spec).length >= 2) return '';
+    return `<div class="prop-actions">
+          <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
+        </div>`;
+  }
+
   teeFields(spec) {
     if (spec.type !== 'tee') return '';
     const ports = teePorts(spec);
@@ -3715,6 +3901,19 @@ class App {
       return spec;
     };
 
+    // 꺾이는 자리 근처의 접합면(플랜지 면·노즐 끝·밸브 면) — 이 위에서 꺾이면 배관을 당겨
+    // 자르는 대신 엘보를 **면 바깥에** 세워야 플랜지 구멍 안으로 파고들지 않는다.
+    const portAt = (p, tol) => {
+      let best = null;
+      this.state.equipment.forEach((e) => {
+        equipPorts(e).forEach((n) => {
+          const d = Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z);
+          if (d <= (tol || 0.02) && (!best || d < best.d)) best = { d, n, e };
+        });
+      });
+      return best;
+    };
+
     // 꺾이는 꼭짓점: 각도에 맞는 엘보를 놓고 배관을 접합면에서 끊는다.
     const cornerJoin = (next, prev) => {
       const dot = prev.x * next.x + prev.y * next.y + prev.z * next.z;
@@ -3722,8 +3921,28 @@ class App {
       const auto = bend > 80 && bend < 100 ? 'elbow' : (bend > 30 && bend < 60 ? 'elbow45' : null);
       const type = auto || wantElbow;
       wantElbow = null;
-      if (!type) return 0;
+      if (!type) return { face: 0, fixed: false };
       const dims = elbowDims(type, bore);
+      // ① 꺾임점이 플랜지·노즐 접합면 위 → 엘보를 그 면 바깥(면 + 진행방향×face)에 세운다.
+      //    입구 면이 접합면에 0mm로 앉고, 새 구간은 엘보 출구 면에서 시작한다.
+      //    (2026-11-26 `31611` — 손 그리기·플랜지 위에서 꺾으면 엘보 몸통이 판을 뚫고 들어갔다)
+      if (portAt(cursor, 0.025)) {
+        flush();
+        cursor = put({
+          x: cursor.x + prev.x * dims.face,
+          y: cursor.y + prev.y * dims.face,
+          z: cursor.z + prev.z * dims.face,
+        });
+        putEquip(type, {
+          bore,
+          inDir: [-prev.x, -prev.y, -prev.z],
+          outDir: [next.x, next.y, next.z],
+          rot: this.rotForDir(next, rot),
+        });
+        notes.push(type === 'elbow45' ? '45° 엘보 (접합면 밖)' : '엘보 (접합면 밖)');
+        return { face: dims.face, fixed: true };   // 접합면 밖 배치는 고정 — 짧은 구간이라도 줄이지 않는다
+      }
+      // ② 배관 끝에서 꺾이면 앞 배관을 엘보 자리만큼 당겨 자르고 그 자리에 엘보를 앉힌다.
       trimPrevEnd(dims.face);
       flush();
       putEquip(type, {
@@ -3733,19 +3952,24 @@ class App {
         rot: this.rotForDir(next, rot),
       });
       notes.push(type === 'elbow45' ? '45° 엘보 자동' : '엘보 자동');
-      return dims.face;
+      return { face: dims.face, fixed: false };
     };
 
     // 한 구간을 그린다. 방향이 바뀌는 꼭짓점이면 엘보를 자동으로 앉힌다.
     const drawSegment = (v, meters) => {
       const prevV = prevDir || this.lastDirV;
       let face = 0;
+      let fixed = false;
       if (prevV) {
         const dot = prevV.x * v.x + prevV.y * v.y + prevV.z * v.z;
-        if (dot < 0.999) face = cornerJoin(v, prevV);
-        else if (wantElbow) wantElbow = null; // 일직선에는 꺾임이 없다
+        if (dot < 0.999) {
+          const r = cornerJoin(v, prevV) || { face: 0, fixed: false };
+          face = r.face || 0;
+          fixed = !!r.fixed;
+        } else if (wantElbow) wantElbow = null; // 일직선에는 꺾임이 없다
       }
-      face = Math.min(face, meters * 0.45);
+      // 접합면 밖에 세운 엘보는 그 출구 면에서 시작해야 하므로 짧은 구간이라도 줄이지 않는다.
+      if (!fixed) face = Math.min(face, meters * 0.45);
       const from = face > 0
         ? put({ x: cursor.x + v.x * face, y: cursor.y + v.y * face, z: cursor.z + v.z * face })
         : { ...cursor };
@@ -5382,8 +5606,11 @@ class App {
       if (!spec) return;
       const t = ev.target;
       if (t.dataset.f === 'bore1' || t.dataset.f === 'bore2') {
-        spec[t.dataset.f] = t.value;
-        spec.w = fittingNaturalWidth(spec.type, spec.bore1, spec.bore2);
+        // 레듀샤·티 — 관경이 바뀌면 길이도 바뀐다. 물린 면을 그 자리에 두고 자유단으로만 자란다.
+        this.resizeKeepingMate(spec, () => {
+          spec[t.dataset.f] = t.value;
+          spec.w = fittingNaturalWidth(spec.type, spec.bore1, spec.bore2);
+        });
         this.refreshScene();
         // 티는 접속구 관경 표시(📍 직진 A 100A 등)도 같이 바뀌어야 한다.
         if (spec.type === 'tee') this.renderProps();
@@ -5406,20 +5633,27 @@ class App {
         return;
       }
       // 밸브·피팅 관경을 바꾸면 몸체·플랜지·핸들 크기를 그 외경 비율로 다시 잡는다.
+      //  · 50A→80A처럼 키울 때 중심을 기준으로 양쪽으로 커지면 상류 배관·레듀샤를 파고든다.
+      //    물려 있던 면을 0mm로 고정하고 자유단 방향으로만 자라게 한다(`31603`).
       if (t.dataset.f === 'bore' && isBoreSized(spec.type)) {
-        spec.bore = BORES[t.value] ? t.value : SIZE_REF_BORE;
-        applyBoreSize(spec);
+        const r = this.resizeKeepingMate(spec, () => {
+          spec.bore = BORES[t.value] ? t.value : SIZE_REF_BORE;
+          applyBoreSize(spec);
+        });
         this.refreshScene();
         this.renderProps();
+        if (r.kept) this.toast(`관경 ${spec.bore} — 연결부 그대로, 자유단 쪽으로만 커졌습니다`);
         return;
       }
       // 엘보 관경을 바꾸면 외경·곡률·접합면 폭을 다시 뽑는다.
       if (t.dataset.f === 'bore' && (spec.type === 'elbow' || spec.type === 'elbow45')) {
-        spec.bore = BORES[t.value] ? t.value : '100A';
-        const d = elbowDims(spec.type, spec.bore);
-        spec.w = d.face;
-        spec.h = d.r * 2;
-        spec.d = d.r * 2;
+        this.resizeKeepingMate(spec, () => {
+          spec.bore = BORES[t.value] ? t.value : '100A';
+          const d = elbowDims(spec.type, spec.bore);
+          spec.w = d.face;
+          spec.h = d.r * 2;
+          spec.d = d.r * 2;
+        });
         this.refreshScene();
         this.renderProps();
         return;
@@ -5461,6 +5695,12 @@ class App {
         }
         // 배관 축에 맞춰 놓인 부속도 회전값을 직접 바꾸면 진행 방향을 풀고 축 기준(수평)으로 돌린다.
         if (t.dataset.f === 'rot') delete spec.dir;
+        // 길이(가로)를 바꾸면 몸체가 양쪽으로 커져 연결부를 파고들 수 있다 — 물린 면 고정.
+        if (t.dataset.f === 'w' && spec.kind !== 'pipe') {
+          this.resizeKeepingMate(spec, () => { spec.w = v; });
+          this.refreshScene();
+          return;
+        }
         spec[t.dataset.f] = v;
         this.refreshScene();
       } else if (t.dataset.ptf) {

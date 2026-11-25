@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, handleRotOf, flangeOd, equipBasis } from './store.js?v=68';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=69';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -35,8 +35,11 @@ export function buildFusionScript(state) {
         w: e.w, h: e.h, d: e.d, rot: e.rot, axis: e.axis || null,
         bore1: e.bore1 || null, bore2: e.bore2 || null,
         conn: e.conn === 'forged' ? 'forged' : 'flange',
-        // 이 관경의 KS 10K 플랜지 외경(m) — 부속 자기 플랜지도 배관 끝 플랜지와 같은 크기로.
-        fod: e.bore && HANDLE_TYPES.has(e.type) || e.type === 'flange' ? flangeOd(e.bore) : null,
+        // 이 관경의 KS 10K 플랜지 외경·두께(m) — 부속 자기 플랜지도 배관 끝 플랜지와 같은 크기로.
+        // (yvalve는 v69에서 HANDLE_TYPES에서 빠졌지만 플랜지 부속이므로 FLANGE_MATE_TYPES로 잡는다)
+        fod: e.bore && (HANDLE_TYPES.has(e.type) || FLANGE_MATE_TYPES.has(e.type) || e.type === 'flange')
+          ? flangeOd(e.bore) : null,
+        ft: e.bore ? flangeTh(e.bore) : null,
       };
       // 자세 — 웹앱 buildEquipment()와 **같은 함수**(store.js equipBasis)로 회전행렬을 만든다.
       //  · 기본 자세(계기 법선 · 엘보 두 다리 · 진행 방향 dir · 수직 axis:'y' · rot)
@@ -582,29 +585,45 @@ def build_butterfly(comp, e, tag):
 
 
 def build_yvalve(comp, e, tag):
-    """경사형(Y자) 체크·스트레이너 — Y 분기 바디 + 상하 플랜지 + 핸드휠"""
+    """Y자 스트레이너 — 유로 직선 바디 + 양단 KS 10K 링 플랜지 + 45° Y 바스켓·볼트 캡.
+    손잡이(핸드휠·스템)는 없다(v69 '31601'). 치수는 웹앱 buildYValve()와 같이
+    m 단위 실제 치수 — 판 외경 fod(KS 10K), 몸체 배관 외경×0.62."""
     made = 0
-    sx, sy, sz = _scaled(e, 0.296, 0.5, 0.34)
-    rot = e.get('rot', 0)
+    bore = e.get('bore') or '100A'
+    od = BORES.get(bore, 0.1143)
+    w = max(0.06, float(e.get('w') or 0.296 * (od / 0.1143)))
+    half = w / 2.0
+    T = min(float(e.get('ft') or 0.02), half * 0.4)
+    R = flange_radius(e, od * 0.86)
+    rb = od * 0.62
+    br = od * 0.52
 
     def P(lx, ly, lz):
-        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+        return local_to_world(e, (lx, ly, lz))
 
-    if add_cylinder(comp, P(-0.11, 0, 0), P(0.11, 0, 0), 0.085 * sx, tag + '_Body'):
+    if add_cylinder(comp, P(-(half - T), 0, 0), P(half - T, 0, 0), rb, tag + '_Body'):
         made += 1
     for d in (-1, 1):
         if forged(e):
-            made += socket_boss(comp, e, tag, (d * 0.12, 0, 0), (d, 0, 0), 0.085 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, P(d * 0.105, 0, 0), P(d * 0.135, 0, 0), flange_radius(e, 0.135 * sx), tag + '_Flange'):
+            made += socket_boss(comp, e, tag, (d * half, 0, 0), (d, 0, 0), rb, (1.0, 1.0, 1.0))
+        elif add_cylinder(comp, P(d * (half - T), 0, 0), P(d * half, 0, 0), R, tag + '_Flange'):
             made += 1
-    # Y자 경사 분기 (아래·뒤 45도)
-    if add_cylinder(comp, P(0, 0, 0), P(-0.02, -0.19, -0.15), 0.062 * sx, tag + '_YBranch'):
+    # Y 바스켓 — 아래로 45°, 하류 쪽으로
+    dx = math.sqrt(0.5)
+    dy = -dx
+    cap_r = max(0.016, br * 1.26)
+    x0 = -0.8 * half
+    run = max(od * 0.72, (half - cap_r * 0.9) - x0)
+    Lb = run / dx
+    ax0, ay0 = x0, -rb * 0.12
+    ax1, ay1 = x0 + dx * Lb, ay0 + dy * Lb
+    if add_cylinder(comp, P(ax0, ay0, 0), P(ax1, ay1, 0), br, tag + '_YBasket'):
         made += 1
-    if add_cylinder(comp, P(-0.018, -0.175, -0.138), P(-0.024, -0.225, -0.178), 0.082 * sx, tag + '_YCap'):
+    cap_t = max(0.012, min(0.020, T * 0.9))
+    if add_cylinder(comp, P(ax1, ay1, 0), P(ax1 + dx * cap_t, ay1 + dy * cap_t), cap_r, tag + '_YCap'):
         made += 1
-    if add_cylinder(comp, P(0, 0.05, 0), P(0, 0.25, 0), 0.014 * sx, tag + '_Stem'):
-        made += 1
-    if add_cylinder(comp, P(0, 0.26, 0), P(0, 0.29, 0), 0.11 * sx, tag + '_Handwheel'):
+    if add_cylinder(comp, P(ax1 + dx * cap_t, ay1 + dy * cap_t),
+                    P(ax1 + dx * (cap_t + 0.03), ay1 + dy * (cap_t + 0.03)), br * 0.5, tag + '_YPlug'):
         made += 1
     return made
 

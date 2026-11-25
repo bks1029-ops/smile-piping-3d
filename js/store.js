@@ -302,9 +302,11 @@ export const EQUIP_TYPES = {
     cat: 'valve', label: '기어 버터플라이 밸브', short: 'BF',
     defaults: { w: 0.174, h: 0.46, d: 0.32 }, color: '#1f5fd0',
   },
+  // Y자 스트레이너 — 손잡이(핸드휠·스템)가 없는 부속이라 HANDLE_TYPES에도 넣지 않는다.
+  // 형상은 buildYValve()가 관경·면간(w)에서 m 단위 실제 치수로 그린다(v69).
   yvalve: {
-    cat: 'valve', label: '경사형 체크·스트레이너', short: 'YV',
-    defaults: { w: 0.296, h: 0.5, d: 0.34 }, color: '#c0392b',
+    cat: 'valve', label: 'Y자 스트레이너 (경사형)', short: 'YV',
+    defaults: { w: 0.296, h: 0.34, d: 0.3 }, color: '#c0392b',
   },
   ball: {
     cat: 'valve', label: '볼밸브', short: 'BV',
@@ -433,7 +435,9 @@ export function isVerticalCapable(type) {
 // ── 핸들(손잡이) 방향 ──────────────────────────────────────────────────
 // 유로가 있고 손잡이·레버·다이얼이 달린 부속만 관 축 둘레로 돌린다.
 // (엘보·티·레듀샤는 두 다리 방향이 곧 자세라 돌릴 손잡이가 없다)
-export const HANDLE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'flow']);
+//  · yvalve(Y자 스트레이너)는 손잡이가 없는 부속이라 뺐다(v69 `31601`) — 불필요한
+//    '핸들 방향' 안내가 뜨지 않는다.
+export const HANDLE_TYPES = new Set(['valve', 'bfly', 'ball', 'check', 'flow']);
 
 // 핸들 방향(도) — 배관(유로)은 그대로 두고 스템·핸드휠·레버·Y자 넷만 관 축 둘레로 돈 각도.
 export function handleRotOf(spec) {
