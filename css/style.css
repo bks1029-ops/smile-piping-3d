@@ -45,7 +45,7 @@ html, body {
   touch-action: pan-x pan-y;
 }
 
-#app { display: flex; flex-direction: column; height: 100dvh; }
+#app { display: flex; flex-direction: column; height: calc(100dvh - var(--kb-inset, 0px)); }
 
 /* ── 상단 바 ─────────────────────────────────────────────── */
 #topbar {
@@ -345,6 +345,47 @@ html, body {
   backdrop-filter: blur(6px);
 }
 .overlay-note .sep { margin: 0 5px; opacity: 0.5; }
+
+/* ── 장비/배관 개수 HUD — 기본은 작은 `▾` 첨, 누르면 펼침 (3D 시야 보호) ── */
+#viewHud {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, padding 0.15s;
+}
+#viewHud .vh-body { display: none; }
+#viewHud .vh-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dim2);
+  opacity: 0.7;
+}
+#viewHud.open { padding: 5px 9px; }
+#viewHud.open .vh-body { display: inline; }
+#viewHud.open .vh-chip { width: 14px; opacity: 0.55; }
+#viewHud:not(.open) {
+  padding: 2px 4px;
+  background: rgba(13, 16, 20, 0.42);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+/* ── 모바일 키보드가 올라온 동안 (body.kb-open) ─────────────────────────
+   명령창은 키보드 바로 위에 남기고, 조이스틱·보기 바·개수 침은 잠시 숨기여
+   3D 캐버스가 상단바 아래~명령창 위 전부를 쓴다. 키보드가 내려가면 원래대로. */
+@media (max-width: 860px) {
+  body.kb-open #dirPad,
+  body.kb-open #viewbar,
+  body.kb-open #viewHud { display: none !important; }
+  body.kb-open #cmdForm { z-index: 60; }
+}
 
 /* ── 패널 공통 ──────────────────────────────────────────── */
 .panel {
@@ -1115,6 +1156,7 @@ canvas.move-drag:active { cursor: grabbing; }
     padding-bottom: env(safe-area-inset-bottom);
   }
   .overlay-note { top: 58px; bottom: auto; left: 8px; transform: none; font-size: 10.5px; }
+  #viewHud:not(.open) { top: 54px; left: 6px; }
   .hud { bottom: calc(70px + env(safe-area-inset-bottom)); }
   .modal-card { width: calc(100% - 20px); max-height: 82dvh; }
   .ai-photo-grid { grid-template-columns: repeat(4, 1fr); gap: 5px; }

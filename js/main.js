@@ -12,14 +12,15 @@ import {
   HX_AT, HX_AT_LABELS, HX_NOZ_DIRS, HX_NOZ_DIR_LABELS, HX_PRESETS,
   HX_TYPES, HX_TYPE_LABELS, HX_TYPE_DESC, hxTypeOf,
   equipPorts, teePorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
-} from './store.js?v=64';
-import { buildScene } from './builders.js?v=64';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=64';
-import { buildOBJ } from './obj.js?v=64';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=64';
-import { parseCommand, CMD_HELP } from './cmd.js?v=64';
-import { buildDimItems } from './dims.js?v=64';
-import { buildAiImageParts } from './zoom.js?v=64';
+  HANDLE_TYPES, handleRotOf,
+} from './store.js?v=66';
+import { buildScene } from './builders.js?v=66';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=66';
+import { buildOBJ } from './obj.js?v=66';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=66';
+import { parseCommand, CMD_HELP } from './cmd.js?v=66';
+import { buildDimItems } from './dims.js?v=66';
+import { buildAiImageParts } from './zoom.js?v=66';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -178,6 +179,7 @@ class App {
     this.setupHand();
     this.setupHandDim();
     this.setupZoomGuard();
+    this.setupKeyboardView();
     this.setupVoice();
     this.bindUI();
     this.bindPad();
@@ -480,6 +482,74 @@ class App {
       vv.addEventListener('scroll', fit);
     }
     window.addEventListener('resize', fit);
+  }
+
+  // ── 모바일 키보드가 올라올 때의 3D 시야 ──────────────────────────────
+  // 명령창에 초점이 가고 휴대폰 키보드가 올라오면 보이는 영역(visualViewport)이 줄어든다.
+  //  · 앱 높이를 그 보이는 영역으로 줄인다 — 3D 캔버스가 상단바 아래~명령창 위로 다시 맞춰진다.
+  //  · 키보드가 떠 있는 동안만 조이스틱·보기 바·개수 첨을 숨겨 3D 시야를 넓힌다(내려가면 원복).
+  //  · 작업 커서가 남은 화면의 한가운데 오도록 카메라 표적을 부드럽게 옮긴다.
+  setupKeyboardView() {
+    const input = $('#cmdInput');
+    const dim = $('#handDimInput');
+    if (!input) return;
+    this.kbInset = 0;
+    this.kbForced = null;      // 검증·테스트용 가상 인셋(px) — 실제 키보드와 같은 경로를 탄다
+    const measure = () => {
+      if (this.kbForced != null) return Math.max(0, Math.round(this.kbForced));
+      const vv = window.visualViewport;
+      const raw = vv ? Math.max(0, window.innerHeight - vv.height) : 0;
+      return Math.round(raw);
+    };
+    this.applyKeyboardInset = (px) => {
+      const mobile = window.matchMedia('(max-width: 860px)').matches;
+      const act = document.activeElement;
+      const typing = act === input || (dim && act === dim) || this.cmdFocused || this.kbForced != null;
+      const raw = measure();
+      // 90px 넘게 줄었고 입력칸에 초점이 있을 때만 키보드로 본다 (주소창 접힘과 구분)
+      const inset = (mobile && typing && raw > 90) ? raw : 0;
+      if (inset === this.kbInset) return inset;
+      this.kbInset = inset;
+      document.documentElement.style.setProperty('--kb-inset', `${inset}px`);
+      document.body.classList.toggle('kb-open', inset > 0);
+      // 키보드가 올라와도 페이지가 위로 밀려 3D가 잘리지 않게 위치를 고정한다.
+      if (inset) window.scrollTo(0, 0);
+      this.resize();
+      if (inset) this.centerCursor();
+      return inset;
+    };
+    this.isKeyboardOpen = () => this.kbInset > 0;
+    // 작업 커서를 지금 보이는 3D 화면의 한가운데로 — 카메라 방향·거리는 그대로 두고 표적만 옮긴다.
+    this.centerCursor = (dur) => {
+      const c = this.cmdCursor;
+      if (!c || !this.controls || !this.camera) return;
+      const t1 = new THREE.Vector3(c.x, c.y, c.z);
+      const off = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+      const p1 = t1.clone().add(off);
+      if (this.controls.target.distanceTo(t1) < 1e-4) return;
+      this.camAnim = {
+        p0: this.camera.position.clone(), p1,
+        t0: this.controls.target.clone(), t1,
+        start: performance.now(), dur: dur == null ? 320 : dur,
+      };
+    };
+    input.addEventListener('focus', () => {
+      this.cmdFocused = true;
+      // 키보드가 올라오는 데는 잠시 걸린다 — 60ms·300ms 두 번 확인한다.
+      setTimeout(() => this.applyKeyboardInset(), 60);
+      setTimeout(() => this.applyKeyboardInset(), 300);
+    });
+    input.addEventListener('blur', () => {
+      this.cmdFocused = false;
+      setTimeout(() => this.applyKeyboardInset(), 40);
+    });
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', () => this.applyKeyboardInset());
+      vv.addEventListener('scroll', () => { if (this.kbInset) window.scrollTo(0, 0); });
+    }
+    window.addEventListener('resize', () => this.applyKeyboardInset());
+    window.addEventListener('orientationchange', () => setTimeout(() => this.applyKeyboardInset(), 200));
   }
 
   // 확대된 채로 들어온 경우(브라우저 '강제 확대'·접근성 설정, 예전 캐시)에도 속성 창·서랍이
@@ -2105,6 +2175,7 @@ class App {
         ${this.boreFields(spec)}
         ${this.connField(spec)}
         ${this.axisField(spec)}
+        ${this.handleFields(spec)}
         ${spec.type === 'hx' ? `
         <div class="prop-section">헤드 타입</div>
         <div class="field-row">
@@ -2233,6 +2304,28 @@ class App {
         </div>`;
   }
 
+  // ── 핸들(손잡이) 방향 — 유로는 그대로, 손잡이만 관 축 둘레로 45°·90° ───────────
+  // 사용자가 수직관 위 게이트밸브에서 조이스틱 45°를 눌렀다가 밸브 전체가 돌아간 뒤
+  // (2026-11-25 `31544` 캡처) 따로 만든 버튼이다. 키보드가 뜨지 않는 단순 버튼만 쓴다.
+  handleFields(spec) {
+    if (!HANDLE_TYPES.has(spec.type)) return '';
+    const deg = handleRotOf(spec);
+    const btn = (d, label, title) => `<button type="button" class="noz-chip${d === deg ? ' on' : ''}"
+            data-act="hrot" data-deg="${d}" title="${title}">${label}</button>`;
+    return `
+        <div class="prop-section">핸들 방향 (관 축 둘레)</div>
+        <div class="field-row">
+          <label class="field">지금<span class="readonly">${deg}° · ${deg === 0 ? '기본' : '돌림'}</span></label>
+        </div>
+        <div class="noz-presets">
+          ${btn((deg - 45 + 360) % 360, '↺ -45°', '핸들을 관 축 둘레로 -45°')}
+          ${btn((deg + 45) % 360, '↻ +45°', '핸들을 관 축 둘레로 +45°')}
+          ${btn((deg + 90) % 360, '↻ +90°', '핸들을 관 축 둘레로 +90°')}
+          ${deg ? btn(0, '0° 초기화', '핸들 방향을 처음 자리로') : ''}
+        </div>
+        <p class="hint">배관(유로) 방향과 플랜지·몸체는 그대로 — 스템·핸드휠·레버·Y자 넷만 관 축 둘레로 돌립니다. 아래 회전(°)을 바꾸면 배관 축 정렬이 풀리니, 손잡이만 돌릴 때는 이 버튼을 쓰세요.</p>`;
+  }
+
   // ── 티 — 분기 방향(위·아래·앞·뒤)과 세 접속구 이어그리기 ──────────────────
   // 티는 본관 축 둘레로 분기를 돌릴 수 있고, 직진 A·직진 B·분기 세 끝 모두에서
   // 커서·방향·관경을 그 접속구로 넘겨 배관을 이어 그린다(3D에서 직접 눌러도 같다).
@@ -2282,14 +2375,18 @@ class App {
   // (수직으로 세우면 유로가 Y축, 핸들은 옆으로 나온다)
   axisField(spec) {
     if (!isVerticalCapable(spec.type)) return '';
-    const cur = spec.axis === 'y' || spec.axis === 'x' || spec.axis === 'z' ? spec.axis : 'x';
+    // 진행 방향(dir)으로 놓인 부속은 그 방향을 그대로 보여 준다 — 선반은 눕혀 놓은 것이 아니다.
+    const dv = Array.isArray(spec.dir) && spec.dir.length === 3 ? spec.dir : null;
+    const dirAxis = dv ? (Math.abs(dv[1]) > 0.9 ? 'y' : (Math.abs(dv[2]) >= Math.abs(dv[0]) ? 'z' : 'x')) : null;
+    const cur = dirAxis || (spec.axis === 'y' || spec.axis === 'x' || spec.axis === 'z' ? spec.axis : 'x');
     const opts = ['x', 'z', 'y'].map((a) =>
       `<option value="${a}"${a === cur ? ' selected' : ''}>${AXIS_LABELS[a]}</option>`).join('');
+    const now = (dirAxis || spec.axis) === 'y' ? '세움 · 핸들 옆' : '눕힘 · 흐름 방향';
     return `
         <div class="prop-section">방향</div>
         <div class="field-row">
           <label class="field">배관 축<select data-f="axis">${opts}</select></label>
-          <label class="field">지금<span class="readonly">${spec.axis === 'y' ? '세움 · 핸들 옆' : '눕힘 · 흐름 방향'}</span></label>
+          <label class="field">지금<span class="readonly">${now}${dv ? ' · 배관에 맞춤' : ''}</span></label>
         </div>`;
   }
 
@@ -2513,6 +2610,19 @@ class App {
     return { x: 1, y: 0, z: 0 };
   }
 
+  // 조이스틱에서 골라 둔 90° 방향 → 월드 단위벡터 (「내 시점 기준」·「도면 축 기준」 반영).
+  // 부속을 놓을 때 이 방향을 **출구 방향**으로 쓴다.
+  padDirV() {
+    const sel = this.pending;
+    if (!sel || sel.op !== 'seg' || !sel.axis) return null;
+    const w = this.dirToWorld(sel.axis, sel.sign);
+    return {
+      x: w.axis === 'x' ? w.sign : 0,
+      y: w.axis === 'y' ? w.sign : 0,
+      z: w.axis === 'z' ? w.sign : 0,
+    };
+  }
+
   // 라이브러리에서 고른 인라인 부속을 배관 끝(커서)에 붙인다.
   //  · 엘보 — 들어오는 쪽 접합면을 커서에 딱 맞추고(꺾임점은 face만큼 앞),
   //           나가는 방향으로 커서를 옮겨 바로 이어 그릴 수 있게 한다.
@@ -2578,7 +2688,10 @@ class App {
       cur.z = port.p.z;
     }
     const d = port ? { x: port.axis.x, y: port.axis.y, z: port.axis.z } : this.inlineDirAtCursor();
-    const bore = this.cmdBore;
+    // 관경 — 붙는 접합면(배관 끝·플랜지 면·노즐 끝)의 관경을 그대로 물려받는다.
+    // (예전에는 명령창 관경을 썼기 때문에, 80A 배관 끝에 100A 플랜지가 붙는 일이 있었다 — 2026-11-25 `31563` 캡처)
+    const portBore = port && port.bore && BORES[port.bore] ? port.bore : null;
+    const bore = portBore || this.cmdBore;
     const elbow = type === 'elbow' || type === 'elbow45';
     const same = this.state.equipment.filter((e) => e.type === type).length;
     const spec = makeEquipment(type, {
@@ -2592,7 +2705,24 @@ class App {
     let face = 0;
     if (elbow) {
       face = elbowDims(type, spec.bore || bore).face;
-      out = this.turnDirFor(d);
+      // 진입 방향(d)은 접합면의 진행 축 — 조이스틱으로 고른 방향은 **출구**로 쓴다.
+      // (예전에는 조이스틱 ←을 무시하고 수직관이면 언제나 +X로 꺾어, 플랜지 위 엘보가
+      //  엉뚱한 쪽으로 나갔다 — 2026-11-25 `31552` 캡처)
+      const pick = this.padDirV();
+      const dot = pick ? pick.x * d.x + pick.y * d.y + pick.z * d.z : 0;
+      // 고른 방향이 진입 축과 나란하면(같거나 반대) 꺾임이 없으므로 예전처럼 자동으로 꺾는다.
+      const pick90 = pick && Math.abs(dot) < 0.7 ? pick : null;
+      if (type === 'elbow45') {
+        // 45° — 고른 방향이 있으면 접합면 진행 방향(d)과 그 방향 사이의 45° 대각선이 출구.
+        const base = pick90 || this.turnDirFor(d);
+        const diag = pick90
+          ? { x: d.x + base.x, y: d.y + base.y, z: d.z + base.z }
+          : base;
+        const dl = Math.hypot(diag.x, diag.y, diag.z) || 1;
+        out = { x: r3(diag.x / dl), y: r3(diag.y / dl), z: r3(diag.z / dl) };
+      } else {
+        out = pick90 || this.turnDirFor(d);
+      }
       spec.inDir = [-d.x, -d.y, -d.z];
       spec.outDir = [out.x, out.y, out.z];
       spec.x = r3(cur.x + d.x * face);
@@ -4978,6 +5108,18 @@ class App {
         this.renderProps();
       }
       else if (act === 'dup') this.duplicateSelected();
+      else if (act === 'hrot') {
+        // 핸들 방향 — 유로·플랜지·몸체는 그대로 두고 손잡이만 관 축 둘레로 돈다.
+        const cur0 = handleRotOf(spec);
+        const want = Number(btn.dataset.deg);
+        const next = Number.isFinite(want) ? ((want % 360) + 360) % 360 : cur0;
+        if (next === cur0) return;
+        this.pushUndo('핸들 방향');
+        if (next) spec.roll = next; else delete spec.roll;
+        this.refreshScene();
+        this.renderProps();
+        this.toast(`핸들 ${next}° — 배관 축은 그대로입니다`);
+      }
       else if (act === 'ground') { this.pushUndo('바닥에 붙이기'); spec.y = 0; this.refreshScene(); this.renderProps(); }
       else if (act === 'addpt') {
         this.pushUndo('점 추가');
@@ -4994,6 +5136,20 @@ class App {
       }
     });
     $('#btnPropClose').addEventListener('click', () => this.clearSelection());
+
+    // 장비/배관 개수 HUD — 기본은 맨 위 구석의 작은 `▾` 칩, 누를 때만 펼친다.
+    // (3D 캔버스 왼쪽 위를 가린다는 지적 — 2026-11-25 `31557` 캡처)
+    const hud = $('#viewHud');
+    if (hud) {
+      const toggleHud = () => {
+        const open = hud.classList.toggle('open');
+        hud.setAttribute('aria-expanded', open ? 'true' : 'false');
+      };
+      hud.addEventListener('click', (ev) => { ev.stopPropagation(); toggleHud(); });
+      hud.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleHud(); }
+      });
+    }
 
     // 도면
     $('#btnPlanUpload').addEventListener('click', () => $('#planFile').click());
@@ -5092,6 +5248,8 @@ class App {
       // 명령을 연달아 칠 수 있게 입력칸 초점(모바일 키보드)을 그대로 둔다.
       // 예전에는 모바일에서 초점을 빼서, 명령 한 번마다 채팅창을 다시 눌러야 했다.
       this.focusCmdInput();
+      // 키보드가 떠 있는 채로 연속 입력할 때도 커서가 화면 한가운데 오게 따라간다.
+      if (this.isKeyboardOpen && this.isKeyboardOpen()) this.centerCursor(240);
     });
     // [실행]을 손가락으로 눌러도 입력칸이 초점을 잃지 않게 한다 —
     // mousedown 기본 동작(초점 이동)만 막고 click은 그대로 두어 submit이 정상으로 일어난다.

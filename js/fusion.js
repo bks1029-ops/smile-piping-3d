@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES } from './store.js?v=64';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, handleRotOf, flangeOd } from './store.js?v=66';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -35,6 +35,8 @@ export function buildFusionScript(state) {
         w: e.w, h: e.h, d: e.d, rot: e.rot, axis: e.axis || null,
         bore1: e.bore1 || null, bore2: e.bore2 || null,
         conn: e.conn === 'forged' ? 'forged' : 'flange',
+        // 이 관경의 KS 10K 플랜지 외경(m) — 부속 자기 플랜지도 배관 끝 플랜지와 같은 크기로.
+        fod: e.bore && HANDLE_TYPES.has(e.type) || e.type === 'flange' ? flangeOd(e.bore) : null,
       };
       // 엘보는 관경과 두 다리 방향을 함께 넘겨야 Fusion에서도 배관과 같은 방향으로 앉는다.
       if (e.type === 'elbow' || e.type === 'elbow45') {
@@ -68,6 +70,12 @@ export function buildFusionScript(state) {
       if (!item.rmat && item.axis === 'y'
           && e.type !== 'gauge' && e.type !== 'safety_valve') {
         item.rmat = verticalMatrix(e.rot);
+      }
+      // 핸들 방향 — 웹앱 buildEquipment와 같은 자리에서 관 축(로컬 +X) 둘레로 돈다.
+      // (유로 축은 그대로라 플랜지·몸체가 맟물린 자리는 바뀌지 않는다)
+      if (item.rmat && handleRotOf(e) && HANDLE_TYPES.has(e.type)) {
+        item.roll = handleRotOf(e);
+        item.rmat = rollBasis(item.rmat, item.roll);
       }
       // 노즐 — 웹앱과 **같은 끝점 좌표**를 넘겨 Fusion에도 같은 자리에 목·플랜지가 생긴다.
       // 노즐을 쓰는 장비는 빈 목록이라도 넣어, 각 타입 빌더의 고정 노즐은 그리지 않게 한다.
@@ -488,7 +496,7 @@ def build_valve(comp, e, tag):
     for d in (-1, 1):
         if forged(e):
             made += socket_boss(comp, e, tag, (d * 0.1, 0, 0), (d, 0, 0), 0.085 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, on_axis(d * 0.085, 0), on_axis(d * 0.125, 0), 0.13 * sx, tag + '_Flange'):
+        elif add_cylinder(comp, on_axis(d * 0.085, 0), on_axis(d * 0.125, 0), flange_radius(e, 0.13 * sx), tag + '_Flange'):
             made += 1
     # 보닛 + 스템
     if add_cylinder(comp, P(0, 0.04, 0), P(0, 0.32, 0), 0.045 * sx, tag + '_Stem'):
@@ -528,6 +536,12 @@ def build_safety_valve(comp, e, tag):
     if add_cylinder(comp, P(0, 0.305, 0), P(0, 0.365, 0), 0.014 * sz, tag + '_AdjustScrew'):
         made += 1
     return made
+
+
+def flange_radius(e, fallback):
+    """관경별 KS 10K 플랜지 반지름(m) — 웹앱 flangeK와 같은 기준(80A 0.0925 · 100A 0.105)."""
+    fod = e.get('fod')
+    return (float(fod) / 2.0) if fod else fallback
 
 
 def _scaled(e, w0, h0, d0):
@@ -577,7 +591,7 @@ def build_butterfly(comp, e, tag):
     for d in (-1, 1):
         if forged(e):
             made += socket_boss(comp, e, tag, (d * 0.06, 0, 0), (d, 0, 0), 0.115 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, P(d * 0.05, 0, 0), P(d * 0.078, 0, 0), 0.165 * sx, tag + '_Flange'):
+        elif add_cylinder(comp, P(d * 0.05, 0, 0), P(d * 0.078, 0, 0), flange_radius(e, 0.165 * sx), tag + '_Flange'):
             made += 1
     if add_cylinder(comp, P(0, 0.1, 0), P(0, 0.22, 0), 0.036 * sx, tag + '_Neck'):
         made += 1
@@ -603,7 +617,7 @@ def build_yvalve(comp, e, tag):
     for d in (-1, 1):
         if forged(e):
             made += socket_boss(comp, e, tag, (d * 0.12, 0, 0), (d, 0, 0), 0.085 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, P(d * 0.105, 0, 0), P(d * 0.135, 0, 0), 0.135 * sx, tag + '_Flange'):
+        elif add_cylinder(comp, P(d * 0.105, 0, 0), P(d * 0.135, 0, 0), flange_radius(e, 0.135 * sx), tag + '_Flange'):
             made += 1
     # Y자 경사 분기 (아래·뒤 45도)
     if add_cylinder(comp, P(0, 0, 0), P(-0.02, -0.19, -0.15), 0.062 * sx, tag + '_YBranch'):
@@ -633,7 +647,7 @@ def build_ball(comp, e, tag):
     for d in (-1, 1):
         if forged(e):
             made += socket_boss(comp, e, tag, (d * 0.1, 0, 0), (d, 0, 0), 0.055 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, P(d * 0.09, 0, 0), P(d * 0.115, 0, 0), 0.085 * sx, tag + '_Flange'):
+        elif add_cylinder(comp, P(d * 0.09, 0, 0), P(d * 0.115, 0, 0), flange_radius(e, 0.085 * sx), tag + '_Flange'):
             made += 1
     if add_cylinder(comp, P(0, 0.06, 0), P(0, 0.13, 0), 0.022 * sx, tag + '_Stem'):
         made += 1
@@ -657,7 +671,7 @@ def build_check(comp, e, tag):
     for d in (-1, 1):
         if forged(e):
             made += socket_boss(comp, e, tag, (d * 0.045, 0, 0), (d, 0, 0), 0.09 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, P(d * 0.03, 0, 0), P(d * 0.05, 0, 0), 0.115 * sx, tag + '_Flange'):
+        elif add_cylinder(comp, P(d * 0.03, 0, 0), P(d * 0.05, 0, 0), flange_radius(e, 0.115 * sx), tag + '_Flange'):
             made += 1
     bs = P(0, 0.09, 0)
     if add_box(comp, bs[0], bs[1], bs[2], 0.1 * sx, 0.05 * sy, 0.06 * sz, rot, tag + '_Boss', e.get('rmat')):
@@ -683,7 +697,7 @@ def build_bellows(comp, e, tag):
     for d in (-1, 1):
         if forged(e):
             made += socket_boss(comp, e, tag, (d * L / 2, 0, 0), (d, 0, 0), 0.098 * sx, (sx, sy, sz))
-        elif add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.032), 0, 0), 0.15 * sx, tag + '_Flange'):
+        elif add_cylinder(comp, P(d * L / 2, 0, 0), P(d * (L / 2 + 0.032), 0, 0), flange_radius(e, 0.15 * sx), tag + '_Flange'):
             made += 1
     for dy, dz in ((0.135, 0), (-0.135, 0), (0, 0.135), (0, -0.135)):
         if add_cylinder(comp, P(-L / 2 - 0.02, dy, dz), P(L / 2 + 0.02, dy, dz), 0.011 * sx, tag + '_TieRod'):
@@ -919,19 +933,22 @@ def build_flow(comp, e, tag):
 
 
 def build_flange(comp, e, tag):
-    """플랜지 — 볼트링 원판 + 볼트 8개"""
+    """플랜지 — 볼트링 원판 + 볼트 8개 (접시 외경 = 관경별 KS 10K 외경)"""
     made = 0
     sx, sy, sz = _scaled(e, 0.06, 0.26, 0.26)
+    # 웹앱 buildFlange와 같은 비율 — 로질 지름 0.24 → KS 외경(100A 0.21 · 80A 0.185)
+    od = max(0.04, float(e.get('h') or e.get('d') or 0.24))
+    k = od / 0.24
 
     def P(lx, ly, lz):
-        return local_to_world(e, (lx * sx, ly * sy, lz * sz))
+        return local_to_world(e, (lx * sx, ly * k, lz * k))
 
-    if add_cylinder(comp, P(-0.022, 0, 0), P(0.022, 0, 0), 0.12 * sx, tag + '_Disc'):
+    if add_cylinder(comp, P(-0.022, 0, 0), P(0.022, 0, 0), 0.12 * k, tag + '_Disc'):
         made += 1
     for i in range(8):
         a = math.pi * 2 * i / 8
         dy, dz = math.cos(a) * 0.093, math.sin(a) * 0.093
-        if add_cylinder(comp, P(-0.03, dy, dz), P(0.03, dy, dz), 0.014 * sx, '%s_Bolt%d' % (tag, i + 1)):
+        if add_cylinder(comp, P(-0.03, dy, dz), P(0.03, dy, dz), 0.014 * k, '%s_Bolt%d' % (tag, i + 1)):
             made += 1
     return made
 

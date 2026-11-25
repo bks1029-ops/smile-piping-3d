@@ -28,6 +28,24 @@ export const BORES = {
 // 관경 이름 목록 (작은 것부터) — 드롭다운·프롬프트·명령 파서가 같은 순서를 쓴다.
 export const BORE_KEYS = Object.keys(BORES);
 
+// ── 플랜지 외경 (KS B 1503 10K, mm) ────────────────────────────────────
+// 배관 끝 플랜지·플랜지 부속·맞물림 플랜지가 모두 이 한 표를 쓴다 —
+// 100A(210) > 80A(185) > 50A(155)처럼 관경을 따라 커지고 작아진다.
+// (예전에는 부속은 고정 크기·배관은 외경×1.8로 따로 셌다 — 80A가 100A와 구분되지 않았다)
+export const FLANGE_OD = {
+  '15A': 0.095, '20A': 0.100, '25A': 0.125, '32A': 0.135, '40A': 0.140,
+  '50A': 0.155, '65A': 0.175, '80A': 0.185, '100A': 0.210, '125A': 0.250,
+  '150A': 0.280, '200A': 0.330, '250A': 0.400, '300A': 0.445, '350A': 0.505,
+  '400A': 0.565, '450A': 0.615, '500A': 0.670, '550A': 0.720, '600A': 0.775,
+};
+
+// 플랜지 외경(m) — 표에 없는 관경은 배관 외경의 1.8배로 추정한다.
+export function flangeOd(bore) {
+  if (FLANGE_OD[bore]) return FLANGE_OD[bore];
+  const od = BORES[bore] ? BORES[bore].od : BORES['100A'].od;
+  return Math.round(od * 1.8 * 1e4) / 1e4;
+}
+
 export const MATERIALS = {
   carbon:    { label: '흑관·카본스틸', color: '#4b5057', roughness: 0.58, metalness: 0.6, jacket: 0.0 },
   sus:       { label: 'SUS 스테인리스', color: '#c8ced4', roughness: 0.32, metalness: 0.88, jacket: 0.0 },
@@ -94,6 +112,12 @@ export function applyBoreSize(spec) {
   const bs = boreScale(bore);
   spec.bore = bore;
   spec.w = round3(t.defaults.w * bs.plan);
+  // 플랜지 — 접시 외경(h·d)은 KS 10K 표의 그 관경 플랜지 외경 그대로(100A 210mm > 80A 185mm).
+  if (spec.type === 'flange') {
+    spec.h = round3(flangeOd(bore));
+    spec.d = round3(flangeOd(bore));
+    return spec;
+  }
   spec.h = round3(t.defaults.h * bs.rise);
   spec.d = round3(t.defaults.d * bs.plan);
   return spec;
@@ -384,6 +408,37 @@ export function isVerticalCapable(type) {
   return VERTICAL_TYPES.has(type) || type === 'gauge';
 }
 
+// ── 핸들(손잡이) 방향 ──────────────────────────────────────────────────
+// 유로가 있고 손잡이·레버·다이얼이 달린 부속만 관 축 둘레로 돌린다.
+// (엘보·티·레듀샤는 두 다리 방향이 곧 자세라 돌릴 손잡이가 없다)
+export const HANDLE_TYPES = new Set(['valve', 'bfly', 'yvalve', 'ball', 'check', 'flow']);
+
+// 핸들 방향(도) — 배관(유로)은 그대로 두고 스템·핸드휠·레버·Y자 넷만 관 축 둘레로 돈 각도.
+export function handleRotOf(spec) {
+  const v = num(spec && spec.roll, 0);
+  return Math.round(((v % 360) + 360) % 360);
+}
+
+// 회전행렬(행 우선 3×3, 열 = 로컬 X·Y·Z가 향하는 월드 방향)을 관 축 둘레로 돌린다.
+//  · 로컬 +X(유로 축)는 그대로 — 플랜지·몸체가 배관에 맞물린 자리가 흔들리지 않는다.
+//  · 1열(로컬 X)은 두고 2·3열을 X 둘레로 각도만큼 섞는다 (M·RotX).
+// builders.js(Three.js 회전)와 fusion.js(rmat 내보내기)가 같은 결과를 쓰도록 한 곳에 둔다.
+export function rollBasis(b, deg) {
+  const th = (Number(deg) || 0) * Math.PI / 180;
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  if (!th) return b.map(round6);
+  const c = Math.cos(th);
+  const s = Math.sin(th);
+  const out = b.slice();
+  for (let r = 0; r < 3; r += 1) {
+    const y = b[r * 3 + 1];
+    const z = b[r * 3 + 2];
+    out[r * 3 + 1] = c * y + s * z;
+    out[r * 3 + 2] = -s * y + c * z;
+  }
+  return out.map(round6);
+}
+
 let seq = 0;
 export function uid(prefix) {
   seq += 1;
@@ -415,6 +470,11 @@ export function makeEquipment(type, opts) {
     conn: o.conn === 'forged' ? 'forged' : 'flange',
   };
   if (bore) spec.bore = bore;
+  // 플랜지 — 외경은 기본 치수가 아니라 KS 10K 표(관경별)로 잡는다.
+  if (type === 'flange' && bore) {
+    spec.h = round3(flangeOd(bore));
+    spec.d = round3(flangeOd(bore));
+  }
   // 노즐 — 열교환기·헤더·탱크(원형·사각)·펌프. o.nozzles가 있으면 그 값을,
   // 없으면 장비별 기본값(현장 설비처럼 보이는 값)을 그대로 적어 둔다.
   // 열교환기는 자유 노즐 목록(nozList)이 정본 — 위치·방향·개수·관경을 사용자가 직접 고른다.
@@ -428,6 +488,8 @@ export function makeEquipment(type, opts) {
   // (안전밸브는 원래 세로로 서는 부속이라 기본이 'y'다)
   if (AXIS_VALUES.has(o.axis)) spec.axis = o.axis;
   else if (t.vertical) spec.axis = 'y';
+  // 핸들 방향 — 배관(유로)은 그대로 두고 손잡이만 관 축 둘레로 돈 각도(0~359°).
+  if (HANDLE_TYPES.has(type) && num(o.roll, 0)) spec.roll = handleRotOf({ roll: o.roll });
   // 옆에서 니쁠로 달린 계기 — builders.js가 연결 니쁠을 그린다
   if (o.mount === 'side') spec.mount = 'side';
   // 계기 정면 방향(배관 외벽 바깥 단위벡터) — 다이얼이 이쪽을 보고 니쁠은 반대로 꽂힌다.
@@ -2066,9 +2128,16 @@ export function normalizeState(raw) {
       // 밸브·피팅이 달린 배관 관경 — 저장된 값을 살린다.
       // (예전 도면은 관경을 기억하지 않으므로 비워 두고, 아래에서 붙어 있는 배관을 보고 채운다)
       if (isBoreSized(type) && BORES[e.bore]) item.bore = e.bore;
+      // 플랜지 — 접시 외경은 KS 10K 표를 따른다(예전 도면의 0.26 고정 크기를 바로잡는다).
+      if (type === 'flange' && BORES[item.bore]) {
+        item.h = Math.round(flangeOd(item.bore) * 1000) / 1000;
+        item.d = item.h;
+      }
       // 세워 놓은 방향(axis: 'y')도 그대로 살린다.
       if (AXIS_VALUES.has(e.axis)) item.axis = e.axis;
       else if (t.vertical) item.axis = 'y';
+      // 핸들 방향도 저장한다 — 다시 열어도 손잡이가 돌아간 자리를 유지한다.
+      if (HANDLE_TYPES.has(type) && num(e.roll, 0)) item.roll = handleRotOf(e);
       if (e.mount === 'side') item.mount = 'side';
       // 계기 정면 방향(배관 외벽 바깥)도 살린다 — 열이 열리면 니쁠이 다시 빗나간다.
       if (type === 'gauge' && Array.isArray(e.normal) && e.normal.length === 3
