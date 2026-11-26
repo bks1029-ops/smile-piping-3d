@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=72';
-import { buildScene } from './builders.js?v=72';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=72';
-import { buildOBJ } from './obj.js?v=72';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=72';
-import { parseCommand, CMD_HELP } from './cmd.js?v=72';
-import { buildDimItems } from './dims.js?v=72';
-import { buildAiImageParts } from './zoom.js?v=72';
+} from './store.js?v=73';
+import { buildScene } from './builders.js?v=73';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=73';
+import { buildOBJ } from './obj.js?v=73';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=73';
+import { parseCommand, CMD_HELP } from './cmd.js?v=73';
+import { buildDimItems } from './dims.js?v=73';
+import { buildAiImageParts } from './zoom.js?v=73';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -142,6 +142,11 @@ class App {
     this.moveStep = 500;
     this.moveDrag = false;
     this.moveDragState = null;
+    // ☑️ 여러 개 선택 (v73) — 주 선택(this.selection)에 함께 고른 것들을 더해 같이 옮긴다.
+    this.multiSel = [];
+    this.multiMode = false;
+    this.helpers = [];   // 고른 것마다 하나씩 두는 주황 상자(BoxHelper)
+    this.lastMove = null; // 마지막 이동 안내 — "50mm · X +0.05m" 같은 한 줄
     // 📋 복사한 장비·배관 (v72) — [📌 붙여넣기]가 이 사양으로 옆에 하나 더 세운다.
     this.clipboard = null;
     this.padOpen = false;
@@ -1668,21 +1673,37 @@ class App {
   }
 
   refreshHighlight() {
-    if (this.helper) {
-      this.scene.remove(this.helper);
-      this.helper.geometry.dispose();
-      this.helper.material.dispose();
-      this.helper = null;
-    }
+    // 고른 것마다 주황 상자 하나 — 여러 개를 골랐으면 모두 표시된다(v73).
+    const vp = $('#viewport');
+    if (vp) vp.classList.toggle('multi-select', !!this.multiMode);
+    (this.helpers || []).forEach((h) => {
+      this.scene.remove(h);
+      h.geometry.dispose();
+      h.material.dispose();
+    });
+    this.helpers = [];
+    this.helper = null;
     if (!this.selection) return;
-    const obj = this.findObject(this.selection);
-    if (!obj) { this.selection = null; return; }
-    this.helper = new THREE.BoxHelper(obj, 0xf5a623);
-    this.helper.material.depthTest = false;
-    this.helper.material.transparent = true;
-    this.helper.material.opacity = 0.95;
-    this.helper.renderOrder = 999;
-    this.scene.add(this.helper);
+    const sels = this.selectionList();
+    let lost = false;
+    sels.forEach((sel) => {
+      const obj = this.findObject(sel);
+      if (!obj) {
+        if (this.selection && sel.kind === this.selection.kind && sel.id === this.selection.id) lost = true;
+        return;
+      }
+      const box = new THREE.BoxHelper(obj, 0xf5a623);
+      box.material.depthTest = false;
+      box.material.transparent = true;
+      box.material.opacity = 0.95;
+      box.renderOrder = 999;
+      this.scene.add(box);
+      this.helpers.push(box);
+      if (!this.helper) this.helper = box;
+    });
+    if (lost) { this.selection = null; this.multiSel = []; this.multiMode = false; }
+    // 지워진 것이 함께 선택에 남아 있으면 정리한다.
+    this.multiSel = (this.multiSel || []).filter((s) => !!this.specOf(s));
   }
 
   findObject(sel) {
@@ -1701,8 +1722,154 @@ class App {
     return list.find((s) => s.id === this.selection.id) || null;
   }
 
+  // ── 여러 개 선택 (v73) ──────────────────────────────────────────────────
+  // 주 선택(this.selection) + 함께 고른 것(this.multiSel)을 한 목록으로 다룬다.
+  // 목록의 첫째가 속성 창에 열리는 '주 선택'이고, 나머지는 함께 움직이는 것들이다.
+  selectionList() {
+    const out = [];
+    const seen = new Set();
+    const push = (sel) => {
+      if (!sel) return;
+      const k = `${sel.kind}:${sel.id}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(sel);
+    };
+    push(this.selection);
+    (this.multiSel || []).forEach(push);
+    return out;
+  }
+
+  specOf(sel) {
+    if (!sel) return null;
+    const list = sel.kind === 'pipe' ? this.state.pipes : this.state.equipment;
+    return list.find((s) => s.id === sel.id) || null;
+  }
+
+  // 지금 고른 것들의 {{ sel, spec }} — 이미 지워진 것은 조용히 뺀다.
+  selectedSpecs() {
+    return this.selectionList()
+      .map((sel) => {
+        const spec = this.specOf(sel);
+        return spec ? { sel, spec } : null;
+      })
+      .filter(Boolean);
+  }
+
+  // 3D에서 톡 누를 때마다 그 자리를 선택에 더하거나 뺀다 (☑️ 여러 개 선택이 켜져 있을 때).
+  toggleMulti(kind, id) {
+    const key = `${kind}:${id}`;
+    const extraIdx = (this.multiSel || []).findIndex((s) => `${s.kind}:${s.id}` === key);
+    if (this.selection && `${this.selection.kind}:${this.selection.id}` === key) {
+      // 주 선택을 다시 누르면 뺀다 — 남은 것 중 첫째가 새 주 선택이 된다.
+      if (!this.multiSel.length) {
+        this.multiMode = false;
+        this.clearSelection();
+        return;
+      }
+      this.selection = this.multiSel.shift();
+    } else if (extraIdx >= 0) {
+      this.multiSel.splice(extraIdx, 1);
+    } else if (!this.selection) {
+      this.selection = { kind, id };
+      this.multiMode = true;
+    } else {
+      this.multiSel.push({ kind, id });
+    }
+    this.multiMode = this.selectionList().length > 1;
+    this.refreshHighlight();
+    this.renderProps();
+    this.renderLists();
+    const n = this.selectionList().length;
+    const last = this.multiSel.length ? this.multiSel[this.multiSel.length - 1] : this.selection;
+    const spec = this.specOf(last);
+    this.toast(n > 1
+      ? `☑️ ${n}개 선택${spec ? ' · ' + spec.name : ''} — 3D에서 톡톡 누르면 늘고 줄어듭니다`
+      : `하나만 선택됨${spec ? ' · ' + spec.name : ''}`);
+  }
+
+  // 🔗 연결된 것 모두 — 고른 것에 접합면·노즐 끝·배관 끝(또는 배관 몸통)이 닿아 있는 것들을 줄줄이 함께 고른다.
+  // 펌프에 붙은 밸브 + 배관 + 엘보 한 줄, 헤더 위에 인라인으로 앉은 밸브까지 한 번에 잡는다.
+  linkAllConnected() {
+    const seeds = this.selectedSpecs();
+    if (!seeds.length) { this.toast('먼저 하나 고르세요.', { type: 'err' }); return; }
+    const TOL = 0.2;   // 접합면 0mm가 이상적이지만, 손으로 그린 배관은 몇 cm 틈이 있다
+    // 접합점(장비는 노즐·접합면 끝 + 몸통 중심, 배관은 모든 점)과 배관 몸통 선분
+    const node = (spec) => {
+      if (Array.isArray(spec.points)) {
+        const pts = spec.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+        const segs = [];
+        for (let i = 1; i < pts.length; i += 1) segs.push([pts[i - 1], pts[i]]);
+        return { pts, segs };
+      }
+      const pts = [];
+      equipPorts(spec).forEach((n) => pts.push({ x: n.tip.x, y: n.tip.y, z: n.tip.z }));
+      equipConnectFaces(spec).forEach((f) => pts.push({ x: f.tip.x, y: f.tip.y, z: f.tip.z }));
+      pts.push({ x: Number(spec.x) || 0, y: Number(spec.y) || 0, z: Number(spec.z) || 0 });
+      return { pts, segs: [] };
+    };
+    const segDist = (a, b, p) => {
+      const vx = b.x - a.x;
+      const vy = b.y - a.y;
+      const vz = b.z - a.z;
+      const L2 = vx * vx + vy * vy + vz * vz;
+      let t = L2 ? ((p.x - a.x) * vx + (p.y - a.y) * vy + (p.z - a.z) * vz) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(p.x - (a.x + vx * t), p.y - (a.y + vy * t), p.z - (a.z + vz * t));
+    };
+    // 두 대상이 붙어 있는가 — 점↔점, 점↔선분(둘 다 방향)
+    const touch = (A, B) => {
+      for (const a of A.pts) {
+        for (const b of B.pts) if (Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) <= TOL) return true;
+        for (const [s0, s1] of B.segs) if (segDist(s0, s1, a) <= TOL) return true;
+      }
+      for (const b of B.pts) {
+        for (const [s0, s1] of A.segs) if (segDist(s0, s1, b) <= TOL) return true;
+      }
+      return false;
+    };
+    const all = [
+      ...this.state.equipment.map((s) => ({ kind: 'equipment', spec: s, node: node(s) })),
+      ...this.state.pipes.map((s) => ({ kind: 'pipe', spec: s, node: node(s) })),
+    ];
+    const chosen = new Set(seeds.map(({ sel }) => `${sel.kind}:${sel.id}`));
+    const LIMIT = 80;
+    let grew = true;
+    while (grew && chosen.size < LIMIT) {
+      grew = false;
+      const front = all.filter((x) => chosen.has(`${x.kind}:${x.spec.id}`));
+      all.forEach((cand) => {
+        const k = `${cand.kind}:${cand.spec.id}`;
+        if (chosen.has(k) || chosen.size >= LIMIT) return;
+        if (front.some((f) => touch(f.node, cand.node))) {
+          chosen.add(k);
+          grew = true;
+        }
+      });
+    }
+    const first = this.selection;
+    const firstKey = first ? `${first.kind}:${first.id}` : null;
+    this.multiSel = [...chosen]
+      .filter((k) => k !== firstKey)
+      .map((k) => {
+        const cut = k.indexOf(':');
+        return { kind: k.slice(0, cut), id: k.slice(cut + 1) };
+      })
+      .filter((s) => this.specOf(s));
+    this.multiMode = this.selectionList().length > 1;
+    this.refreshHighlight();
+    this.renderProps();
+    this.renderLists();
+    const n = this.selectionList().length;
+    this.toast(n > 1
+      ? `🔗 연결된 것 ${n}개를 함께 골랐습니다 — [↔️ 같이 이동]으로 통째로 옮기세요`
+      : '이어진 것이 더 없습니다 — 고른 것 하나만 선택돼 있습니다');
+  }
+
   select(kind, id) {
     this.selection = { kind, id };
+    this.multiSel = [];
+    this.multiMode = false;
     // 속성 창이 열리면 명령창 키보드는 내린다 — 모바일에서 키보드가 3D 시야를 가리지 않게.
     this.blurCmdInput();
     this.refreshHighlight();
@@ -1719,10 +1886,16 @@ class App {
 
   clearSelection() {
     this.selection = null;
+    this.multiSel = [];
+    this.multiMode = false;
     this.focusKey = null;
     this.moveDrag = false;
     this.moveDragState = null;
-    if (this.renderer) this.renderer.domElement.classList.remove('move-drag');
+    if (this.renderer) {
+      this.renderer.domElement.classList.remove('move-drag');
+      const vp = $('#viewport');
+      if (vp) vp.classList.remove('move-drag');
+    }
     this.refreshHighlight();
     this.renderProps();
     this.renderLists();
@@ -1968,6 +2141,10 @@ class App {
       if (!TANK_NOZ_TYPES.has(e.type)) return;
       const fit = tankWallFit(e, p, TANK_FIT_DIST);
       if (!fit) return;
+      // v73 — 윗면·바닥면은 높이만 가까우면 탱크에서 멀리 떨어진 자리도 '맞음'이 됐다.
+      // (헤더 배관을 50mm 옮겼더니 1.2m 떨어진 드럼 위로 끝점이 튀어 버림) 실제로 그 탱크
+      // 몸체 앞·열(0.4m)일 때만 맞춘다.
+      if (!this.tankNearPoint(e, p, fit)) return;
       const dot = dir.x * fit.axis.x + dir.y * fit.axis.y + dir.z * fit.axis.z;
       // 노즐 축은 탱크 바깥을 향한다 — 배관은 그 반대로(벽을 향해) 들어와야 한다.
       if (dot > -TANK_FIT_DOT) return;
@@ -2029,6 +2206,22 @@ class App {
         ? `📍 ${hyd} ${faceL} 노즐을 배관 높이(${fmt(live.tip.y)}m)에 맞췄어요`
         : `📍 ${hyd} ${faceL}에 새 노즐(${n.bore})을 뽑아 배관 높이(${fmt(live.tip.y)}m)에 맞췄어요`,
     };
+  }
+
+  // 탱크 벽면 맞춤의 전제 — 그 탱크 몸체 가로 위치가 점에서 0.4m 안인가.
+  // (tankWallFit의 윗면·바닥면은 가로 거리를 안 따져서 멀리서도 맞음이 될 수 있다)
+  tankNearPoint(tank, p, fit) {
+    const f = fit || tankWallFit(tank, p, TANK_FIT_DIST);
+    if (!f || !f.local) return false;
+    let G;
+    try { G = tankDims(tank); } catch (err) { return true; }
+    if (!G) return true;
+    const lx = f.local.x;
+    const lz = f.local.z;
+    const hd = G.box
+      ? Math.hypot(Math.max(0, Math.abs(lx) - G.halfX), Math.max(0, Math.abs(lz) - G.halfZ))
+      : Math.max(0, Math.hypot(lx, lz) - G.R);
+    return hd <= 0.4;
   }
 
   // ── 정렬 안내선 (이동할 때 나란히 맞추기) ───────────────────────────────
@@ -2189,42 +2382,73 @@ class App {
     else off();
   }
 
-  // ── 선택한 장비·부속 위치 이동 ─────────────────────────────────────────
-  // 방향 버튼(←/→/앞/뒤/↑/↓)으로 단위(100·500·1000mm)만큼 옮기고,
+  // ── 선택한 것 위치 이동 (v73) ───────────────────────────────────────────
+  // 방향 버튼(←/→/앞/뒤/↑/↓)으로 단위(10·50·100·500·1000mm)만큼 옮긴다.
+  //  · 배관도 옮긴다 — 모든 점(points)을 같은 Δ만큼 통째로.
+  //  · 여러 개를 골랐으면(☑️) 고른 것 전부에 똑같은 Δ(dx, dy, dz)를 준다.
   // '드래그 이동'을 켜면 3D 바닥에서 손가락으로 끌어 옮긴다. 실행취소(↩) 한 번이면 되돌아온다.
   moveSelectedStep(axis, sign, meters) {
-    const spec = this.getSelectedSpec();
-    if (!spec || Array.isArray(spec.points)) return;
-    this.pushUndo('위치 이동');
-    this.offsetSelected(axis, sign, meters);
-    // 150mm 안에 다른 장비가 있으면 그 축에 딱 맞춘다(나란히 놓기).
-    const snap = this.alignSnapFor(spec, spec.x, spec.z);
-    const snapped = (axis === 'x' && snap.hitX) || (axis === 'z' && snap.hitZ);
-    if (axis !== 'y' && snapped) {
-      spec.x = snap.x;
-      spec.z = snap.z;
-    }
-    this.rebuild();
-    if (axis !== 'y') this.showAlignGuides(spec.x, spec.z, snap);
-    this.hideAlignGuides(snapped ? 1400 : 600);
-    this.toast(snapped
-      ? `정렬됨 · (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`
-      : `위치 이동 · ${axis} ${sign > 0 ? '+' : '-'}${Math.round(meters * 1000)}mm → (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`);
-  }
-
-  // 이동 본체 — 커서가 그 장비에 붙어 있었으면 커서도 같이 따라간다(노즐 좌표는 spec에서 다시 계산된다).
-  offsetSelected(axis, sign, meters) {
-    const spec = this.getSelectedSpec();
-    if (!spec) return;
+    const items = this.selectedSpecs();
+    if (!items.length) return;
+    const multi = items.length > 1;
+    this.pushUndo(multi ? `${items.length}개 같이 이동` : '위치 이동');
     const dx = axis === 'x' ? sign * meters : 0;
     const dy = axis === 'y' ? sign * meters : 0;
     const dz = axis === 'z' ? sign * meters : 0;
-    const oldTips = equipPorts(spec).map((n) => ({ ...n.tip }));
-    const nearNoz = oldTips.some((t) => Math.hypot(t.x - this.cmdCursor.x, t.y - this.cmdCursor.y, t.z - this.cmdCursor.z) < 0.02);
-    spec.x = r3((spec.x || 0) + dx);
-    spec.y = Math.max(0, r3((spec.y || 0) + dy));
-    spec.z = r3((spec.z || 0) + dz);
-    if (nearNoz) {
+    this.applyMoveDelta(items, dx, dy, dz);
+    const spec = items[0].spec;
+    let snapped = false;
+    // 하나만 고른 장비·부속이면 150mm 안의 다른 장비에 그 축을 맞춘다(나란히 놓기).
+    if (!multi && !Array.isArray(spec.points)) {
+      const snap = this.alignSnapFor(spec, spec.x, spec.z);
+      snapped = (axis === 'x' && snap.hitX) || (axis === 'z' && snap.hitZ);
+      if (axis !== 'y' && snapped) { spec.x = snap.x; spec.z = snap.z; }
+      if (axis !== 'y') this.showAlignGuides(spec.x, spec.z, snap);
+      this.hideAlignGuides(snapped ? 1400 : 600);
+    } else {
+      this.hideAlignGuides(0);
+    }
+    // 옮긴 배관 끝이 탱크 벽면 가까이 오면 그 자리에 노즐을 맞춘다 (v72 기능 유지).
+    const fits = this.autoFitMovedPipes(items);
+    this.rebuild();
+    const n = Math.round(meters * 1000);
+    const dTxt = `${axis === 'x' ? 'X' : axis === 'z' ? 'Z' : '높이'} ${sign > 0 ? '+' : '-'}${n}mm`;
+    this.lastMove = `${n}mm · ${dTxt}`;
+    let where = '';
+    if (!Array.isArray(spec.points)) where = ` → (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`;
+    else if (spec.points.length) {
+      const a = spec.points[0];
+      const b = spec.points[spec.points.length - 1];
+      where = ` → (${fmt(a.x)}, ${fmt(a.y)}, ${fmt(a.z)})~(${fmt(b.x)}, ${fmt(b.y)}, ${fmt(b.z)})m`;
+    }
+    if (fits.length) { this.toast(fits[0], { type: 'ok' }); return; }
+    this.toast(snapped
+      ? `정렬됨 · (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`
+      : `${multi ? `${items.length}개 같이 이동` : '위치 이동'} · ${dTxt}${where}`);
+  }
+
+  // 이동 본체 — 고른 것 전부에 같은 Δ를 준다. 배관은 점 전체를, 장비는 중심을 옮긴다.
+  // 커서가 그 장비 노즐에 붙어 있었으면 커서도 같이 따라간다(노즐 좌표는 spec에서 다시 계산된다).
+  applyMoveDelta(items, dx, dy, dz) {
+    if (!dx && !dy && !dz) return;
+    let cursorMoved = false;
+    items.forEach(({ spec }) => {
+      if (Array.isArray(spec.points)) {
+        spec.points.forEach((p) => {
+          p.x = r3(p.x + dx);
+          p.y = Math.max(0, r3(p.y + dy));
+          p.z = r3(p.z + dz);
+        });
+        return;
+      }
+      const oldTips = equipPorts(spec).map((n) => ({ ...n.tip }));
+      const nearNoz = oldTips.some((t) => Math.hypot(t.x - this.cmdCursor.x, t.y - this.cmdCursor.y, t.z - this.cmdCursor.z) < 0.02);
+      spec.x = r3((spec.x || 0) + dx);
+      spec.y = Math.max(0, r3((spec.y || 0) + dy));
+      spec.z = r3((spec.z || 0) + dz);
+      if (nearNoz) cursorMoved = true;
+    });
+    if (cursorMoved) {
       this.setCmdCursor({
         x: this.cmdCursor.x + dx,
         y: Math.max(0, this.cmdCursor.y + dy),
@@ -2233,18 +2457,39 @@ class App {
     }
   }
 
+  // 옮긴 배관의 양 끝이 탱크 벽면 가까이 오면 그 자리에 노즐을 맞춘다 (v72).
+  autoFitMovedPipes(items) {
+    const texts = [];
+    items.forEach(({ spec }) => {
+      if (!Array.isArray(spec.points) || spec.points.length < 2) return;
+      [0, spec.points.length - 1].forEach((i) => {
+        const fit = this.autoFitTankNozzle(spec, i);
+        if (fit && fit.text) texts.push(fit.text);
+      });
+    });
+    return texts;
+  }
+
   // 드래그 이동 시작/진행/끝 — 손가락이 바닥(수평면 y=0)을 가리키는 점을 따라간다.
+  // 고른 것이 여러 개면 전부 같은 Δ(dx, 0, dz)만큼 함께 움직이고, 배관도 점 전체가 따라온다.
   moveDragStart(ev) {
-    const spec = this.getSelectedSpec();
-    if (!spec || Array.isArray(spec.points)) return false;
+    const items = this.selectedSpecs();
+    if (!items.length) return false;
     const p = this.groundPointAt(ev);
     if (!p) return false;
     this.moveDragState = {
       id: ev.pointerId,
       grab: p,
-      x0: spec.x, z0: spec.z,
       moved: false,
-      group: this.findObject(this.selection),
+      single: items.length === 1 ? items[0].spec : null,
+      items: items.map(({ sel, spec }) => ({
+        sel,
+        spec,
+        x0: Array.isArray(spec.points) ? null : Number(spec.x) || 0,
+        z0: Array.isArray(spec.points) ? null : Number(spec.z) || 0,
+        pts: Array.isArray(spec.points) ? spec.points.map((q) => ({ ...q })) : null,
+        group: this.findObject(sel),
+      })),
     };
     this.controls.enabled = false;
     return true;
@@ -2263,37 +2508,63 @@ class App {
     if (!st || (st.id != null && ev.pointerId !== st.id)) return;
     const p = this.groundPointAt(ev);
     if (!p) return;
-    const spec = this.getSelectedSpec();
-    if (!spec) return;
-    let nx = r3(st.x0 + (p.x - st.grab.x));
-    let nz = r3(st.z0 + (p.z - st.grab.z));
-    if (!st.moved && Math.hypot(nx - st.x0, nz - st.z0) > 0.01) {
+    const rawDx = p.x - st.grab.x;
+    const rawDz = p.z - st.grab.z;
+    if (!st.moved && Math.hypot(rawDx, rawDz) > 0.01) {
       st.moved = true;
-      this.pushUndo('드래그 이동');
+      this.pushUndo(st.items.length > 1 ? `${st.items.length}개 같이 드래그 이동` : '드래그 이동');
     }
     if (!st.moved) return;
-    // 먼저 접합면 자석 — 근처(0.25m) 접합면이 있으면 그 자리에 0mm로 붙인다.
-    const ps = this.portSnapFor(spec, nx, spec.y, nz);
-    if (ps) {
-      st.portSnap = ps;
-      spec.x = ps.x;
-      spec.y = ps.y;
-      spec.z = ps.z;
-      if (st.group) st.group.position.set(spec.x, spec.y, spec.z);
+    const spec = st.single;
+    if (spec && !Array.isArray(spec.points)) {
+      // 하나만 고른 장비·부속 — 기존처럼 접합면 자석 → 축 정렬.
+      let nx = r3(st.items[0].x0 + rawDx);
+      let nz = r3(st.items[0].z0 + rawDz);
+      // 먼저 접합면 자석 — 근처(0.25m) 접합면이 있으면 그 자리에 0mm로 붙인다.
+      const ps = this.portSnapFor(spec, nx, spec.y, nz);
+      if (ps) {
+        st.portSnap = ps;
+        spec.x = ps.x;
+        spec.y = ps.y;
+        spec.z = ps.z;
+        if (st.items[0].group) st.items[0].group.position.set(spec.x, spec.y, spec.z);
+        this.refreshHighlight();
+        this.updateDims();
+        return;
+      }
+      st.portSnap = null;
+      // 다른 장비와 150mm 안이면 X·Z 축에 딱 붙인다 — 나란히 정렬.
+      const snap = this.alignSnapFor(spec, nx, nz);
+      nx = snap.x;
+      nz = snap.z;
+      spec.x = nx;
+      spec.z = nz;
+      this.showAlignGuides(nx, nz, snap);
+      // 가볍게 따라오게 — 무리한 전체 재구성 없이 그 그룹만 옮긴다.
+      if (st.items[0].group) st.items[0].group.position.set(spec.x, spec.y, spec.z);
       this.refreshHighlight();
       this.updateDims();
       return;
     }
+    // 배관 · 여러 개 — 고른 것 전부에 같은 Δ(모양은 그대로, 자리만).
     st.portSnap = null;
-    // 다른 장비와 150mm 안이면 X·Z 축에 딱 붙인다 — 나란히 정렬.
-    const snap = this.alignSnapFor(spec, nx, nz);
-    nx = snap.x;
-    nz = snap.z;
-    spec.x = nx;
-    spec.z = nz;
-    this.showAlignGuides(nx, nz, snap);
-    // 가볍게 따라오게 — 무리한 전체 재구성 없이 그 그룹만 옮긴다.
-    if (st.group) st.group.position.set(spec.x, spec.y, spec.z);
+    this.hideAlignGuides(0);
+    st.items.forEach((it) => {
+      if (it.pts) {
+        it.spec.points.forEach((q, i) => {
+          const o = it.pts[i] || q;
+          q.x = r3(o.x + rawDx);
+          q.y = o.y;
+          q.z = r3(o.z + rawDz);
+        });
+        // 배관 점은 월드 좌표라, 그룹을 같은 Δ만큼만 밀어 화면이 따라오게 한다.
+        if (it.group) it.group.position.set(rawDx, 0, rawDz);
+        return;
+      }
+      it.spec.x = r3(it.x0 + rawDx);
+      it.spec.z = r3(it.z0 + rawDz);
+      if (it.group) it.group.position.set(it.spec.x, it.spec.y, it.spec.z);
+    });
     this.refreshHighlight();
     this.updateDims();
   }
@@ -2305,15 +2576,24 @@ class App {
     this.controls.enabled = true;
     this.hideAlignGuides(1200);
     if (!st.moved) return;
+    const fits = this.autoFitMovedPipes(st.items.map((it) => ({ spec: it.spec })));
     this.rebuild();
     const spec = this.getSelectedSpec();
+    if (fits.length) {
+      this.toast(fits[0], { action: '되돌리기', onAction: () => this.undo() });
+      return;
+    }
     if (st.portSnap && spec) {
       this.toast(`접합면에 붙였습니다 · (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`, {
         action: '되돌리기', onAction: () => this.undo(),
       });
       return;
     }
-    if (spec) this.toast(`위치 이동 → (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`, {
+    const n = st.items.length;
+    const one = spec && !Array.isArray(spec.points)
+      ? `(${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m` : '';
+    this.lastMove = n > 1 ? `${n}개 같이 드래그 이동` : '드래그 이동';
+    this.toast(n > 1 ? `${n}개 같이 이동 완료${one ? ' · ' + one : ''}` : `위치 이동${one ? ' → ' + one : ''}`, {
       action: '되돌리기', onAction: () => this.undo(),
     });
   }
@@ -2457,6 +2737,8 @@ class App {
   selectNozzle(id, n) {
     if (!n) return;
     this.selection = { kind: 'equipment', id };
+    this.multiSel = [];
+    this.multiMode = false;
     this.refreshHighlight();
     this.renderProps();
     this.renderLists();
@@ -2555,9 +2837,20 @@ class App {
     if (wasHidden) this.guardPropsFromGhostTap();
     const body = $('#propBody');
 
+    // ☑️ 여러 개를 골랐으면 — 고른 것 목록 + 한 번에 이동·복사·삭제 (v73)
+    if (this.selectionList().length > 1) {
+      const n = this.selectionList().length;
+      $('#propBadge').textContent = `함께 선택 ${n}`;
+      body.innerHTML = this.multiPropsHtml();
+      this.fitPanelsToView();
+      this.focusSelectedInView();
+      return;
+    }
+
     if (spec.kind === 'equipment' || this.state.equipment.includes(spec)) {
       $('#propBadge').textContent = EQUIP_TYPES[spec.type].label;
       body.innerHTML = `
+        ${this.selToolsRow()}
         ${this.rot3Field(spec)}
         <label class="field">이름<input type="text" data-f="name" value="${esc(spec.name)}"></label>
         ${this.boreFields(spec)}
@@ -2593,21 +2886,7 @@ class App {
           <label class="field">높이<input type="number" step="${sizeStep(spec)}" min="${sizeMin(spec)}" data-f="h" value="${fmtSize(spec.h)}"></label>
           <label class="field">폭<input type="number" step="${sizeStep(spec)}" min="${sizeMin(spec)}" data-f="d" value="${fmtSize(spec.d)}"></label>
         </div>
-        <div class="prop-section">위치 이동</div>
-        <div class="noz-presets move-pad">
-          <button class="noz-chip" data-act="mv" data-axis="x" data-sign="-1" title="왼쪽으로">←</button>
-          <button class="noz-chip" data-act="mv" data-axis="x" data-sign="1" title="오른쪽으로">→</button>
-          <button class="noz-chip" data-act="mv" data-axis="z" data-sign="1" title="앞으로">앞</button>
-          <button class="noz-chip" data-act="mv" data-axis="z" data-sign="-1" title="뒤로">뒤</button>
-          <button class="noz-chip" data-act="mv" data-axis="y" data-sign="1" title="위로">↑</button>
-          <button class="noz-chip" data-act="mv" data-axis="y" data-sign="-1" title="아래로">↓</button>
-        </div>
-        <div class="noz-presets">
-          ${[100, 500, 1000].map((mm) => `<button class="noz-chip${(this.moveStep || 500) === mm ? ' on' : ''}"
-            data-act="mvstep" data-mm="${mm}">${mm}mm</button>`).join('')}
-          <button class="noz-chip${this.moveDrag ? ' on' : ''}" data-act="mvdrag"
-            title="켜면 3D 바닥을 손가락으로 끌어 옮깁니다">✋ 드래그 이동</button>
-        </div>
+        ${this.movePanelHtml()}
         <div class="prop-section">회전 · 색상</div>
         <div class="field-row">
           <label class="field">회전(°)<input type="number" step="15" data-f="rot" value="${fmt(spec.rot)}"></label>
@@ -2632,6 +2911,7 @@ class App {
           <button class="del" data-act="rmpt" data-i="${i}" title="점 삭제">✕</button>
         </div>`).join('');
       body.innerHTML = `
+        ${this.selToolsRow()}
         <label class="field">이름<input type="text" data-f="name" value="${esc(spec.name)}"></label>
         <div class="field-row">
           <label class="field">구경<select data-f="bore">
@@ -2643,6 +2923,7 @@ class App {
         </div>
         ${this.connField(spec)}
         <div class="pipe-summary">길이 ${fmt(pipeLength(spec.points))} m · 점 ${spec.points.length}개</div>
+        ${this.movePanelHtml()}
         <div class="prop-section">포인트 (X / 높이 Y / Z)</div>
         <div class="pt-head"><span>#</span><span>X</span><span>Y</span><span>Z</span><span></span></div>
         <div class="pt-list">${rows}</div>
@@ -2659,6 +2940,124 @@ class App {
     this.fitPanelsToView();
     // 시트에 가리지 않게 고른 것을 남은 3D 영역 한가운데로 (v67 `31583`).
     this.focusSelectedInView();
+  }
+
+  // ☑️ 여러 개 선택 · 🔗 연결된 것 모두 — 속성 창 맨 위 한 줄 (v73)
+  selToolsRow() {
+    const n = this.selectionList().length;
+    return `
+        <div class="noz-presets sel-tools">
+          <button class="noz-chip${this.multiMode ? ' on' : ''}" data-act="multitoggle"
+            aria-pressed="${this.multiMode ? 'true' : 'false'}"
+            title="켜면 3D에서 다른 장비·부속·배관을 톡톡 눌러 함께 고릅니다">☑️ 여러 개 선택</button>
+          <button class="noz-chip" data-act="linkall"
+            title="고른 것에 이어져 있는 밸브·배관·엘보를 줄줄이 함께 고릅니다">🔗 연결된 것 모두</button>
+        </div>
+        ${this.multiMode ? `<p class="hint">켜짐 — 3D에서 다른 장비·부속·배관을 톡톡 누르면 함께 골라집니다(지금 ${n}개).</p>` : ''}`;
+  }
+
+  // ↔️ 위치 이동 — 장비·부속·배관이 모두 같은 패널을 쓴다.
+  // v73: 배관도 통째로 이동 + 보폭에 50mm 추가(10·50·100·500·1000mm).
+  movePanelHtml() {
+    const steps = [10, 50, 100, 500, 1000];
+    const cur = steps.includes(this.moveStep) ? this.moveStep : 500;
+    const n = this.selectionList().length;
+    const spec = this.getSelectedSpec();
+    const isPipe = !!(spec && Array.isArray(spec.points));
+    const lead = n > 1
+      ? `고른 ${n}개가 같은 거리만큼 함께 움직입니다`
+      : (isPipe ? '배관의 모든 점이 통째로 움직입니다' : '방향 버튼 한 번에 보폭만큼 움직입니다');
+    return `
+        <div class="prop-section">${n > 1 ? `↔️ 같이 이동 (${n}개)` : '↔️ 위치 이동'}</div>
+        <div class="noz-presets move-pad">
+          <button class="noz-chip" data-act="mv" data-axis="x" data-sign="-1" title="왼쪽으로">←</button>
+          <button class="noz-chip" data-act="mv" data-axis="x" data-sign="1" title="오른쪽으로">→</button>
+          <button class="noz-chip" data-act="mv" data-axis="z" data-sign="1" title="앞으로">앞</button>
+          <button class="noz-chip" data-act="mv" data-axis="z" data-sign="-1" title="뒤로">뒤</button>
+          <button class="noz-chip" data-act="mv" data-axis="y" data-sign="1" title="위로">↑</button>
+          <button class="noz-chip" data-act="mv" data-axis="y" data-sign="-1" title="아래로">↓</button>
+        </div>
+        <div class="noz-presets move-steps">
+          ${steps.map((mm) => `<button class="noz-chip${cur === mm ? ' on' : ''}"
+            data-act="mvstep" data-mm="${mm}">${mm}mm</button>`).join('')}
+          <button class="noz-chip${this.moveDrag ? ' on' : ''}" data-act="mvdrag"
+            title="켜면 3D 바닥을 손가락으로 끌어 옮깁니다">✋ 드래그 이동</button>
+        </div>
+        <p class="hint mv-readout">${lead} · 보폭 <b>${cur}mm</b>${this.lastMove ? ` · 지난 이동 ${this.lastMove}` : ''}</p>`;
+  }
+
+  // ☑️ 여러 개를 골랐을 때의 속성 창 — 고른 것 목록과 한 번에 이동·복사·삭제.
+  multiPropsHtml() {
+    const items = this.selectedSpecs();
+    const n = items.length;
+    const rows = items.map(({ sel, spec }, i) => {
+      const isPipe = Array.isArray(spec.points);
+      const type = isPipe
+        ? `배관 ${spec.bore}`
+        : (EQUIP_TYPES[spec.type] ? EQUIP_TYPES[spec.type].label : String(spec.type));
+      const col = isPipe
+        ? (MATERIALS[spec.material] || MATERIALS.carbon).color
+        : (spec.color || '#8a939c');
+      return `
+        <div class="sel-row">
+          <span class="idx">${i + 1}</span>
+          <span class="dot" style="background:${esc(col)}"></span>
+          <span class="nm">${esc(spec.name)}</span>
+          <span class="meta">${esc(type)}</span>
+          <button class="del only" data-act="selonly" data-kind="${sel.kind}" data-id="${esc(spec.id)}"
+            title="이것만 따로 고치기">고치기</button>
+          <button class="del" data-act="selremove" data-kind="${sel.kind}" data-id="${esc(spec.id)}"
+            title="선택에서 빼기">✕</button>
+        </div>`;
+    }).join('');
+    return `
+        ${this.selToolsRow()}
+        ${this.movePanelHtml()}
+        <div class="prop-section">고른 것 ${n}개</div>
+        <div class="sel-list">${rows}</div>
+        <div class="prop-actions">
+          <button class="btn small ghost" data-act="copyall">📋 ${n}개 복사</button>
+          <button class="btn small ghost" data-act="paste">📌 붙여넣기</button>
+        </div>
+        <div class="prop-actions">
+          <button class="btn small ghost" data-act="selclear">선택 비우기</button>
+          <button class="btn small danger" data-act="delall">🗑️ ${n}개 삭제</button>
+        </div>`;
+  }
+
+  // 선택 목록에서 하나 빼기 — 주 선택이 빠지면 나머지 첫째가 주 선택이 된다.
+  removeFromSelection(kind, id) {
+    const key = `${kind}:${id}`;
+    if (this.selection && `${this.selection.kind}:${this.selection.id}` === key) {
+      if (!this.multiSel.length) { this.clearSelection(); return; }
+      this.selection = this.multiSel.shift();
+    } else {
+      this.multiSel = this.multiSel.filter((s) => `${s.kind}:${s.id}` !== key);
+    }
+    this.multiMode = this.selectionList().length > 1;
+    this.refreshHighlight();
+    this.renderProps();
+    this.renderLists();
+  }
+
+  // 목록의 한 줄을 '이것만' 고치기 — 다중 선택을 풀고 그 하나만 연다.
+  selectOnly(kind, id) {
+    this.multiSel = [];
+    this.multiMode = false;
+    this.select(kind, id);
+  }
+
+  // 📋 여러 개 한꺼번에 복사 — 붙여넣으면 한 벌이 옆으로 그대로 선다.
+  copyAllSelected() {
+    const items = this.selectedSpecs();
+    if (!items.length) return;
+    this.clipboard = {
+      kind: 'group',
+      id: items[0].sel.id,
+      specs: items.map(({ sel, spec }) => ({ kind: sel.kind, spec: JSON.parse(JSON.stringify(spec)) })),
+    };
+    this.renderProps();
+    this.toast(`📋 ${items.length}개 복사됨 — [📌 붙여넣기]로 한 벌 더 놓으세요.`);
   }
 
   // 레듀샤·티는 1차/2차 관경을 속성 패널에서 바꿀 수 있다 (바꾸면 길이도 실제 관경에 맞춰 다시 잡는다).
@@ -3282,6 +3681,8 @@ class App {
     this.closeHandDim();   // 치수 창이 가리키던 구간이 사라질 수 있다
     this.state = normalizeState(JSON.parse(u.snap));
     this.selection = null;
+    this.multiSel = [];
+    this.multiMode = false;
     if (u.cur) {
       this.cmdBore = u.cur.bore;
       this.cmdMaterial = u.cur.material;
@@ -3522,17 +3923,24 @@ class App {
   }
 
   deleteSelected() {
-    const spec = this.getSelectedSpec();
-    if (!spec) return;
-    this.pushUndo('삭제: ' + spec.name);
-    if (this.selection.kind === 'pipe') {
-      this.state.pipes = this.state.pipes.filter((p) => p.id !== spec.id);
-    } else {
-      this.state.equipment = this.state.equipment.filter((e) => e.id !== spec.id);
-    }
+    const items = this.selectedSpecs();
+    if (!items.length) return;
+    const n = items.length;
+    this.pushUndo(n > 1 ? `${n}개 삭제` : '삭제: ' + items[0].spec.name);
+    const pipeIds = new Set();
+    const eqIds = new Set();
+    items.forEach(({ sel, spec }) => {
+      if (sel.kind === 'pipe' || Array.isArray(spec.points)) pipeIds.add(spec.id);
+      else eqIds.add(spec.id);
+    });
+    this.state.pipes = this.state.pipes.filter((p) => !pipeIds.has(p.id));
+    this.state.equipment = this.state.equipment.filter((e) => !eqIds.has(e.id));
     this.selection = null;
+    this.multiSel = [];
+    this.multiMode = false;
     this.rebuild();
-    this.toast(`삭제했습니다 · ${spec.name}`, { action: '되돌리기', onAction: () => this.undo() });
+    this.toast(n > 1 ? `${n}개를 삭제했습니다` : `삭제했습니다 · ${items[0].spec.name}`,
+      { action: '되돌리기', onAction: () => this.undo() });
   }
 
   duplicateSelected() {
@@ -3615,6 +4023,39 @@ class App {
       return;
     }
     const src = cb.spec;
+    // ☑️ 여러 개 한꺼번에 붙여넣기 — 고른 것 전부를 x로 1m 옆에 그대로 한 벌 더.
+    if (cb.kind === 'group' && Array.isArray(cb.specs)) {
+      this.pushUndo(`${cb.specs.length}개 붙여넣기`);
+      const dx = 1.0;
+      const made = [];
+      cb.specs.forEach((it) => {
+        const s = it.spec;
+        if (it.kind === 'pipe' || Array.isArray(s.points)) {
+          const pipe = makePipe({
+            name: this.nextCopyName(s.name),
+            bore: s.bore,
+            material: s.material,
+            conn: s.conn,
+            points: s.points.map((p) => ({ x: r3(p.x + dx), y: Math.max(0, p.y), z: p.z })),
+          });
+          this.state.pipes.push(pipe);
+          made.push({ kind: 'pipe', id: pipe.id });
+          return;
+        }
+        const copy = makeEquipment(s.type, {
+          ...s, id: undefined, x: r3((s.x || 0) + dx), name: this.nextCopyName(s.name),
+        });
+        if (copy.type === 'gauge') attachGaugeToPipe(this.state.pipes, copy);
+        this.state.equipment.push(copy);
+        made.push({ kind: 'equipment', id: copy.id });
+      });
+      this.selection = made[0] || null;
+      this.multiSel = made.slice(1);
+      this.multiMode = made.length > 1;
+      this.rebuild();
+      this.toast(`📌 ${made.length}개 붙여넣음 · 옆으로 1m`);
+      return;
+    }
     const spot = this.pasteSpot(src);
     this.pushUndo('붙여넣기');
     if (cb.kind === 'pipe' || Array.isArray(src.points)) {
@@ -5213,6 +5654,8 @@ class App {
     // 🔗 잇기 모드 — 탭한 접속구(티·노즐·배관 끝)까지 커서에서 바로 배관을 연결한다.
     // (속성 창이 열려 있어도 잇기 탭은 그대로 동작해야 한다)
     if (this.linkMode) { this.tryLinkAt(ev); return; }
+    // ☑️ 여러 개 선택 — 3D에서 톡톡 누를 때마다 선택에 더하고 빼며(속성 창은 닫지 않는다).
+    if (this.multiMode) { this.tapMulti(ev); return; }
     // 열려 있는 창(도구 서랍·속성 창)은 3D 도면을 톡 누르면 먼저 닫는다 — 도면이 가려지지 않게.
     if (this.closeCoveringPanel()) return;
     const ray = this.raycastAt(ev);
@@ -5255,6 +5698,29 @@ class App {
       this.toast(`새 시작점으로 커서를 옮겼습니다 · (${fmt(nx)}, ${fmt(this.cmdCursor.y)}, ${fmt(nz)})m`);
       return;
     }
+    this.clearSelection();
+  }
+
+  // ☑️ 여러 개 선택 중의 3D 탭 — 누른 것을 선택에 더하거나 빼고, 빈 바닥을 누르면 그만 고른다.
+  // 속성 창은 닫지 않는다(닫히면 개수를 확인하며 고를 수 없다).
+  tapMulti(ev) {
+    if (!this.root) return;
+    const ray = this.raycastAt(ev);
+    const hits = ray.intersectObjects(this.root.children, true);
+    for (const h of hits) {
+      let o = h.object;
+      while (o && o !== this.root) {
+        if (o.userData && o.userData.pick) {
+          this.toggleMulti(o.userData.pick.kind, o.userData.pick.id);
+          return;
+        }
+        o = o.parent;
+      }
+    }
+    // 작은 밸브·피팅은 정확한 광선이 빗나가기 쉬우므로 화면 32px 안 가장 가까운 것을 고른다.
+    const near = this.nearestPick(ev, 32);
+    if (near) { this.toggleMulti(near.kind, near.id); return; }
+    // 빈 바닥 — 다중 선택을 그만두고 속성 창을 닫는다.
     this.clearSelection();
   }
 
@@ -6142,17 +6608,55 @@ class App {
       const act = btn.dataset.act;
       const spec = this.getSelectedSpec();
       if (!spec) return;
+      if (act === 'multitoggle') {
+        this.multiMode = !this.multiMode;
+        if (!this.multiMode) this.multiSel = [];
+        // 고르는 동안에는 ✋ 드래그 이동을 잠시 꺼 둔다 — 켜 두면 3D 탭이 선택이 아니라
+        // 드래그 시작으로 잡혀 다른 것을 고를 수 없다(다 고른 뒤 다시 켜면 같이 끌 수 있다).
+        const draggedOff = this.multiMode && this.moveDrag;
+        if (draggedOff) {
+          this.moveDrag = false;
+          if (this.renderer) {
+            this.renderer.domElement.classList.remove('move-drag');
+            const vp = $('#viewport');
+            if (vp) vp.classList.remove('move-drag');
+          }
+        }
+        this.renderProps();
+        this.refreshHighlight();
+        this.toast(this.multiMode
+          ? `☑️ 여러 개 선택 켜짐${draggedOff ? ' (드래그 이동은 잠시 꺼 둠)' : ''} — 3D에서 다른 장비·부속·배관을 톡톡 누르면 함께 골라집니다.`
+          : '여러 개 선택을 껐습니다 — 하나씩 고릅니다.');
+        return;
+      }
+      if (act === 'linkall') { this.linkAllConnected(); return; }
+      if (act === 'selremove') { this.removeFromSelection(btn.dataset.kind, btn.dataset.id); return; }
+      if (act === 'selonly') { this.selectOnly(btn.dataset.kind, btn.dataset.id); return; }
+      if (act === 'selclear') { this.clearSelection(); return; }
+      if (act === 'copyall') { this.copyAllSelected(); return; }
+      if (act === 'delall') { this.deleteSelected(); return; }
       if (act === 'del') this.deleteSelected();
       else if (act === 'from') this.fromHere();
       else if (act === 'noz') this.nozContinue(btn.dataset.dir);
       else if (act === 'nozgo') this.nozContinue(btn.dataset.nid);
       else if (act === 'port') this.portContinue(btn.dataset.port);
       else if (act === 'mv') this.moveSelectedStep(btn.dataset.axis, Number(btn.dataset.sign), (this.moveStep || 500) / 1000);
-      else if (act === 'mvstep') { this.moveStep = Number(btn.dataset.mm) || 500; this.renderProps(); }
+      else if (act === 'mvstep') {
+        // 보폭 — 10·50·100·500·1000mm (v73에서 50mm 추가)
+        const mm = Number(btn.dataset.mm);
+        if (!mm) return;
+        this.moveStep = mm;
+        this.renderProps();
+        this.toast(`이동 보폭 ${mm}mm`);
+      }
       else if (act === 'mvdrag') {
         this.moveDrag = !this.moveDrag;
         this.renderProps();
-        if (this.renderer) this.renderer.domElement.classList.toggle('move-drag', !!this.moveDrag);
+        if (this.renderer) {
+          this.renderer.domElement.classList.toggle('move-drag', !!this.moveDrag);
+          const vp = $('#viewport');
+          if (vp) vp.classList.toggle('move-drag', !!this.moveDrag);
+        }
         this.toast(this.moveDrag
           ? '✋ 드래그 이동 — 3D 바닥을 끌어 선택한 것을 옮기세요. 다시 누르면 꺼집니다.'
           : '드래그 이동을 껐습니다 — 화면은 다시 회전·확대입니다.');
@@ -6516,6 +7020,8 @@ class App {
           <li><b>한 줄 명령</b> — 화면 아래 입력창에 <code>50a 오른쪽으로 1000 위로 1500</code>처럼 쓰고 <b>실행</b>을 누르면 mm 단위로 배관이 이어집니다. 부속·장비 이름(<code>플렌지</code>, <code>버터</code>, <code>엘보</code> 등)을 함께 쓰면 그 자리에 배치됩니다.</li>
           <li><b>✏️ 손 그리기</b> — 보기 바의 <b>✏️ 손 그리기</b>를 켜고 화면을 끌면, 끄는 방향에 가장 가까운 3D 축(+X/−X/+Y/−Y/+Z/−Z)으로 배관이 그려집니다. 길이는 100mm 단위로 반올림되고 미리보기에 표시됩니다. 방향이 꺾이면 엘보가 자동으로 들어가고, 손을 떼면 그 자리에서 다음 구간을 이어 그립니다(두 점을 톡톡 눌러도 됨). 두 손가락은 그대로 확대·이동입니다.</li>
           <li><b>치수 고치기</b> — 화면의 치수 라벨(<code>1000mm (50A)</code>)을 누르면 그 구간 길이를 mm 숫자로 정확히 고칠 수 있습니다. 뒤로 이어진 배관·장비도 함께 움직입니다.</li>
+          <li><b>↔️ 위치 이동</b> — 장비·부속·배관을 고르면 속성 패널에 방향 버툰(←/→/앞/뒤/↑/↓)과 보폭 <code>10 · 50 · 100 · 500 · 1000mm</code>가 있습니다. <b>배관도 모든 점이 통째로</b> 옮겨지고, <b>✋ 드래그 이동</b>을 켜면 3D 바닥을 끌어 옮깁니다(실행취소 한 번이면 되돌림).</li>
+          <li><b>☑️ 여러 개 선택</b> — 속성 패널 맨 위의 <b>☑️ 여러 개 선택</b>을 켜면 3D에서 다른 장비·부속·배관을 톡톡 누를 때마다 선택에 더하고 뻐며, <b>🔗 연결된 것 모두</b>로 이어진 밸브·배관 한 줄을 한 번에 잡습니다. 그러면 <b>↔️ 같이 이동</b> — 방향 버툰·보폭·드래그 어느 쪽이든 고른 것 전부가 같은 거리만큼 함께 움직입니다.</li>
           <li><b>내보내기</b> — [파일] 탭에서 JSON 저장·불러오기, <b>Fusion 360 .py</b>, <b>.obj</b>.</li>
         </ol>
         <p class="hint">작업은 이 브라우저에 자동 저장됩니다. 되돌리기는 오른쪽 위 알림의 “되돌리기” 또는 <code>Ctrl+Z</code>.</p>`,

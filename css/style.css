@@ -594,6 +594,31 @@ input[type="color"] {
 .noz-chip.ghost { color: var(--dim2); }
 .noz-chip.on { border-color: var(--accent); background: rgba(245, 166, 35, 0.18); color: var(--accent); font-weight: 700; }
 .move-pad .noz-chip { min-width: 40px; text-align: center; font-size: 12px; padding: 6px 6px; }
+/* ↔️ 보폭 — 10·50·100·500·1000mm 다섯 개가 모바일 390px에서도 한 줄에 들어간다 */
+.move-steps { gap: 4px; }
+.move-steps .noz-chip { flex: 1 1 0; min-width: 0; text-align: center; padding: 6px 2px; font-size: 10.5px; }
+.move-steps .noz-chip[data-act="mvdrag"] { flex: 1 1 100%; padding: 6px 6px; font-size: 11px; }
+.mv-readout { margin: -2px 0 2px; font-size: 10.5px; line-height: 1.45; }
+.mv-readout b { color: var(--accent); }
+/* ☑️ 여러 개 선택 — 고른 것 목록 */
+.sel-tools { margin-bottom: 6px; }
+.sel-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
+.sel-row {
+  display: grid; grid-template-columns: 16px 8px 1fr auto auto auto; gap: 5px; align-items: center;
+  border: 1px solid var(--line); border-radius: 8px; padding: 5px 6px;
+  background: rgba(245, 166, 35, 0.06);
+}
+.sel-row .idx { font-size: 9.5px; color: var(--dim2); text-align: center; }
+.sel-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+.sel-row .nm { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel-row .meta { font-size: 9.5px; color: var(--dim2); }
+.sel-row .del {
+  appearance: none; border: 0; background: transparent; color: var(--dim2);
+  cursor: pointer; font-size: 12px; padding: 2px 4px; border-radius: 5px;
+}
+.sel-row .del:hover, .sel-row .del:active { color: var(--danger); background: #2a1a19; }
+.sel-row .del.only { font-size: 9.5px; border: 1px solid var(--line); padding: 2px 5px; }
+.sel-row .del.only:hover, .sel-row .del.only:active { color: var(--accent); border-color: var(--accent); background: rgba(245, 166, 35, 0.12); }
 /* 열교환기 타입 선택 카드 */
 .hx-type-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .hx-type {
@@ -605,6 +630,11 @@ input[type="color"] {
 .hx-type span { font-size: 11px; color: var(--dim); line-height: 1.45; }
 canvas.move-drag { cursor: grab; touch-action: none; }
 canvas.move-drag:active { cursor: grabbing; }
+/* ☑️ 여러 개 선택·✋ 드래그 이동 중에는 치수 라벨이 손가락을 가로지지 않게 한다 —
+   라벨을 누르면 길이 고치기가 열려 다른 것을 고르려는 탭이 삼켜진다 (v73) */
+#viewport.multi-select .dim-label,
+#viewport.move-drag .dim-label { pointer-events: none; }
+#viewport.multi-select canvas { cursor: copy; }
 .noz-cards { display: flex; flex-direction: column; gap: 7px; }
 .noz-card {
   border: 1px solid var(--line); border-radius: 10px;
