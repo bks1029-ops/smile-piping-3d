@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=73';
-import { buildScene } from './builders.js?v=73';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=73';
-import { buildOBJ } from './obj.js?v=73';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=73';
-import { parseCommand, CMD_HELP } from './cmd.js?v=73';
-import { buildDimItems } from './dims.js?v=73';
-import { buildAiImageParts } from './zoom.js?v=73';
+} from './store.js?v=74';
+import { buildScene } from './builders.js?v=74';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=74';
+import { buildOBJ } from './obj.js?v=74';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=74';
+import { parseCommand, CMD_HELP } from './cmd.js?v=74';
+import { buildDimItems } from './dims.js?v=74';
+import { buildAiImageParts } from './zoom.js?v=74';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -46,6 +46,13 @@ const fmtSize = (n) => String(Math.round(Number(n) * 1000) / 1000);
 const sizeStep = (spec) => (isBoreSized(spec && spec.type) ? 0.005 : 0.1);
 const sizeMin = (spec) => (isBoreSized(spec && spec.type) ? 0.01 : 0.1);
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
+// 접합면 좌표 키 (mm 단위) — 같은 면을 한 번 붙은 뒤 다시 끌려가지 않게 구분한다 (v74).
+const magnetKey = (p) => `${Math.round(Number(p.x) * 1000)}|${Math.round(Number(p.y) * 1000)}|${Math.round(Number(p.z) * 1000)}`;
+// 두 점 사이 단위벡터 (a → b)
+const unit2 = (a, b) => {
+  const l = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) || 1;
+  return { x: (b.x - a.x) / l, y: (b.y - a.y) / l, z: (b.z - a.z) / l };
+};
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const VIEW_NAMES = ['iso', 'top', 'front', 'reset'];
@@ -84,6 +91,9 @@ const HAND_UP = { x: 0, y: 1, z: 0 };   // 원기둥 미리보기의 기본 축
 const HAND_MIN_MM = 300;                // 최소 구간 길이
 const HAND_STEP_MM = 100;               // 100mm 단위 반올림
 const HAND_SNAP_PX = 40;                // 손끝이 기존 배관(끝·몸통)·커서에 붙는 화면 거리
+const HAND_RING_Z = new THREE.Vector3(0, 0, 1);   // 토러스 기본 축(링 면의 법선)
+// 옮긴 배관 끝 자석 (v74) — 이 거리 안에 접합면이 있으면 미세 틈 없이 0.000m로 붙인다.
+const MOVE_SNAP_DIST = 0.15;            // 150mm
 // 탱크 벽면 자동 노즐 맞춤 (v72) — 배관 끝이 이 거리 안에서 벽을 향해 들어오면 노즐이 따라간다.
 const TANK_FIT_DIST = 0.35;             // 외벽에서 0.35m 안
 const TANK_FIT_DOT = 0.7;               // 진행 방향이 벽 바깥 법선의 **반대**와 이만큼 나란해야(벽으로 45° 이내)
@@ -147,6 +157,10 @@ class App {
     this.multiMode = false;
     this.helpers = [];   // 고른 것마다 하나씩 두는 주황 상자(BoxHelper)
     this.lastMove = null; // 마지막 이동 안내 — "50mm · X +0.05m" 같은 한 줄
+    // 🧲 자석 (v74, 기본 켜짐) — 옮긴 배관 끝·부속 접합면이 15cm 안에 오면 0.000m로 붙인다.
+    let magSaved = null;
+    try { magSaved = localStorage.getItem('smilePiping3D.magnet'); } catch (e) { /* ignore */ }
+    this.magnetSnap = magSaved !== 'off';
     // 📋 복사한 장비·배관 (v72) — [📌 붙여넣기]가 이 사양으로 옆에 하나 더 세운다.
     this.clipboard = null;
     this.padOpen = false;
@@ -408,17 +422,19 @@ class App {
     this.handPreviewGroup.visible = false;
     this.scene.add(this.handPreviewGroup);
 
+    // 점 표시 — 예전에는 반지름 7.5cm 불투명 공이라 손 그리기 중에 배관 끝·엘보 면을 통째로 가렸다.
+    // (2026-11-26 `32087` "손그리기는 아직도 시야 가린다") 지금은 반지름 1.2cm 점만 찍는다.
     const dot = (color) => {
       const m = new THREE.Mesh(
-        new THREE.SphereGeometry(0.075, 14, 10),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false }),
+        new THREE.SphereGeometry(0.012, 10, 8),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false }),
       );
       m.renderOrder = 997;
       return m;
     };
     this.handMesh = new THREE.Mesh(
       new THREE.CylinderGeometry(1, 1, 1, 20, 1, false),
-      new THREE.MeshBasicMaterial({ color: 0x5ce1a2, transparent: true, opacity: 0.5, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0x5ce1a2, transparent: true, opacity: 0.32, depthWrite: false }),
     );
     this.handMesh.renderOrder = 900;
     this.handPreviewGroup.add(this.handMesh);
@@ -433,8 +449,18 @@ class App {
     this.handSnapRing.visible = false;
     this.handPreviewGroup.add(this.handSnapRing);
 
-    // 이어 그릴 시작점 표시 — 손 그리기 중에 지금 어디서 이어지는지 보여 준다.
-    this.handAnchorDot = dot(0x9dffd0);
+    // 이어 그릴 시작점 표시 — 작은 중심점 + 배관 외경에 맞춘 얇은 속빈 링.
+    // 링 안쪽은 뚫려 있어 그 자리의 배관 끝·엘보 면이 그대로 보인다.
+    this.handAnchorDot = new THREE.Group();
+    this.handAnchorCore = dot(0x9dffd0);
+    this.handAnchorDot.add(this.handAnchorCore);
+    const od = (BORES[this.cmdBore] || BORES['50A']).od;
+    this.handAnchorRing = new THREE.Mesh(
+      new THREE.TorusGeometry(1, Math.max(0.04, Math.min(0.16, 0.006 / od)), 6, 36),
+      new THREE.MeshBasicMaterial({ color: 0x9dffd0, transparent: true, opacity: 0.75, depthTest: false, depthWrite: false }),
+    );
+    this.handAnchorRing.renderOrder = 996;
+    this.handAnchorDot.add(this.handAnchorRing);
     this.handAnchorDot.visible = false;
     this.scene.add(this.handAnchorDot);
 
@@ -732,12 +758,25 @@ class App {
     if (chip) chip.hidden = !this.diag45;
   }
 
-  // 시작점 표시구 — 손 그리기 중에만 보인다.
+  // 시작점 표시 — 손 그리기 중에만 보인다. 작은 점 + 배관 외경 크기의 얇은 링.
   showHandAnchor() {
     if (!this.handAnchorDot) return;
     const a = this.handAnchor;
     this.handAnchorDot.visible = !!(this.handMode && a);
-    if (a) this.handAnchorDot.position.set(a.x, a.y, a.z);
+    if (!a) return;
+    this.handAnchorDot.position.set(a.x, a.y, a.z);
+    // 링은 지금 관경 외경에 맞추고, 이어 그리는 방향(배관 축)에 수직으로 둔다 —
+    // 링 가운데 구멍으로 배관 끝·엘보 접합면이 그대로 보인다.
+    const od = (BORES[this.cmdBore] || BORES['50A']).od;
+    if (this.handAnchorRing) this.handAnchorRing.scale.setScalar(Math.max(0.02, od / 2));
+    const d = this.handDirV || this.lastDirV;
+    if (d && Math.hypot(d.x, d.y, d.z) > 1e-6) {
+      this.handRingAxis = this.handRingAxis || new THREE.Vector3();
+      this.handRingAxis.set(d.x, d.y, d.z).normalize();
+      this.handAnchorRing.quaternion.setFromUnitVectors(HAND_RING_Z, this.handRingAxis);
+    } else if (this.camera) {
+      this.handAnchorRing.quaternion.copy(this.camera.quaternion);
+    }
   }
 
   // canvas 안 좌표(px)로 옮긴다.
@@ -855,6 +894,25 @@ class App {
     if (el) el.hidden = true;
   }
 
+  // 접합면 하나의 관경 — 면이 자기 관경(n.bore)을 들고 있으면 그것, 없으면 부속 관경.
+  //  티는 직진(bore1)·분기(bore2), 레듀샤는 A면(bore1)·B면(bore2)로 면마다 다르다.
+  faceBore(spec, n) {
+    if (!spec) return null;
+    if (n && BORES[n.bore]) return n.bore;
+    const pick = (...list) => list.find((b) => BORES[b]) || null;
+    if (spec.type === 'tee') {
+      return n && n.nid === 'branch'
+        ? pick(spec.bore2, spec.bore1, spec.bore)
+        : pick(spec.bore1, spec.bore, spec.bore2);
+    }
+    if (spec.type === 'reducer') {
+      return n && n.nid === 'faceA'
+        ? pick(spec.bore1, spec.bore, spec.bore2)
+        : pick(spec.bore2, spec.bore, spec.bore1);
+    }
+    return pick(spec.bore, spec.bore1, spec.bore2);
+  }
+
   // 누른 자리 근처의 기존 배관 위 점 — 끝점뿐 아니라 배관 몸통(티 분기 자리)까지
   // 화면 거리로 찾는다. AI가 뽑은 배관은 y > 0 높이에 떠 있으므로 찾은 3D 좌표(y 포함)를
   // 그대로 handAnchor로 쓴다 — 그 높이 그대로 손 그리기가 이어진다.
@@ -884,10 +942,10 @@ class App {
       const l = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) || 1;
       return { x: (b.x - a.x) / l, y: (b.y - a.y) / l, z: (b.z - a.z) / l };
     };
-    const testPoint = (p, dir) => {
+    const testPoint = (p, dir, kind, extra) => {
       const s = screenOf(p);
       if (!s) return;
-      take(Math.hypot(s.x - px, s.y - py), p, dir);
+      take(Math.hypot(s.x - px, s.y - py), p, dir, kind, extra);
     };
 
     // 장비 노즐 끝 — 플랜지 접합면을 먼저 본다. 배관 끝과 같은 자리면 노즐이 이긴다
@@ -911,6 +969,15 @@ class App {
           bore: n.bore, equipId: e.id, equipName: e.name, portNid: n.nid, seat: 'flange',
         });
       });
+      // 엘보·티·레듀샤·니쁠 같은 용접 접합면 — 배관 끝과 똑같은 자리에서 그 관경을 이어받는다.
+      // (v74 — 예전에는 이 면이 후보에 없어, 100A 엘보·티 끝에서 이어 그리면 기본값 50A로 가늘어졌다)
+      equipConnectFaces(e).forEach((n) => {
+        const s = screenOf(n.tip);
+        if (!s) return;
+        take(Math.hypot(s.x - px, s.y - py), n.tip, n.axis, 'port', {
+          bore: this.faceBore(e, n), equipId: e.id, equipName: e.name, portNid: n.nid,
+        });
+      });
     });
     this.state.pipes.forEach((pipe) => {
       const pts = pipe.points || [];
@@ -921,7 +988,8 @@ class App {
         const next = pts[i + 1];
         // 시작점은 그 배관에서 나가는 방향의 반대(밖에서 들어오는 방향), 나머지는 들어오는 방향.
         const dir = prev ? unit(prev, pts[i]) : (next ? unit(next, pts[i]) : null);
-        testPoint(pts[i], dir);
+        // 관경을 함께 넘긴다 — 이 점에서 이어 그리면 그 배관 관경을 그대로 물려받는다 (v74).
+        testPoint(pts[i], dir, 'end', { bore: pipe.bore, label: pipe.name });
       }
       // 선분 몸통 — 화면에서 선분 위 가장 가까운 점의 비율(t)을 3D 점으로 되돌린다.
       for (let i = 0; i < pts.length - 1; i += 1) {
@@ -940,7 +1008,7 @@ class App {
           x: a.x + (b.x - a.x) * t,
           y: a.y + (b.y - a.y) * t,
           z: a.z + (b.z - a.z) * t,
-        }, unit(a, b), 'body');
+        }, unit(a, b), 'body', { bore: pipe.bore, label: pipe.name });
       }
     });
     if (this.cmdMarked) {
@@ -980,6 +1048,11 @@ class App {
       equipPorts(e).forEach((n) => take(n.tip, `${e.name} ${n.label || ''}`.trim(), n.bore, n.axis, {
         seat: n.seat || null, portAxis: n.axis, equipId: e.id, portNid: n.nid || null,
       }));
+      // 엘보·레듀샤·티 용접 접합면도 자석 대상 — 그 면의 관경을 그대로 물려받는다 (v74).
+      equipConnectFaces(e).forEach((n) => take(
+        n.tip, `${e.name} ${TEE_PORT_LABELS[n.nid] || '접합면'}`.trim(), this.faceBore(e, n), n.axis,
+        { equipId: e.id, portNid: n.nid || null },
+      ));
     });
     this.state.pipes.forEach((pipe) => {
       const pts = pipe.points || [];
@@ -1141,12 +1214,18 @@ class App {
         if (near.kind === 'body' && this.lastPointerType === 'touch') {
           this.toast(`배관 몸통 ${near.y.toFixed(2)}m 높이에 붙였습니다.`);
         }
-        // 장비 노즐·플랜지 접합면이면 그 관경을 이어받아 바로 배관을 뽑는다.
-        if ((near.kind === 'nozzle' || near.kind === 'flange') && near.bore) {
+        // 스냅한 자리가 이미 있는 배관·부속·노즐이면 **그 관경을 그대로 이어받는다**.
+        // (v74 — 예전에는 노즐·플랜지만 이어받고 배관 끝·엘보·티·밸브는 무시해서,
+        //  100A 배관 끝에서 이어 그리면 기본값 50A로 가늘어졌다. 2026-11-26 `32083` 캡처)
+        if (near.bore && BORES[near.bore]) {
           this.setCmdBore(near.bore, true);
           const nm = near.kind === 'flange'
             ? `${near.equipName || '부속'} 플랜지 면`
-            : `${near.equipName || '장비'} ${NOZZLE_LABELS[near.nozzleDir] || ''} 노즐`;
+            : near.kind === 'nozzle'
+              ? `${near.equipName || '장비'} ${NOZZLE_LABELS[near.nozzleDir] || ''} 노즐`
+              : near.kind === 'port'
+                ? `${near.equipName || '부속'} 접합면`
+                : `${near.label || '배관'} ${near.kind === 'body' ? '몸통' : '끝'}`;
           this.toast(`${nm} ${near.bore} · 단면 높이 ${near.y.toFixed(2)}m에서 이어 그립니다.`);
         }
         this.setCmdCursor(this.handAnchor, true);
@@ -1929,6 +2008,16 @@ class App {
     return list[0];
   }
 
+  // 이어 그릴 관경 — 레듀샤는 나가는 쪽(bore2), 나머지 부속은 관경(bore1 → bore).
+  // (v74 — 예전에는 spec.bore만 있는 밸브·엘보에서 관경을 못 찾아 기본 50A로 이어 그려졌다)
+  aimBoreOf(spec) {
+    if (!spec) return this.cmdBore;
+    const pick = (...list) => list.find((b) => BORES[b]) || null;
+    if (Array.isArray(spec.points)) return pick(spec.bore, spec.bore1) || this.cmdBore;
+    if (spec.type === 'reducer') return pick(spec.bore2, spec.bore, spec.bore1) || this.cmdBore;
+    return pick(spec.bore1, spec.bore, spec.bore2) || this.cmdBore;
+  }
+
   // 노즐 하나를 이어 그리는 자리로 삼는다 — 커서를 끝(플랜지 면)에, 방향은 노즐이 뻗는 쪽으로,
   // 관경은 그 노즐 관경으로. nozContinue(📍 위/아래/…·IN/OUT)와 aimAt(선택·📍 여기서)이 함께 쓴다.
   aimAtNozzle(n) {
@@ -1988,7 +2077,8 @@ class App {
       this.cmdRot = this.cmdRotFor(this.cmdAxis, this.cmdSign);
       const dlen = Math.hypot(dx, dy, dz) || 1;
       this.lastDirV = { x: dx / dlen, y: dy / dlen, z: dz / dlen };
-      if (BORES[spec.bore]) this.cmdBore = spec.bore;
+      // 배관은 그 배관 관경을 그대로 이어받는다 — 조이스틱·명령·📍 여기서 모두 같은 값.
+      this.setCmdBore(this.aimBoreOf(spec), true);
       if (MATERIALS[spec.material]) this.cmdMaterial = spec.material;
       this.setCmdCursor({ x: p.x, y: p.y, z: p.z }, true);
       return;
@@ -2014,8 +2104,9 @@ class App {
       this.lastDirV = h.axis === 'x' ? { x: h.sign, y: 0, z: 0 }
         : h.axis === 'z' ? { x: 0, y: 0, z: h.sign } : { x: 0, y: h.sign, z: 0 };
     }
-    if (spec.type === 'reducer' && spec.bore2) this.cmdBore = spec.bore2;
-    else if (spec.bore1) this.cmdBore = spec.bore1;
+    // 관경 — 레듀샤는 나가는 쪽(bore2), 티·밸브·엘보·피팅은 자기 관경(bore1 → bore).
+    // setCmdBore()로 넣어 조이스틱 하단 관경 표시까지 같이 맞춘다 (v74).
+    this.setCmdBore(this.aimBoreOf(spec), true);
     this.setCmdCursor(this.equipExit(spec), true);
   }
 
@@ -2382,6 +2473,213 @@ class App {
     else off();
   }
 
+  // ── 🧲 옮긴 배관 끝 자석 (v74) ────────────────────────────────────────
+  // 배관을 방향 버튼·드래그로 옮겼 때 끝점이 기존 접합면(엘보 두 끝·밸브·스트레이너·플랜지 면·
+  // 티 3포트·장비 노즐·다른 배관 끝) 15cm 안에 오면, 2~3cm 틈을 남기지 않고 정확히 0.000m로 붙인다.
+  // (2026-11-26 `32085` "자동으로 안붙네" — 게이트밸브 위 엘보 입구 바로 앞에서 톱이 남았다)
+  //  · 고른 것이 여러 개면 모두 같은 Δ만큼 함께 밀어 서로 자리를 지킨다.
+  //  · 🧲 자석을 꺼 두면 아무것도 하지 않는다.
+  moveMagnetSnap(items, skipKeys) {
+    if (!this.magnetSnap) return null;
+    const list = items || [];
+    if (!list.length) return null;
+    const moving = new Set(list.map((it) => (it.spec || it).id));
+    const cands = [];
+    const add = (p, label, axis) => {
+      if (p) cands.push({ tip: p, label, axis: axis || null });
+    };
+    this.state.equipment.forEach((e) => {
+      equipConnectFaces(e).forEach((n) => add(n.tip, `${e.name || '부속'} ${n.label || (n.nid === 'legA' ? '입구' : n.nid === 'legB' ? '출구' : TEE_PORT_LABELS[n.nid] || '접합면')}`, n.axis));
+      equipNozzles(e).forEach((n) => add(n.tip, `${e.name || '장비'} ${NOZZLE_LABELS[n.dir] || ''} 노즐`.trim(), n.axis));
+    });
+    this.state.pipes.forEach((p) => {
+      if (moving.has(p.id)) return;
+      const pts = p.points || [];
+      if (pts.length < 2) return;
+      add(pts[0], `${p.name || '배관'} 시작`);
+      add(pts[pts.length - 1], `${p.name || '배관'} 끝`);
+    });
+    if (!cands.length) return null;
+    let best = null;
+    list.forEach((it) => {
+      const spec = it.spec || it;
+      const pts = spec.points || [];
+      if (pts.length < 2) return;
+      [0, pts.length - 1].forEach((idx) => {
+        const pt = pts[idx];
+        cands.forEach((c) => {
+          const d = Math.hypot(pt.x - c.tip.x, pt.y - c.tip.y, pt.z - c.tip.z);
+          if (d > MOVE_SNAP_DIST) return;
+          // 방금 붙어 있던 면은 건너뛴다 — 한 번 붙은 뒤 보폭 이동을 계속해도
+          // 그 자리로 계속 끌려 돌아가지 않게 (v74).
+          if (skipKeys && skipKeys.has(magnetKey(c.tip))) return;
+          if (!best || d < best.d) {
+            best = { d, spec, index: idx, port: c, from: { x: pt.x, y: pt.y, z: pt.z } };
+          }
+        });
+      });
+    });
+    if (!best) return null;
+    const delta = {
+      x: r3(best.port.tip.x - best.from.x),
+      y: r3(best.port.tip.y - best.from.y),
+      z: r3(best.port.tip.z - best.from.z),
+    };
+    // 모양은 그대로, 자리만 그 Δ만큼 — 끝점이 접합면에 정확히 앉는다(0.000m).
+    list.forEach((it) => {
+      const spec = it.spec || it;
+      if (Array.isArray(spec.points)) {
+        spec.points.forEach((q) => {
+          q.x = r3(q.x + delta.x);
+          q.y = Math.max(0, r3(q.y + delta.y));
+          q.z = r3(q.z + delta.z);
+        });
+        return;
+      }
+      spec.x = r3((Number(spec.x) || 0) + delta.x);
+      spec.y = Math.max(0, r3((Number(spec.y) || 0) + delta.y));
+      spec.z = r3((Number(spec.z) || 0) + delta.z);
+    });
+    return { ...best, delta };
+  }
+
+  // 지금 배관 끝이 정확히 얹혀 있는 접합면 키 — 보폭 이동에서 같은 면으로 계속 끌려가지 않게.
+  magnetContactKeys(items) {
+    const keys = new Set();
+    const list = items || [];
+    const ends = [];
+    list.forEach((it) => {
+      const spec = it.spec || it;
+      const pts = spec.points || [];
+      if (pts.length < 2) return;
+      ends.push(pts[0], pts[pts.length - 1]);
+    });
+    if (!ends.length) return keys;
+    const tips = [];
+    this.state.equipment.forEach((e) => {
+      equipConnectFaces(e).forEach((n) => { if (n.tip) tips.push(n.tip); });
+      equipNozzles(e).forEach((n) => { if (n.tip) tips.push(n.tip); });
+    });
+    this.state.pipes.forEach((p) => {
+      const pts = p.points || [];
+      if (pts.length < 2) return;
+      tips.push(pts[0], pts[pts.length - 1]);
+    });
+    ends.forEach((pt) => {
+      tips.forEach((t) => {
+        if (Math.hypot(pt.x - t.x, pt.y - t.y, pt.z - t.z) < 0.002) keys.add(magnetKey(t));
+      });
+    });
+    return keys;
+  }
+
+  setMagnetSnap(on, quiet) {
+    this.magnetSnap = !!on;
+    try { localStorage.setItem('smilePiping3D.magnet', this.magnetSnap ? 'on' : 'off'); } catch (e) { /* ignore */ }
+    this.renderProps();
+    if (!quiet) {
+      this.toast(this.magnetSnap
+        ? '🧲 자석 켜짐 — 옮긴 배관 끝이 접합면 15cm 안에 오면 0.000m로 붙습니다.'
+        : '🧲 자석 꺼짐 — 옮긴 자리에 그대로 둡니다.');
+    }
+  }
+
+  // ── 🔗 이어붙이기 (v74) ──────────────────────────────────────────────
+  // 고른 **정확히 2개**의 접속구(배관 양 끝점·엘보 양 끝면·티 3포트·밸브/플랜지 양 면·장비 노즐 끝)
+  // 중 가장 가까운 짝을 찾아 0.000m로 딱 붙인다.
+  //  · 배관 + 무엇이든: 배관의 그 끝점을 상대 접속구 좌표로 옮긴다(곧게 이어지면 축 연장,
+  //    어긋나 있으면 90° 꺾임 + 엘보를 세워 자연스럽게 잇는다).
+  //  · 부속/장비 + 부속/장비: 두 번째를 (pA − pB)만큼 통째로 밀어 면을 맞닫는다.
+  joinSelectedPair() {
+    const items = this.selectedSpecs();
+    if (items.length !== 2) {
+      this.toast('두 개를 골라야 이어 붙일 수 있습니다.', { type: 'err' });
+      return;
+    }
+    const a = items[0].spec;
+    const b = items[1].spec;
+    const endsOf = (spec) => {
+      if (Array.isArray(spec.points)) {
+        const pts = spec.points;
+        if (pts.length < 2) return [];
+        return [
+          { isPipe: true, spec, idx: 0, tip: pts[0], other: pts[1] },
+          { isPipe: true, spec, idx: pts.length - 1, tip: pts[pts.length - 1], other: pts[pts.length - 2] },
+        ];
+      }
+      return this.equipPortsOf(spec).map((n) => ({ isPipe: false, spec, tip: n.tip, axis: n.axis, label: n.label }));
+    };
+    const ea = endsOf(a);
+    const eb = endsOf(b);
+    if (!ea.length || !eb.length) {
+      this.toast('이어 붙일 접속구를 찾지 못했습니다.', { type: 'err' });
+      return;
+    }
+    let best = null;
+    ea.forEach((x) => eb.forEach((y) => {
+      const d = Math.hypot(x.tip.x - y.tip.x, x.tip.y - y.tip.y, x.tip.z - y.tip.z);
+      if (!best || d < best.d) best = { d, x, y };
+    }));
+    if (!best) return;
+    const t = { x: r3(best.y.tip.x), y: Math.max(0, r3(best.y.tip.y)), z: r3(best.y.tip.z) };
+    this.pushUndo('🔗 이어붙이기');
+    if (best.x.isPipe) this.joinPipeEndTo(best.x, t);
+    else if (best.y.isPipe) this.joinPipeEndTo(best.y, { x: r3(best.x.tip.x), y: Math.max(0, r3(best.x.tip.y)), z: r3(best.x.tip.z) });
+    else {
+      // 둘 다 배관이 아니면 B를 통째로 밀어 두 면을 포갠다.
+      const dx = r3(best.x.tip.x - best.y.tip.x);
+      const dy = r3(best.x.tip.y - best.y.tip.y);
+      const dz = r3(best.x.tip.z - best.y.tip.z);
+      b.x = r3((Number(b.x) || 0) + dx);
+      b.y = Math.max(0, r3((Number(b.y) || 0) + dy));
+      b.z = r3((Number(b.z) || 0) + dz);
+    }
+    this.rebuild();
+    const nm = `${a.name} ↔ ${b.name}`;
+    this.toast(`🔗 두 개를 이어 붙였어요 · ${nm} · 0.0mm`, {
+      action: '되돌리기', onAction: () => this.undo(),
+    });
+  }
+
+  // 배관의 한 끝(end)을 target 좌표에 정확히 앉힌다 — 0.000m 이음.
+  joinPipeEndTo(end, target) {
+    const spec = end.spec;
+    const pts = spec.points;
+    const other = end.other;
+    const dSeg = Math.hypot(target.x - other.x, target.y - other.y, target.z - other.z);
+    const dTip = Math.hypot(target.x - end.tip.x, target.y - end.tip.y, target.z - end.tip.z);
+    if (dTip < 1e-4) return;
+    const uTip = { x: (target.x - end.tip.x) / dTip, y: (target.y - end.tip.y) / dTip, z: (target.z - end.tip.z) / dTip };
+    const lOther = Math.hypot(other.x - end.tip.x, other.y - end.tip.y, other.z - end.tip.z) || 1;
+    const uOther = { x: (other.x - end.tip.x) / lOther, y: (other.y - end.tip.y) / lOther, z: (other.z - end.tip.z) / lOther };
+    const dot = uTip.x * uOther.x + uTip.y * uOther.y + uTip.z * uOther.z;
+    // 거의 같은 축이면 끝점만 옮긴다 — 직선 연장·단축(최소 5cm는 남긴다).
+    if (Math.abs(dot) > 0.98 && dSeg > 0.05) {
+      pts[end.idx] = { x: target.x, y: target.y, z: target.z };
+      return;
+    }
+    // 어긋나 있으면 그 앞 점에서 target까지 90° 경로로 잇고, 꺾인 자리에 엘보를 세운다.
+    const path = this.orthoPath(other, target);
+    if (path.length < 2) { pts[end.idx] = { x: target.x, y: target.y, z: target.z }; return; }
+    const insert = path.slice(1);
+    if (end.idx === pts.length - 1) pts.splice(pts.length - 1, 1, ...insert);
+    else pts.splice(0, 1, ...insert.slice().reverse());
+    // 꺾임마다 엘보 — 배관 사이 각진 모서리가 빈 채로 보이지 않게.
+    const bore = BORES[spec.bore] ? spec.bore : this.cmdBore;
+    for (let i = 1; i < path.length - 1; i += 1) {
+      const cur = path[i];
+      const inV = unit2(cur, path[i - 1]);
+      const outV = unit2(cur, path[i + 1]);
+      const same = this.state.equipment.filter((q) => q.type === 'elbow').length;
+      this.state.equipment.push(makeEquipment('elbow', {
+        name: `EL-${100 + same + 1} 엘보`,
+        x: cur.x, y: cur.y, z: cur.z, bore,
+        inDir: [inV.x, inV.y, inV.z], outDir: [outV.x, outV.y, outV.z],
+        rot: this.rotForDir({ x: outV.x, y: outV.y, z: outV.z }, this.cmdRot),
+      }));
+    }
+  }
+
   // ── 선택한 것 위치 이동 (v73) ───────────────────────────────────────────
   // 방향 버튼(←/→/앞/뒤/↑/↓)으로 단위(10·50·100·500·1000mm)만큼 옮긴다.
   //  · 배관도 옮긴다 — 모든 점(points)을 같은 Δ만큼 통째로.
@@ -2391,6 +2689,8 @@ class App {
     const items = this.selectedSpecs();
     if (!items.length) return;
     const multi = items.length > 1;
+    // 옮기기 전에 이미 딱 붙어 있던 면 — 그 면으로 보폭 이동이 끌려 돌아가지 않게 기억한다.
+    const preContact = this.magnetContactKeys(items);
     this.pushUndo(multi ? `${items.length}개 같이 이동` : '위치 이동');
     const dx = axis === 'x' ? sign * meters : 0;
     const dy = axis === 'y' ? sign * meters : 0;
@@ -2410,6 +2710,8 @@ class App {
     }
     // 옮긴 배관 끝이 탱크 벽면 가까이 오면 그 자리에 노즐을 맞춘다 (v72 기능 유지).
     const fits = this.autoFitMovedPipes(items);
+    // 🧲 배관 끝이 엘보·밸브·티·노즐·배관 끝 접합면 15cm 안이면 0.000m로 붙인다 (v74).
+    const mag = fits.length ? null : this.moveMagnetSnap(items, preContact);
     this.rebuild();
     const n = Math.round(meters * 1000);
     const dTxt = `${axis === 'x' ? 'X' : axis === 'z' ? 'Z' : '높이'} ${sign > 0 ? '+' : '-'}${n}mm`;
@@ -2422,6 +2724,13 @@ class App {
       where = ` → (${fmt(a.x)}, ${fmt(a.y)}, ${fmt(a.z)})~(${fmt(b.x)}, ${fmt(b.y)}, ${fmt(b.z)})m`;
     }
     if (fits.length) { this.toast(fits[0], { type: 'ok' }); return; }
+    if (mag) {
+      this.lastMove = `${n}mm · ${dTxt} · 🧲 ${mag.port.label}`;
+      this.toast(`🧲 ${mag.port.label}에 붙었어요 · 0.0mm`, {
+        action: '되돌리기', onAction: () => this.undo(),
+      });
+      return;
+    }
     this.toast(snapped
       ? `정렬됨 · (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`
       : `${multi ? `${items.length}개 같이 이동` : '위치 이동'} · ${dTxt}${where}`);
@@ -2481,6 +2790,8 @@ class App {
       id: ev.pointerId,
       grab: p,
       moved: false,
+      // 처음부터 딱 붙어 있던 면은 자석이 다시 잡아끌지 않게 기억한다 (v74).
+      contact: this.magnetContactKeys(items),
       single: items.length === 1 ? items[0].spec : null,
       items: items.map(({ sel, spec }) => ({
         sel,
@@ -2565,6 +2876,16 @@ class App {
       it.spec.z = r3(it.z0 + rawDz);
       if (it.group) it.group.position.set(it.spec.x, it.spec.y, it.spec.z);
     });
+    // 🧲 배관 끝이 엘보·밸브·티·노즐·배관 끝 15cm 안이면 0.000m로 붙인다 (v74).
+    st.pipeSnap = this.moveMagnetSnap(st.items, st.contact);
+    if (st.pipeSnap) {
+      const mg = st.pipeSnap.delta;
+      st.items.forEach((it) => {
+        if (!it.group) return;
+        if (it.pts) it.group.position.set(rawDx + mg.x, mg.y, rawDz + mg.z);
+        else it.group.position.set(it.spec.x, it.spec.y, it.spec.z);
+      });
+    }
     this.refreshHighlight();
     this.updateDims();
   }
@@ -2589,6 +2910,13 @@ class App {
       });
       return;
     }
+    if (st.pipeSnap) {
+      this.lastMove = `드래그 이동 · 🧲 ${st.pipeSnap.port.label}`;
+      this.toast(`🧲 ${st.pipeSnap.port.label}에 붙었어요 · 0.0mm`, {
+        action: '되돌리기', onAction: () => this.undo(),
+      });
+      return;
+    }
     const n = st.items.length;
     const one = spec && !Array.isArray(spec.points)
       ? `(${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m` : '';
@@ -2609,7 +2937,8 @@ class App {
     const p = ports.find((x) => x.nid === key);
     if (!p) return;
     const meta = this.portList(spec).find((x) => x.nid === key) || {};
-    const bore = BORES[meta.bore] ? meta.bore : (BORES[spec.bore] ? spec.bore : this.cmdBore);
+    // 그 접합면의 관경 — 엘보·밸브는 부속 관경, 레듀샤·티는 면별 관경 (v74).
+    const bore = this.faceBore(spec, { ...p, bore: meta.bore || p.bore }) || this.cmdBore;
     this.aimAtNozzle({ ...p, bore });
     this.clearSelection();
     const label = spec.type === 'tee' ? TEE_PORT_LABELS[key] : (meta.dirName || '접합면');
@@ -2651,6 +2980,10 @@ class App {
     this.state.equipment.forEach((e) => {
       equipPorts(e).forEach((n) => {
         take(n.tip, `${e.name} ${n.label || NOZZLE_LABELS[n.dir] || ''}`.trim(), n.bore);
+      });
+      // 엘보·레듀샤 같은 용접 접합면도 대상 — 그 면의 관경을 물려준다 (v74).
+      equipConnectFaces(e).forEach((n) => {
+        take(n.tip, `${e.name} ${TEE_PORT_LABELS[n.nid] || '접합면'}`.trim(), this.faceBore(e, n));
       });
     });
     this.state.pipes.forEach((p) => {
@@ -2952,6 +3285,8 @@ class App {
             title="켜면 3D에서 다른 장비·부속·배관을 톡톡 눌러 함께 고릅니다">☑️ 여러 개 선택</button>
           <button class="noz-chip" data-act="linkall"
             title="고른 것에 이어져 있는 밸브·배관·엘보를 줄줄이 함께 고릅니다">🔗 연결된 것 모두</button>
+          ${n === 2 ? `<button class="noz-chip accent" data-act="join2"
+            title="고른 두 개의 가장 가까운 접속구(배관 끝·엘보 면·티 포트·밸브 면·노즐 끝)를 0.000m로 딱 붙입니다">🔗 이어붙이기</button>` : ''}
         </div>
         ${this.multiMode ? `<p class="hint">켜짐 — 3D에서 다른 장비·부속·배관을 톡톡 누르면 함께 골라집니다(지금 ${n}개).</p>` : ''}`;
   }
@@ -2982,6 +3317,9 @@ class App {
             data-act="mvstep" data-mm="${mm}">${mm}mm</button>`).join('')}
           <button class="noz-chip${this.moveDrag ? ' on' : ''}" data-act="mvdrag"
             title="켜면 3D 바닥을 손가락으로 끌어 옮깁니다">✋ 드래그 이동</button>
+          <button class="noz-chip${this.magnetSnap ? ' on' : ''}" data-act="magnet"
+            aria-pressed="${this.magnetSnap ? 'true' : 'false'}"
+            title="옮긴 배관 끝이 엘보·밸브·티·노즐 면 15cm 안에 오면 0.000m로 딱 붙입니다">🧲 자석</button>
         </div>
         <p class="hint mv-readout">${lead} · 보폭 <b>${cur}mm</b>${this.lastMove ? ` · 지난 이동 ${this.lastMove}` : ''}</p>`;
   }
@@ -3685,6 +4023,7 @@ class App {
     this.multiMode = false;
     if (u.cur) {
       this.cmdBore = u.cur.bore;
+      this.updatePadInfo();
       this.cmdMaterial = u.cur.material;
       this.cmdConn = connOf({ conn: u.cur.conn });
       this.cmdAxis = u.cur.axis;
@@ -3916,8 +4255,8 @@ class App {
     this.cmdSign = (this.cmdAxis === 'x' ? out.x : this.cmdAxis === 'z' ? out.z : out.y) < 0 ? -1 : 1;
     this.cmdRot = this.cmdRotFor(this.cmdAxis, this.cmdSign);
     this.lastDirV = { x: out.x, y: out.y, z: out.z };
-    if (BORES[spec.bore]) this.cmdBore = spec.bore;
-    else if (BORES[spec.bore1]) this.cmdBore = spec.bore1;
+    // 붙은 부속의 관경을 그대로 다음 배관에 잇는다 (v74 — 예전에는 직접 대입해 표시가 어꿋났다).
+    this.setCmdBore(this.aimBoreOf(spec), true);
     this.setCmdCursor(tip, true);
     this.toast(`${t.label}을(를) 배관 끝에 이어 붙였습니다 · 커서 (${fmt(tip.x)}, ${fmt(tip.y)}, ${fmt(tip.z)})m`);
   }
@@ -6630,6 +6969,7 @@ class App {
         return;
       }
       if (act === 'linkall') { this.linkAllConnected(); return; }
+      if (act === 'join2') { this.joinSelectedPair(); return; }
       if (act === 'selremove') { this.removeFromSelection(btn.dataset.kind, btn.dataset.id); return; }
       if (act === 'selonly') { this.selectOnly(btn.dataset.kind, btn.dataset.id); return; }
       if (act === 'selclear') { this.clearSelection(); return; }
@@ -6649,6 +6989,7 @@ class App {
         this.renderProps();
         this.toast(`이동 보폭 ${mm}mm`);
       }
+      else if (act === 'magnet') { this.setMagnetSnap(!this.magnetSnap); }
       else if (act === 'mvdrag') {
         this.moveDrag = !this.moveDrag;
         this.renderProps();
