@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
-  BORES, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
+  BORES, BORE_KEYS, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=74';
-import { buildScene } from './builders.js?v=74';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=74';
-import { buildOBJ } from './obj.js?v=74';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=74';
-import { parseCommand, CMD_HELP } from './cmd.js?v=74';
-import { buildDimItems } from './dims.js?v=74';
-import { buildAiImageParts } from './zoom.js?v=74';
+} from './store.js?v=75';
+import { buildScene } from './builders.js?v=75';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=75';
+import { buildOBJ } from './obj.js?v=75';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=75';
+import { parseCommand, CMD_HELP } from './cmd.js?v=75';
+import { buildDimItems } from './dims.js?v=75';
+import { buildAiImageParts } from './zoom.js?v=75';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -105,6 +105,35 @@ const INLINE_TYPES = new Set([
   'nipple', 'elbow45', 'cap', 'union', 'flow',
 ]);
 const ON_FLOOR_TYPES = new Set(['header', 'hx', 'pump', 'vpump', 'tank', 'stank', 'rtank', 'panel', 'support']);
+
+// ✂️ 배관 중간에 끼워넣을 수 있는 부속·밸브 (v75) — 타입 키는 EQUIP_TYPES의 키와 같다.
+const INSERT_GROUPS = [
+  {
+    label: '티 (T)',
+    items: [{ type: 'tee', label: '90° 티 · 이경 티', hint: '속성 패널에서 분기 관경을 바꾸면 이경 티가 됩니다' }],
+  },
+  {
+    label: '밸브',
+    items: [
+      { type: 'valve', label: '게이트밸브' },
+      { type: 'ball', label: '볼밸브' },
+      { type: 'bfly', label: '버터플라이밸브' },
+      { type: 'check', label: '체크밸브' },
+      { type: 'yvalve', label: 'Y스트레이너' },
+      { type: 'safety_valve', label: '안전·감압밸브' },
+    ],
+  },
+  {
+    label: '피팅',
+    items: [
+      { type: 'flange', label: '플랜지' },
+      { type: 'reducer', label: '레듀샤', hint: '본관에서 한 단계 작은 관경으로 줄입니다' },
+      { type: 'bellows', label: '벨로우즈 신축관' },
+    ],
+  },
+];
+// 끼워넣은 뒤 양쪽 배관이 남겨야 하는 최소 길이(m) — 이보다 짧아지면 부속이 멈춘다.
+const INSERT_MIN_SIDE = 0.05;
 
 function isQuotaError(e) {
   if (!e) return false;
@@ -271,7 +300,8 @@ class App {
   setupScene() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0d1014);
-    this.scene.fog = new THREE.Fog(0x0d1014, 30, 62);
+    // v75 — 멀리서 볼 때 도면이 너무 빨리 어둡게 묻히지 않게 안개 거리를 넓혔다(30~62 → 70~140).
+    this.scene.fog = new THREE.Fog(0x0d1014, 70, 140);
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.1, 400);
     this.camera.position.set(12, 9.5, 13);
@@ -2657,6 +2687,257 @@ class App {
     return Math.abs(a.x * b.x + a.y * b.y + a.z * b.z) > 0.98;
   }
 
+  // ── ✂️ 배관 중간에 끼워넣기 (v75) ──────────────────────────────────────
+  // 배관을 고른 채 부속·밸브를 넣으면 그 배관을 가운데(또는 지정 지점)에서 둘로 나누고,
+  // 고른 부속을 같은 관경·같은 축으로 가운데에 앉힌다 — 양쪽 배관 끝이 접합면에 0.000m로 닿는다.
+  // 실행취소 한 번이면 나뉘기 전 배관 1개로 그대로 돌아간다.
+  openInsertPicker() {
+    const spec = this.getSelectedSpec();
+    if (!spec || !Array.isArray(spec.points)) {
+      this.toast('먼저 끼워넣을 배관을 고르세요.', { type: 'err' });
+      return;
+    }
+    const total = pipeLength(spec.points);
+    const mid = Math.round(total * 500);   // 가운데(mm)
+    const chips = INSERT_GROUPS.map((g) => `
+        <div class="prop-section">${g.label}</div>
+        <div class="noz-presets">
+          ${g.items.map((it) => `<button class="noz-chip" data-ins="${it.type}"
+            title="${esc(it.hint || '')}">${esc(it.label)}</button>`).join('')}
+        </div>`).join('');
+    this.openModal({
+      title: '✂️ 배관 중간에 끼워넣기',
+      body: `
+        <p class="hint">${esc(spec.name)} · ${esc(spec.bore)} · ${fmt(total)}m 배관을 둘로 나누고,
+          고른 부속·밸브를 <b>같은 관경·같은 축</b>으로 끼워 넣습니다(양쪽 틈 0.0mm).</p>
+        <label class="field">자를 위치 — 시작점에서 몇 mm
+          <input type="number" id="insAt" min="0" step="50" placeholder="${mid}">
+        </label>
+        <p class="hint">비워 두면 가운데(${mid}mm)에서 자릅니다. 양쪽 배관은 50mm 이상 남습니다.</p>
+        ${chips}
+        <p class="hint">넣은 뒤 <b>↔️ 위치 이동</b>·<b>✋ 드래그 이동</b>으로 배관 축 방향으로 옮기면
+          양쪽 배관 길이가 자동으로 늘고 줄어 틈이 생기지 않습니다.</p>`,
+      actions: [{ label: '취소', cls: 'ghost' }],
+    });
+    const root = $('#modalBody');
+    if (root) {
+      root.querySelectorAll('[data-ins]').forEach((b) => b.addEventListener('click', () => {
+        const at = Number($('#insAt').value);
+        this.closeModal();
+        this.insertIntoPipe(b.dataset.ins, Number.isFinite(at) && at > 0 ? at : null);
+      }));
+    }
+  }
+
+  // 배관 하나를 둘로 나누고 그 가운데에 부속을 앉힌다 — atMm은 시작점에서 잰 자를 위치(mm).
+  insertIntoPipe(type, atMm) {
+    const pipe = this.getSelectedSpec();
+    const t = EQUIP_TYPES[type];
+    if (!pipe || !Array.isArray(pipe.points) || pipe.points.length < 2 || !t) return;
+    const pts = pipe.points;
+    const total = pipeLength(pts);
+    const bore = BORES[pipe.bore] ? pipe.bore : '100A';
+    // 레듀샤는 본관 관경에서 한 단계 작은 관경으로 줄인다(이경 티는 속성 패널에서 분기 관경을 고른다).
+    const bi = BORE_KEYS.indexOf(bore);
+    const smallBore = BORE_KEYS[Math.max(0, bi - 1)] || bore;
+    const bore2 = type === 'reducer' ? smallBore : bore;
+    // 부속을 먼저 만들어 면간 폭(span)을 잰다 — 배관·부속이 같은 표를 쓰므로 그 폭이 곧 접합면 사이 거리다.
+    const same = this.state.equipment.filter((e) => e.type === type).length;
+    const fit = makeEquipment(type, {
+      name: `${t.short}-${100 + same + 1} ${t.label}`,
+      x: 0, y: 0, z: 0, bore, bore1: bore, bore2, conn: 'flange', dir: [1, 0, 0],
+    });
+    const span = Math.abs(Number(fit.w) || 0);
+    const half = span / 2;
+    const need = span + INSERT_MIN_SIDE * 2;
+    // 자를 변(segment)을 고른다 — 지정 지점이 있는 변을 우선하고, 그 변이 부속보다 짧으면
+    // 부속이 들어가는 가장 가까운 변을 고른다. 접합면이 꺾임점 밖으로 나가지 않게 하려는 것이다.
+    const segs = [];
+    let accAll = 0;
+    for (let i = 0; i < pts.length - 1; i += 1) {
+      const a0 = pts[i];
+      const b0 = pts[i + 1];
+      const L0 = Math.hypot(b0.x - a0.x, b0.y - a0.y, b0.z - a0.z);
+      segs.push({ i, a: a0, b: b0, L: L0, acc: accAll });
+      accAll += L0;
+    }
+    const longest = segs.reduce((m, g) => Math.max(m, g.L), 0);
+    if (longest < need - 1e-9) {
+      this.toast(`${t.label}(면간 ${Math.round(span * 1000)}mm)를 넣기에는 배관이 짧습니다 — 한 구간이 ${Math.round(need * 1000)}mm 이상이어야 합니다.`, { type: 'err' });
+      return;
+    }
+    // 자를 자리 — 지정 지점(없으면 가운데), 양쪽에 최소 50mm가 남게만 밀어 준다.
+    const want = atMm != null && atMm > 0 ? atMm / 1000 : total / 2;
+    const room = segs.filter((g) => g.L >= need - 1e-9);
+    const here = room.find((g) => want >= g.acc - 1e-9 && want <= g.acc + g.L + 1e-9);
+    const seg = here || room.slice().sort((p, q) =>
+      Math.abs(p.acc + p.L / 2 - want) - Math.abs(q.acc + q.L / 2 - want))[0];
+    const s = Math.min(Math.max(want, seg.acc + half + INSERT_MIN_SIDE), seg.acc + seg.L - half - INSERT_MIN_SIDE);
+    const tt = Math.min(1, Math.max(0, (s - seg.acc) / (seg.L || 1)));
+    const a = seg.a;
+    const b = seg.b;
+    const L = seg.L || 1;
+    const ax = { x: (b.x - a.x) / L, y: (b.y - a.y) / L, z: (b.z - a.z) / L };
+    const c = { x: a.x + (b.x - a.x) * tt, y: a.y + (b.y - a.y) * tt, z: a.z + (b.z - a.z) * tt };
+    const at = (v) => ({ x: r3(c.x + ax.x * v), y: Math.max(0, r3(c.y + ax.y * v)), z: r3(c.z + ax.z * v) });
+    // 부속을 먼저 제자리에 앉힌 뒤, **부속이 실제로 내놓는 접합면 좌표**를 그대로 받아
+    // 배관 끝을 맞춘다 — 경사진 배관에서도 0.001m 반올림 틈이 생기지 않는다.
+    fit.x = r3(c.x);
+    fit.y = Math.max(0, r3(c.y));
+    fit.z = r3(c.z);
+    fit.dir = [r3(ax.x), r3(ax.y), r3(ax.z)];
+    const faces0 = equipConnectFaces(fit);
+    const dotAx = (f) => f.axis.x * ax.x + f.axis.y * ax.y + f.axis.z * ax.z;
+    const faceL = faces0.filter((f) => dotAx(f) < 0).sort((p2, q2) => dotAx(p2) - dotAx(q2))[0];
+    const faceR = faces0.filter((f) => dotAx(f) > 0).sort((p2, q2) => dotAx(q2) - dotAx(p2))[0];
+    const leftEnd = faceL ? { ...faceL.tip } : at(-half);     // 왼쪽 배관이 끝나는 접합면
+    const rightEnd = faceR ? { ...faceR.tip } : at(half);     // 오른쪽 배관이 시작하는 접합면
+    const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) < 1e-6;
+    const segIdx = seg.i;
+    // 왼쪽 배관 — 자른 점 앞까지 + 왼쪽 접합면에서 끝
+    const leftPts = [];
+    for (let k = 0; k <= segIdx; k += 1) {
+      if (tt <= 1e-9 && k === segIdx) break;   // 자른 자리가 꼭짓점 위면 그 점은 오른쪽 배관이 갖는다
+      leftPts.push({ ...pts[k] });
+    }
+    if (!leftPts.length || !near(leftPts[leftPts.length - 1], leftEnd)) leftPts.push({ ...leftEnd });
+    // 오른쪽 배관 — 오른쪽 접합면에서 시작해 나머지 점으로
+    const rightPts = [{ ...rightEnd }];
+    for (let k = (tt >= 1 - 1e-9 ? segIdx + 2 : segIdx + 1); k < pts.length; k += 1) {
+      if (near(rightPts[rightPts.length - 1], pts[k])) continue;
+      rightPts.push({ ...pts[k] });
+    }
+    if (leftPts.length < 2 || rightPts.length < 2) {
+      this.toast('그 자리에서는 배관을 나눌 수 없습니다 — 다른 위치(mm)를 넣어 보세요.', { type: 'err' });
+      return;
+    }
+    this.pushUndo(`${t.label} 중간 끼워넣기`);
+    pipe.points = leftPts;
+    // 레듀샤는 뒤쪽 배관 관경도 줄인다 — 큰 관경에서 작은 관경으로 넘어가는 부속이다.
+    const right = makePipe({
+      name: `${pipe.name} (우측)`,
+      bore: type === 'reducer' ? smallBore : pipe.bore,
+      material: pipe.material,
+      conn: pipe.conn,
+      points: rightPts,
+      ...(pipe.color ? { color: pipe.color } : {}),
+    });
+    this.state.pipes.push(right);
+    this.state.equipment.push(fit);
+    this.lastAdded = { kind: 'equipment', id: fit.id };
+    this.selection = { kind: 'equipment', id: fit.id };
+    this.multiSel = [];
+    this.multiMode = false;
+    this.rebuild();
+    const l1 = pipeLength(leftPts);
+    const l2 = pipeLength(rightPts);
+    this.toast(`✂️ ${t.label}을(를) ${pipe.name} 중간에 끼워넣었습니다 · 좌 ${fmt(l1)}m + 우 ${fmt(l2)}m · 틈 0.0mm`,
+      { action: '되돌리기', onAction: () => this.undo() });
+  }
+
+  // ── 끼워넣은 부속·밸브를 옮기면 양쪽 배관 길이가 따라온다 (v75) ──────────────
+  // 부속의 접합면에 0.000m로 마주 닿은 배관 끝을 찾는다 — 그 끝들이 부속을 따라 움직인다.
+  stretchPartners(spec) {
+    if (!spec || Array.isArray(spec.points) || !spec.type) return [];
+    const faces = equipConnectFaces(spec);
+    if (!faces.length) return [];
+    const tol = 0.004;
+    const out = [];
+    this.state.pipes.forEach((pipe) => {
+      const q = pipe.points || [];
+      if (q.length < 2) return;
+      [0, q.length - 1].forEach((idx) => {
+        if (out.some((o) => o.pipe === pipe && o.idx === idx)) return;
+        const p = q[idx];
+        const nb = idx === 0 ? q[1] : q[q.length - 2];
+        const l = Math.hypot(nb.x - p.x, nb.y - p.y, nb.z - p.z);
+        if (l < 1e-6) return;
+        const u = { x: (nb.x - p.x) / l, y: (nb.y - p.y) / l, z: (nb.z - p.z) / l };
+        const f = faces.find((fc) => {
+          if (Math.hypot(p.x - fc.tip.x, p.y - fc.tip.y, p.z - fc.tip.z) > tol) return false;
+          // 배관이 그 면에서 바깥으로 나가야(=면과 마주 봐야) 0mm로 맞닿은 것이다.
+          return u.x * fc.axis.x + u.y * fc.axis.y + u.z * fc.axis.z > 0.9;
+        });
+        if (f) out.push({ pipe, idx, face: f, axis: { ...f.axis } });
+      });
+    });
+    return out;
+  }
+
+  // 부속을 축 a 위로 d(m)만큼 옮기고, 양쪽 배관 끝을 같은 만큼 데려간다.
+  //  · 한쪽 배관은 d만큼 길어지고 반대쪽은 d만큼 짧아진다 — 틈은 그대로 0.000m.
+  //  · 끝에서 이어진 구간이 50mm보다 짧아지려 하면 그 자리에서 멈춘다(배관이 뒤집히지 않게).
+  //  · 길이는 '끝점→이웃점' 구간으로 잰다 — 배관 총길이는 0을 지나면 다시 늘어나서 부족하다.
+  // parts: [{ pipe, idx, pts0 }] (pts0 = 옮기기 전 점들), base = 부속의 처음 자리.
+  stretchApply(parts, spec, a, base, d) {
+    const MIN = INSERT_MIN_SIDE;
+    let lo = -Infinity;
+    let hi = Infinity;
+    parts.forEach((pt) => {
+      const q = pt.pts0;
+      const idx = pt.idx;
+      const nb = idx === 0 ? q[1] : q[q.length - 2];
+      const e = q[idx];
+      const s0 = Math.hypot(e.x - nb.x, e.y - nb.y, e.z - nb.z);
+      if (!(s0 > 1e-6)) return;
+      const ux = (nb.x - e.x) / s0;
+      const uy = (nb.y - e.y) / s0;
+      const uz = (nb.z - e.z) / s0;
+      // d만큼 옮기면 이 구간 길이 = s0 − d·rate — 50mm 아래로는 못 간다.
+      const rate = a.x * ux + a.y * uy + a.z * uz;
+      if (Math.abs(rate) < 1e-6) return;
+      const bound = (s0 - MIN) / rate;
+      if (rate > 0) hi = Math.min(hi, bound);
+      else lo = Math.max(lo, bound);
+    });
+    let used = d;
+    let clamped = false;
+    if (used > hi) { used = hi; clamped = true; }
+    if (used < lo) { used = lo; clamped = true; }
+    if (!Number.isFinite(used)) used = 0;
+    if (Math.abs(used) < 1e-6) used = 0;
+    clamped = clamped && Math.abs(used - d) > 1e-6;
+    parts.forEach((pt) => {
+      const q = pt.pipe.points;
+      pt.pts0.forEach((p, i) => { q[i] = { ...p }; });
+      if (q.length > pt.pts0.length) q.length = pt.pts0.length;
+      const e = pt.pts0[pt.idx];
+      q[pt.idx] = {
+        x: r3(e.x + a.x * used),
+        y: Math.max(0, r3(e.y + a.y * used)),
+        z: r3(e.z + a.z * used),
+      };
+    });
+    spec.x = r3(base.x + a.x * used);
+    spec.y = Math.max(0, r3(base.y + a.y * used));
+    spec.z = r3(base.z + a.z * used);
+    return { used, clamped };
+  }
+
+  // 방향 버튼(↔️ 위치 이동) 한 번 — 배관 축 방향이면 양쪽 배관 길이가 자동으로 늘고 준다.
+  // 축과 다른 방향(옆으로 빼기)이면 null을 돌려 평소 이동으로 넘긴다.
+  stretchMove(spec, dx, dy, dz) {
+    const found = this.stretchPartners(spec);
+    if (!found.length) return null;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-9) return null;
+    const u = { x: dx / len, y: dy / len, z: dz / len };
+    // 배관 유로 축과 나란한 접합면이 하나라도 있어야 '축 방향 이동'이다.
+    const along = found.some((pt) => Math.abs(pt.axis.x * u.x + pt.axis.y * u.y + pt.axis.z * u.z) > 0.99);
+    if (!along) return null;
+    const parts = found.map((pt) => ({
+      pipe: pt.pipe, idx: pt.idx, pts0: pt.pipe.points.map((q) => ({ ...q })),
+    }));
+    const base = { x: Number(spec.x) || 0, y: Number(spec.y) || 0, z: Number(spec.z) || 0 };
+    const r = this.stretchApply(parts, spec, u, base, len);
+    const report = parts.map((pt) => ({
+      name: pt.pipe.name,
+      from: pipeLength(pt.pts0),
+      to: pipeLength(pt.pipe.points),
+    }));
+    return { used: r.used, clamped: r.clamped, report, blocked: !r.used };
+  }
+
   // 장비·부속·배관을 통째로 Δ만큼 옮긴다 — 모양은 그대로.
   moveSpecBy(spec, dx, dy, dz) {
     if (!spec) return;
@@ -2727,6 +3008,29 @@ class App {
     const dx = axis === 'x' ? sign * meters : 0;
     const dy = axis === 'y' ? sign * meters : 0;
     const dz = axis === 'z' ? sign * meters : 0;
+    // ✂️ 끼워넣은 부속·밸브 — 배관 축 방향 이동이면 양쪽 배관 끝이 따라와 길이가 자동으로 늘고 준다 (v75).
+    if (!multi && !Array.isArray(items[0].spec)) {
+      const one = items[0].spec;
+      const st = this.stretchMove(one, dx, dy, dz);
+      if (st) {
+        this.hideAlignGuides(0);
+        this.rebuild();
+        const n = Math.round(meters * 1000);
+        if (st.blocked) {
+          this.undoStack.pop();   // 아무것도 안 움직였으면 되돌릴 것도 남기지 않는다
+          this.toast('배관이 50mm보다 짧아질 수 없어 더는 못 옵깁니다.', { type: 'err' });
+          return;
+        }
+        const txt = st.report.map((r) => {
+          const dmm = Math.round((r.to - r.from) * 1000);
+          return `${r.name} ${fmt(r.from)}→${fmt(r.to)}m (${dmm >= 0 ? '+' : ''}${dmm}mm)`;
+        }).join(' · ');
+        this.lastMove = `${n}mm · 자동 신축`;
+        this.toast(`↔️ ${one.name} 이동 — ${txt} · 틈 0.0mm${st.clamped ? ' (배관 최소 50mm에서 멈춤)' : ''}`,
+          { type: st.clamped ? 'err' : 'ok', action: '되돌리기', onAction: () => this.undo() });
+        return;
+      }
+    }
     this.applyMoveDelta(items, dx, dy, dz);
     const spec = items[0].spec;
     let snapped = false;
@@ -2835,6 +3139,31 @@ class App {
       })),
     };
     this.controls.enabled = false;
+    // ✂️ 두 배관 사이에 앉은 부속 — 배관 축 방향으로 끌면 양쪽 배관 길이가 따라온다 (v75).
+    if (items.length === 1 && !Array.isArray(items[0].spec.points)) {
+      const spec1 = items[0].spec;
+      const parts = this.stretchPartners(spec1);
+      const fa = equipFlowAxis(spec1);
+      const pick = parts.find((pt) => Math.abs(pt.axis.x * fa.x + pt.axis.y * fa.y + pt.axis.z * fa.z) > 0.99);
+      const hl = pick ? Math.hypot(pick.axis.x, pick.axis.z) : 0;
+      // 바닥 드래그는 수평 이동이라, 수평으로 놓인 배관 축에만 신축이 걸린다.
+      if (pick && hl > 0.5) {
+        this.moveDragState.stretch = {
+          spec: spec1,
+          a: { x: pick.axis.x / hl, y: 0, z: pick.axis.z / hl },
+          base: {
+            x: Number(spec1.x) || 0,
+            y: Number(spec1.y) || 0,
+            z: Number(spec1.z) || 0,
+          },
+          parts: parts.map((pt) => ({
+            pipe: pt.pipe, idx: pt.idx, pts0: pt.pipe.points.map((q) => ({ ...q })),
+          })),
+          on: null,     // 끄는 방향을 보고 처음 한 번 정한다
+          used: null,
+        };
+      }
+    }
     return true;
   }
 
@@ -2860,6 +3189,22 @@ class App {
     if (!st.moved) return;
     const spec = st.single;
     if (spec && !Array.isArray(spec.points)) {
+      // ✂️ 배관 축을 따라 끌면 두 배관의 길이가 자동으로 늘고 준다 — 틈 0.000m 유지 (v75).
+      const sg = st.stretch;
+      if (sg) {
+        const raw = Math.hypot(rawDx, rawDz);
+        if (sg.on == null && raw > 0.02) {
+          sg.on = Math.abs(rawDx * sg.a.x + rawDz * sg.a.z) / raw > 0.7;
+        }
+        if (sg.on) {
+          const r = this.stretchApply(sg.parts, sg.spec, sg.a, sg.base, rawDx * sg.a.x + rawDz * sg.a.z);
+          sg.used = r;
+          this.hideAlignGuides(0);
+          // 배관 길이가 눈에 보이게 — 장면만 다시 그린다(속성 창은 그대로).
+          this.refreshScene();
+          return;
+        }
+      }
       // 하나만 고른 장비·부속 — 기존처럼 접합면 자석 → 축 정렬.
       let nx = r3(st.items[0].x0 + rawDx);
       let nz = r3(st.items[0].z0 + rawDz);
@@ -2929,6 +3274,19 @@ class App {
     this.controls.enabled = true;
     this.hideAlignGuides(1200);
     if (!st.moved) return;
+    // ✂️ 자동 신축 드래그 — 부속과 양쪽 배관이 함께 움직였다.
+    if (st.stretch && st.stretch.used) {
+      const rep = st.stretch.parts.map((pt) => {
+        const dmm = Math.round((pipeLength(pt.pipe.points) - pipeLength(pt.pts0)) * 1000);
+        return `${pt.pipe.name} ${fmt(pipeLength(pt.pts0))}→${fmt(pipeLength(pt.pipe.points))}m (${dmm >= 0 ? '+' : ''}${dmm}mm)`;
+      }).join(' · ');
+      const cl = st.stretch.used.clamped;
+      this.rebuild();
+      this.lastMove = `드래그 · 자동 신축`;
+      this.toast(`↔️ 자동 신축 — ${rep} · 틈 0.0mm${cl ? ' (배관 최소 50mm에서 멈춤)' : ''}`,
+        { type: cl ? 'err' : 'ok', action: '되돌리기', onAction: () => this.undo() });
+      return;
+    }
     const fits = this.autoFitMovedPipes(st.items.map((it) => ({ spec: it.spec })));
     this.rebuild();
     const spec = this.getSelectedSpec();
@@ -3294,6 +3652,8 @@ class App {
         <div class="pt-list">${rows}</div>
         <div class="prop-actions">
           <button class="btn small accent" data-act="from">📍 여기서 이어 그리기</button>
+          <button class="btn small accent" data-act="insert"
+            title="이 배관을 가운데에서 둘로 나누고 티·밸브·부속을 같은 관경으로 끼워 넣습니다">✂️ 중간에 끼워넣기</button>
         </div>
         ${this.copyPasteRow(spec)}
         <div class="prop-actions">
@@ -7009,6 +7369,7 @@ class App {
       if (act === 'delall') { this.deleteSelected(); return; }
       if (act === 'del') this.deleteSelected();
       else if (act === 'from') this.fromHere();
+      else if (act === 'insert') this.openInsertPicker();
       else if (act === 'noz') this.nozContinue(btn.dataset.dir);
       else if (act === 'nozgo') this.nozContinue(btn.dataset.nid);
       else if (act === 'port') this.portContinue(btn.dataset.port);
@@ -7394,6 +7755,7 @@ class App {
           <li><b>✏️ 손 그리기</b> — 보기 바의 <b>✏️ 손 그리기</b>를 켜고 화면을 끌면, 끄는 방향에 가장 가까운 3D 축(+X/−X/+Y/−Y/+Z/−Z)으로 배관이 그려집니다. 길이는 100mm 단위로 반올림되고 미리보기에 표시됩니다. 방향이 꺾이면 엘보가 자동으로 들어가고, 손을 떼면 그 자리에서 다음 구간을 이어 그립니다(두 점을 톡톡 눌러도 됨). 두 손가락은 그대로 확대·이동입니다.</li>
           <li><b>치수 고치기</b> — 화면의 치수 라벨(<code>1000mm (50A)</code>)을 누르면 그 구간 길이를 mm 숫자로 정확히 고칠 수 있습니다. 뒤로 이어진 배관·장비도 함께 움직입니다.</li>
           <li><b>↔️ 위치 이동</b> — 장비·부속·배관을 고르면 속성 패널에 방향 버툰(←/→/앞/뒤/↑/↓)과 보폭 <code>10 · 50 · 100 · 500 · 1000mm</code>가 있습니다. <b>배관도 모든 점이 통째로</b> 옮겨지고, <b>✋ 드래그 이동</b>을 켜면 3D 바닥을 끌어 옮깁니다(실행취소 한 번이면 되돌림).</li>
+          <li><b>✂️ 중간에 끼워넣기</b> — 배관을 고르면 속성 패널에 <b>✂️ 중간에 끼워넣기</b>가 있습니다. 티·밸브·플랜지·레듀샤·벨로우즈 신축관을 고르면 그 배관이 가운데(또는 지정한 mm 지점)에서 둘로 나뉘고, 부속이 같은 관경·같은 축으로 양쪽 0mm 밀착해 앉습니다. 끼워넣은 부속을 <b>↔️ 위치 이동</b>이나 <b>✋ 드래그 이동</b>으로 배관 축 방향으로 옮기면 한쪽 배관은 길어지고 반대쪽은 짧아져 틈이 생기지 않습니다(양쪽 최소 50mm).</li>
           <li><b>☑️ 여러 개 선택</b> — 속성 패널 맨 위의 <b>☑️ 여러 개 선택</b>을 켜면 3D에서 다른 장비·부속·배관을 톡톡 누를 때마다 선택에 더하고 뻐며, <b>🔗 연결된 것 모두</b>로 이어진 밸브·배관 한 줄을 한 번에 잡습니다. 그러면 <b>↔️ 같이 이동</b> — 방향 버툰·보폭·드래그 어느 쪽이든 고른 것 전부가 같은 거리만큼 함께 움직입니다.</li>
           <li><b>내보내기</b> — [파일] 탭에서 JSON 저장·불러오기, <b>Fusion 360 .py</b>, <b>.obj</b>.</li>
         </ol>
