@@ -2621,24 +2621,56 @@ class App {
       if (!best || d < best.d) best = { d, x, y };
     }));
     if (!best) return;
-    const t = { x: r3(best.y.tip.x), y: Math.max(0, r3(best.y.tip.y)), z: r3(best.y.tip.z) };
     this.pushUndo('🔗 이어붙이기');
-    if (best.x.isPipe) this.joinPipeEndTo(best.x, t);
-    else if (best.y.isPipe) this.joinPipeEndTo(best.y, { x: r3(best.x.tip.x), y: Math.max(0, r3(best.x.tip.y)), z: r3(best.x.tip.z) });
-    else {
+    const aPipe = Array.isArray(a.points);
+    const bPipe = Array.isArray(b.points);
+    if (aPipe && bPipe) {
+      // 배관 + 배관 — 가까운 틈(0.5m 이내)이고 거의 같은 축이면 그 끝만 늘려/줄여 잇고,
+      // 멀거나 방향이 어긋나 있으면 두 번째 배관을 통째로 밀어 끝점끼리 0.000m로 맞닫는다.
+      const near = best.d <= 0.5 && (this.endAligned(best.x, best.y.tip) || this.endAligned(best.y, best.x.tip));
+      if (near) {
+        if (best.d > 1e-4) this.joinPipeEndTo(best.x, { x: best.y.tip.x, y: best.y.tip.y, z: best.y.tip.z });
+      } else {
+        this.moveSpecBy(b, best.x.tip.x - best.y.tip.x, best.x.tip.y - best.y.tip.y, best.x.tip.z - best.y.tip.z);
+      }
+    } else if (aPipe) {
+      const t = { x: r3(best.y.tip.x), y: Math.max(0, r3(best.y.tip.y)), z: r3(best.y.tip.z) };
+      this.joinPipeEndTo(best.x, t);
+    } else if (bPipe) {
+      const t = { x: r3(best.x.tip.x), y: Math.max(0, r3(best.x.tip.y)), z: r3(best.x.tip.z) };
+      this.joinPipeEndTo(best.y, t);
+    } else {
       // 둘 다 배관이 아니면 B를 통째로 밀어 두 면을 포갠다.
-      const dx = r3(best.x.tip.x - best.y.tip.x);
-      const dy = r3(best.x.tip.y - best.y.tip.y);
-      const dz = r3(best.x.tip.z - best.y.tip.z);
-      b.x = r3((Number(b.x) || 0) + dx);
-      b.y = Math.max(0, r3((Number(b.y) || 0) + dy));
-      b.z = r3((Number(b.z) || 0) + dz);
+      this.moveSpecBy(b, best.x.tip.x - best.y.tip.x, best.x.tip.y - best.y.tip.y, best.x.tip.z - best.y.tip.z);
     }
     this.rebuild();
     const nm = `${a.name} ↔ ${b.name}`;
     this.toast(`🔗 두 개를 이어 붙였어요 · ${nm} · 0.0mm`, {
       action: '되돌리기', onAction: () => this.undo(),
     });
+  }
+
+  // 배관 끝이 target 쪽으로 거의 곧게 뻗어 있는가 — 끝점만 늘리면 직선이 유지되는지.
+  endAligned(end, target) {
+    const a = unit2(end.tip, end.other);
+    const b = unit2(end.tip, target);
+    return Math.abs(a.x * b.x + a.y * b.y + a.z * b.z) > 0.98;
+  }
+
+  // 장비·부속·배관을 통째로 Δ만큼 옮긴다 — 모양은 그대로.
+  moveSpecBy(spec, dx, dy, dz) {
+    if (!spec) return;
+    if (Array.isArray(spec.points)) {
+      spec.points.forEach((q) => {
+        q.x = r3(q.x + dx);
+        q.y = Math.max(0, r3(q.y + dy));
+        q.z = r3(q.z + dz);
+      });
+      return;
+    }
+    spec.x = r3((Number(spec.x) || 0) + dx);
+    spec.y = Math.max(0, r3((Number(spec.y) || 0) + dy));
+    spec.z = r3((Number(spec.z) || 0) + dz);
   }
 
   // 배관의 한 끝(end)을 target 좌표에 정확히 앉힌다 — 0.000m 이음.
@@ -2653,8 +2685,8 @@ class App {
     const lOther = Math.hypot(other.x - end.tip.x, other.y - end.tip.y, other.z - end.tip.z) || 1;
     const uOther = { x: (other.x - end.tip.x) / lOther, y: (other.y - end.tip.y) / lOther, z: (other.z - end.tip.z) / lOther };
     const dot = uTip.x * uOther.x + uTip.y * uOther.y + uTip.z * uOther.z;
-    // 거의 같은 축이면 끝점만 옮긴다 — 직선 연장·단축(최소 5cm는 남긴다).
-    if (Math.abs(dot) > 0.98 && dSeg > 0.05) {
+    // 거의 같은 축이거나 남는 길이가 너무 짧으면 끝점만 옮긴다 — 직선 연장·단축.
+    if ((Math.abs(dot) > 0.98 && dSeg > 0.05) || dSeg < 0.1) {
       pts[end.idx] = { x: target.x, y: target.y, z: target.z };
       return;
     }
