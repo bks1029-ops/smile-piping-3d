@@ -32,7 +32,9 @@ from playwright.sync_api import sync_playwright
 
 PORT = 8779
 ROOT = '/workspace/projects/smile-piping-3d'
-BASE = f'http://127.0.0.1:{PORT}/'
+LIVE = 'https://bks1029-ops.github.io/smile-piping-3d/'
+# 기본은 로컬 파일, --live 면 배포본(GitHub Pages)을 상대로 같은 검사를 한다.
+BASE = LIVE if '--live' in sys.argv else f'http://127.0.0.1:{PORT}/'
 results = []
 
 
@@ -109,7 +111,7 @@ def dist3(a, b):
 
 # ── 페이지 안 도우미 ────────────────────────────────────────────────────
 LOAD_STORE = '''async () => {
-  window.__S = await import('/js/store.js?v=79');
+  window.__S = await import('./js/store.js?v=79');
   return true;
 }'''
 
@@ -226,9 +228,11 @@ PREP = '''() => {
 
 
 def main():
-    srv = subprocess.Popen([sys.executable, '-m', 'http.server', str(PORT), '--bind', '127.0.0.1'],
-                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1.2)
+    live = '--live' in sys.argv
+    srv = None if live else subprocess.Popen(
+        [sys.executable, '-m', 'http.server', str(PORT), '--bind', '127.0.0.1'],
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1.2 if srv else 0)
     try:
         with sync_playwright() as p:
             b = p.chromium.launch()
@@ -479,11 +483,12 @@ def main():
             check('⑩ 콘솔 오류 0건', not errs, '; '.join(errs[:3]))
             b.close()
     finally:
-        srv.terminate()
-        try:
-            srv.wait(timeout=3)
-        except Exception:
-            srv.kill()
+        if srv:
+            srv.terminate()
+            try:
+                srv.wait(timeout=3)
+            except Exception:
+                srv.kill()
 
     bad = [r for r in results if not r[1]]
     print(f'\n{len(results) - len(bad)}/{len(results)} 통과')
