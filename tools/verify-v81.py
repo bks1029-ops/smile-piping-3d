@@ -360,9 +360,13 @@ def run(browser, viewport, mobile, shots):
     check(f'[{tag}] H. 「📷 1장 PNG 저장」이 PNG 파일을 내려준다',
           head[:4] == b'\x89PNG' and os.path.getsize(path) > 20000,
           f"{d.suggested_filename} · {os.path.getsize(path)}바이트")
-    printed = page.evaluate('''() => { window.__printed = 0; return true; }''')
+    page.evaluate('''() => { window.__printed = 0; }''')
     page.click('#ppQuickPrint')
-    page.wait_for_timeout(600)
+    # 이미지 디코드 뒤 인쇄가 불리므로 고정 대기 대신 조건을 기다린다
+    try:
+        page.wait_for_function('() => window.__printed >= 1', timeout=8000)
+    except Exception:
+        pass
     pr = page.evaluate('() => ({ printed: window.__printed, info: __app.printSheetInfo })')
     check(f'[{tag}] H. 「🖨️ 바로 인쇄」가 지금 화면 1장짜리 시트로 인쇄를 부른다',
           pr['printed'] == 1 and pr['info'] and pr['info']['cuts'] == 1,
@@ -371,7 +375,11 @@ def run(browser, viewport, mobile, shots):
     # ── I. A4 시트 — 컷 + 자재표 ────────────────────────────────────
     page.evaluate('() => { window.__printed = 0; }')
     page.click('#ppPrint')
-    page.wait_for_timeout(800)
+    try:
+        page.wait_for_function('() => window.__printed >= 1', timeout=8000)
+    except Exception:
+        pass
+    page.wait_for_timeout(200)
     sheet = page.evaluate('() => window.__P.paneHtml()')
     pr2 = page.evaluate('() => ({ printed: window.__printed, info: __app.printSheetInfo })')
     check(f'[{tag}] I. 「A4 도면 인쇄 / PDF 저장」이 인쇄를 부른다 (window.print 1회)',
@@ -553,17 +561,22 @@ def run(browser, viewport, mobile, shots):
           saved2['before']['timer'] is True and saved2['after']['timer'] is False
           and abs((saved2['after']['savedX'] or 0) - (saved2['after']['stateX'] or 0)) < 1e-9,
           json.dumps(saved2['after']))
-    deb = page.evaluate('''async () => {
+    # 대기 시간을 시계로 재면 브라우저 타이머 조절에 흔들린다 — setTimeout 에 넘어간 지연값을 직접 본다.
+    deb = page.evaluate('''() => {
       const a = __app;
-      localStorage.removeItem('smilePiping3D.v1');
+      const orig = window.setTimeout;
+      let delay = null;
+      window.setTimeout = function (fn, ms) {
+        if (delay === null && typeof ms === 'number' && ms > 0) delay = ms;
+        const args = Array.prototype.slice.call(arguments, 0);
+        return orig.apply(window, args);
+      };
       a.scheduleSave();
-      const t0 = performance.now();
-      await new Promise((r) => setTimeout(r, 320));
-      const fast = localStorage.getItem('smilePiping3D.v1') !== null;
-      return { fast, ms: Math.round(performance.now() - t0) };
+      window.setTimeout = orig;
+      return { delay };
     }''')
-    check(f'[{tag}] N. 저장 대기는 600ms가 아니라 150ms (0.3초 안에 기록)', deb['fast'],
-          json.dumps(deb))
+    check(f'[{tag}] N. 저장 대기가 600ms → 150ms 로 줄었다', deb['delay'] == 150,
+          f"setTimeout 지연 {deb['delay']}ms")
 
     # ── O. 콘솔 오류 ───────────────────────────────────────────────
     js = page.evaluate('() => window.__errors.slice()')
