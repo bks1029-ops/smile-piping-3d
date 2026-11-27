@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=80';
-import { buildScene } from './builders.js?v=80';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=80';
-import { buildOBJ } from './obj.js?v=80';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=80';
-import { parseCommand, CMD_HELP } from './cmd.js?v=80';
-import { buildDimItems } from './dims.js?v=80';
-import { buildAiImageParts } from './zoom.js?v=80';
+} from './store.js?v=81';
+import { buildScene } from './builders.js?v=81';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=81';
+import { buildOBJ } from './obj.js?v=81';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=81';
+import { parseCommand, CMD_HELP } from './cmd.js?v=81';
+import { buildDimItems } from './dims.js?v=81';
+import { buildAiImageParts } from './zoom.js?v=81';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -242,6 +242,7 @@ class App {
     this.setupDims();
     this.setupHand();
     this.setupHandDim();
+    this.setupPrint();
     this.setupZoomGuard();
     this.setupKeyboardView();
     this.setupKbDirBar();
@@ -276,8 +277,13 @@ class App {
     window.addEventListener('popstate', () => this.onPopState());
     // 화면이 꺼지거나 다른 앱으로 갔다 오면 wake lock이 풀리므로, 분석 중이면 다시 잡는다.
     document.addEventListener('visibilitychange', () => {
+      // 앱을 내리거나 다른 앱으로 가는 순간 — 아직 대기 중인 저장을 바로 기록한다(v81).
+      if (document.visibilityState === 'hidden') this.flushPendingSave();
       if (this.aiRunning && document.visibilityState === 'visible') this.acquireWakeLock();
     });
+    // 탭을 닫거나 뒤로 가도 마지막 이동이 사라지지 않게 (v81)
+    window.addEventListener('pagehide', () => this.flushPendingSave());
+    window.addEventListener('beforeunload', () => this.flushPendingSave());
   }
 
   restore() {
@@ -290,6 +296,9 @@ class App {
 
   setupRenderer() {
     const canvas = $('#scene');
+    // 🖨️ 컷 담기는 renderer.render() 직후 **같은 작업 안에서** 캔버스를 읽는다.
+    // (preserveDrawingBuffer 는 켜지 않는다 — 저사양 폰·소프트웨어 렌더링에서 WebGL 프로그램/메모리가
+    //  모자라 렌더가 깨지는 사례가 있어, 기본값으로 두고 한 프레임을 그린 즉시 읽는 방식만 쓴다.)
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.shadowMap.enabled = true;
@@ -358,10 +367,9 @@ class App {
     this.scene.add(rim);
 
     // 바닥 (1m 격자 · 5m 강조선을 텍스처로 그려 거리에서 자연스럽게 사라지게)
-    this.ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(150, 150),
-      new THREE.MeshStandardMaterial({ map: this.makeGridTexture(), roughness: 0.95, metalness: 0.02 }),
-    );
+    // 인쇄용 흰 배경(v81)에서는 같은 격자를 밝은 회색으로 그린 텍스처로 잠깐 바꿔 끼운다.
+    this.groundMat = new THREE.MeshStandardMaterial({ map: this.makeGridTexture(), roughness: 0.95, metalness: 0.02 });
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150), this.groundMat);
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.y = -0.012;
     this.ground.receiveShadow = true;
@@ -381,22 +389,23 @@ class App {
     const lz = this.makeLabel('Z', '#8fb6ff'); lz.position.set(0, 0.22, 2.7); this.scene.add(lz);
   }
 
-  makeGridTexture() {
+  makeGridTexture(opts) {
+    const o = opts || {};
     const S = 512;
     const c = document.createElement('canvas');
     c.width = S; c.height = S;
     const g = c.getContext('2d');
-    g.fillStyle = '#151b21';
+    g.fillStyle = o.back || '#151b21';
     g.fillRect(0, 0, S, S);
     const step = S / 5;
-    g.strokeStyle = '#232d37';
+    g.strokeStyle = o.line || '#232d37';
     g.lineWidth = 2;
     for (let i = 1; i < 5; i += 1) {
       const p = Math.round(i * step) + 0.5;
       g.beginPath(); g.moveTo(p, 0); g.lineTo(p, S); g.stroke();
       g.beginPath(); g.moveTo(0, p); g.lineTo(S, p); g.stroke();
     }
-    g.strokeStyle = '#36434f';
+    g.strokeStyle = o.strong || '#36434f';
     g.lineWidth = 4;
     g.beginPath(); g.moveTo(2, 0); g.lineTo(2, S); g.stroke();
     g.beginPath(); g.moveTo(0, 2); g.lineTo(S, 2); g.stroke();
@@ -7115,10 +7124,616 @@ class App {
     });
   }
 
+  // ── 🖨️ 도면 인쇄 · 컷 담기 (v81) ─────────────────────────
+  // 3D 화면을 HTML UI(버튼·조이스틱·명령창) 없이 그대로 담는다 — 캔버스만 그리므로 UI는
+  // 애초에 섞이지 않는다. 흰 배경(인쇄 기본)은 **투명 배경으로 렌더 → 흰 종이에 합성**이라
+  // 배경이 톤매핑에 눌려 회색으로 뜨지 않고 #ffffff 그대로 나온다. 화면의 어두운 테마는
+  // 담는 순간에만 바꿨다가 finally에서 곧바로 되돌리므로 작업 화면은 그대로다.
+  setupPrint() {
+    this.cuts = [];            // 담은 컷 — 메모리에만 둔다(localStorage에 이미지를 쌓지 않는다)
+    this.cutSeq = 0;
+    this.ppOpen = false;
+    this.ppMin = false;
+    try { this.ppBg = localStorage.getItem('smilePiping3D.printBg') === 'dark' ? 'dark' : 'white'; } catch (e) { this.ppBg = 'white'; }
+    try { this.ppDims = localStorage.getItem('smilePiping3D.printDims') !== 'off'; } catch (e) { this.ppDims = true; }
+    try { this.ppPerPage = localStorage.getItem('smilePiping3D.printPerPage') === '2' ? 2 : 1; } catch (e) { this.ppPerPage = 1; }
+
+    const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
+    on('#ppClose', 'click', () => this.closePrintPanel());
+    on('#ppMin', 'click', () => this.setPrintMin(!this.ppMin));
+    on('#ppBgWhite', 'click', () => this.setPrintBg('white'));
+    on('#ppBgDark', 'click', () => this.setPrintBg('dark'));
+    on('#ppDims', 'change', (e) => { this.ppDims = !!e.target.checked; this.persistPrintOptions(); });
+    on('#ppAdd', 'click', () => this.addCut());
+    on('#ppQuickPng', 'click', () => this.saveCutPng());
+    on('#ppQuickPrint', 'click', () => this.printOneCut());
+    on('#ppPrint', 'click', () => this.printAllCuts());
+    on('#ppClear', 'click', () => this.clearCuts());
+    on('#ppPerPage', 'change', (e) => {
+      this.ppPerPage = Number(e.target.value) === 2 ? 2 : 1;
+      this.persistPrintOptions();
+      this.toast(this.ppPerPage === 2 ? '한 장에 2컷씩 인쇄합니다' : '한 장에 1컷씩 인쇄합니다');
+    });
+    on('#btnPrintSheet', 'click', () => { this.setDrawerOpen(false); this.openPrintPanel(); });
+    const list = $('#ppList');
+    if (list) {
+      list.addEventListener('click', (e) => this.onCutListClick(e));
+      list.addEventListener('input', (e) => this.onCutListInput(e));
+    }
+    // 인쇄 창을 닫으면 시트를 지금 컷 목록으로 다시 맞춘다(다음 인쇄가 바로 되게).
+    window.addEventListener('afterprint', () => {
+      if (this.ppPrinted) { this.ppPrinted = false; this.buildPrintSheet(this.cuts); }
+    });
+    this.syncPrintOptions();
+    this.renderCutList();
+  }
+
+  persistPrintOptions() {
+    try {
+      localStorage.setItem('smilePiping3D.printBg', this.ppBg);
+      localStorage.setItem('smilePiping3D.printDims', this.ppDims ? 'on' : 'off');
+      localStorage.setItem('smilePiping3D.printPerPage', String(this.ppPerPage));
+    } catch (e) { /* ignore */ }
+  }
+
+  syncPrintOptions() {
+    const w = $('#ppBgWhite');
+    const d = $('#ppBgDark');
+    if (w) w.classList.toggle('active', this.ppBg === 'white');
+    if (d) d.classList.toggle('active', this.ppBg === 'dark');
+    const dims = $('#ppDims');
+    if (dims) dims.checked = !!this.ppDims;
+    const per = $('#ppPerPage');
+    if (per) per.value = String(this.ppPerPage);
+  }
+
+  setPrintBg(bg) {
+    this.ppBg = bg === 'dark' ? 'dark' : 'white';
+    this.syncPrintOptions();
+    this.persistPrintOptions();
+    this.toast(this.ppBg === 'white' ? '⬜ 흰 배경으로 담습니다 — 인쇄에 잉크가 덜 듭니다' : '⬛ 화면과 같은 어두운 배경으로 담습니다');
+  }
+
+  openPrintPanel() {
+    const el = $('#printPanel');
+    if (!el) return;
+    el.hidden = false;
+    this.ppOpen = true;
+    this.setPrintMin(false);
+    this.renderCutList();
+    this.syncOverlayEntry();
+  }
+
+  closePrintPanel() {
+    const el = $('#printPanel');
+    if (!el) return;
+    el.hidden = true;
+    this.ppOpen = false;
+    this.releaseOverlayEntry();
+  }
+
+  setPrintMin(on) {
+    this.ppMin = !!on;
+    const el = $('#printPanel');
+    if (el) el.classList.toggle('min', this.ppMin);
+    const b = $('#ppMin');
+    if (b) {
+      b.textContent = this.ppMin ? '▴' : '▾';
+      b.title = this.ppMin ? '펼치기' : '접기 (3D 화면을 넓게)';
+      b.setAttribute('aria-label', this.ppMin ? '펼치기' : '접기');
+    }
+  }
+
+  // 현재 화면을 컷으로 담는다 — 흰 배경이면 그리는 동안만 장면 테마를 바꿨다가 되돌린다.
+  captureView(opts) {
+    const o = Object.assign({ white: this.ppBg === 'white', dims: !!this.ppDims }, opts || {});
+    const renderer = this.renderer;
+    const scene = this.scene;
+    const gl = renderer.domElement;
+    const prev = {
+      bg: scene.background,
+      fog: scene.fog,
+      ground: this.ground ? this.ground.visible : null,
+      alpha: renderer.getClearAlpha(),
+      helpers: (this.helpers || []).map((h) => h.visible),
+      marker: this.cmdMarker ? this.cmdMarker.visible : null,
+      hand: this.handPreviewGroup ? this.handPreviewGroup.visible : null,
+      anchor: this.handAnchorDot ? this.handAnchorDot.visible : null,
+    };
+    // 고른 것의 주황 상자·커서·손그리기 미리보기는 종이에 넣지 않는다.
+    (this.helpers || []).forEach((h) => { h.visible = false; });
+    if (this.cmdMarker) this.cmdMarker.visible = false;
+    if (this.handPreviewGroup) this.handPreviewGroup.visible = false;
+    if (this.handAnchorDot) this.handAnchorDot.visible = false;
+    let out = null;
+    let labels = 0;
+    try {
+      if (o.white) {
+        scene.background = null;                        // 배경을 비우고
+        renderer.setClearAlpha(0);                      // 투명하게 지운 뒤
+        scene.fog = new THREE.Fog(0xffffff, 90, 220);   // 먼 곳은 흰 종이로 옅게
+        // 바닥 판은 끈다 — 어두운 격자 텍스처가 종이에 잉크로 깔리지 않게.
+        // 종이의 1m 격자는 아래 2D 합성(paintFloorGrid)이 가는 회색 선으로 그린다.
+        if (this.ground) this.ground.visible = false;
+      }
+      // 댐핑이 남긴 미세한 카메라 이동을 반영하고, 애니메이션 루프와 같은 한 프레임을 그린다.
+      this.controls.update();
+      renderer.render(scene, this.camera);
+      out = document.createElement('canvas');
+      out.width = gl.width;
+      out.height = gl.height;
+      const g = out.getContext('2d');
+      const k = gl.width / (gl.clientWidth || 1);
+      if (o.white) {
+        g.fillStyle = '#ffffff';
+        g.fillRect(0, 0, out.width, out.height);
+        this.paintFloorGrid(g, k);      // 종이 위 1m 격자(가는 회색 선) — 3D보다 아래에 깔린다
+      }
+      g.imageSmoothingEnabled = true;
+      g.drawImage(gl, 0, 0);
+      labels = o.dims ? this.paintDimLabels(g, k, !!o.white) : 0;
+    } finally {
+      scene.background = prev.bg;
+      scene.fog = prev.fog;
+      if (this.ground) this.ground.visible = prev.ground;
+      renderer.setClearAlpha(prev.alpha);
+      (this.helpers || []).forEach((h, i) => { h.visible = prev.helpers[i]; });
+      if (this.cmdMarker) this.cmdMarker.visible = prev.marker;
+      if (this.handPreviewGroup) this.handPreviewGroup.visible = prev.hand;
+      if (this.handAnchorDot) this.handAnchorDot.visible = prev.anchor;
+      renderer.render(scene, this.camera);   // 화면을 원래 테마로 곧바로 되돌린다
+    }
+    const url = out.toDataURL('image/png');
+    this.lastCapture = { url, w: out.width, h: out.height, white: !!o.white, dims: labels };
+    return this.lastCapture;
+  }
+
+  // 흰 종이 위 1m 격자 — 3D 바닥 판(어두운 텍스처) 대신 담은 그림 위에 가는 회색 선으로 긋는다.
+  // 5m마다 조금 진하게, 먼 쪽은 옅게. 선은 화면(캔버스) 좌표로 직접 그려 인쇄에서 또렷하다.
+  paintFloorGrid(ctx, k) {
+    const cam = this.camera;
+    if (!cam) return;
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const scale = k || 1;
+    const inv = cam.matrixWorldInverse;
+    const proj = cam.projectionMatrix;
+    const near = cam.near * 1.2;
+    const a3 = this._gridA || (this._gridA = new THREE.Vector3());
+    const b3 = this._gridB || (this._gridB = new THREE.Vector3());
+    const half = 45;
+    const st = ctx.strokeStyle;
+    const lw = ctx.lineWidth;
+    const ga = ctx.globalAlpha;
+    ctx.lineCap = 'butt';
+
+    const seg = (x0, z0, x1, z1, color, width, fadeFrom) => {
+      a3.set(x0, 0, z0).applyMatrix4(inv);
+      b3.set(x1, 0, z1).applyMatrix4(inv);
+      if (a3.z > -near && b3.z > -near) return;
+      if (a3.z > -near) { const t = (-near - a3.z) / (b3.z - a3.z); a3.lerpVectors(a3, b3, t); }
+      else if (b3.z > -near) { const t = (-near - b3.z) / (a3.z - b3.z); b3.lerpVectors(b3, a3, t); }
+      const d = Math.min(-a3.z, -b3.z);
+      const alpha = Math.max(0.18, Math.min(1, 1 - (d - fadeFrom) / 40));
+      a3.applyMatrix4(proj);
+      b3.applyMatrix4(proj);
+      const ax = (a3.x * 0.5 + 0.5) * W;
+      const ay = (-a3.y * 0.5 + 0.5) * H;
+      const bx = (b3.x * 0.5 + 0.5) * W;
+      const by = (-b3.y * 0.5 + 0.5) * H;
+      if ((ax < 0 && bx < 0) || (ax > W && bx > W) || (ay < 0 && by < 0) || (ay > H && by > H)) return;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width * scale;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    };
+
+    for (let i = -half; i <= half; i += 1) {
+      if (i % 5 === 0) continue;                       // 5m 선은 따로 (조금 진하게)
+      seg(i, -half, i, half, '#dfe6ee', 0.9, 22);
+      seg(-half, i, half, i, '#dfe6ee', 0.9, 22);
+    }
+    for (let i = -half; i <= half; i += 5) {
+      seg(i, -half, i, half, '#c9d4e1', 1.35, 22);
+      seg(-half, i, half, i, '#c9d4e1', 1.35, 22);
+    }
+    // 원점 축 (X 빨강 · Z 파랑) — 화면의 X·Y·Z 글자와 같은 색으로 옅게
+    seg(0, 0, 2.4, 0, '#e08a86', 1.4, 0);
+    seg(0, 0, 0, 2.4, '#7fa8ea', 1.4, 0);
+
+    ctx.globalAlpha = ga;
+    ctx.strokeStyle = st;
+    ctx.lineWidth = lw;
+  }
+
+  // 치수 라벨(`1000mm (50A)`)은 HTML이라 캔버스에 없다 — 담은 그림 위에 같은 자리·같은 글로
+  // 다시 그려 넣는다(흰 종이에는 진한 글씨, 어두운 화면에는 원래 색).
+  paintDimLabels(ctx, k, white) {
+    const layer = this.dimLayer;
+    const nodes = this.dimNodes || [];
+    if (!layer || !nodes.length) return 0;
+    const base = layer.getBoundingClientRect();
+    if (!base.width || !base.height) return 0;
+    const scale = k || 1;
+    let n = 0;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    nodes.forEach((el) => {
+      if (!el || el.hidden || el.style.display === 'none' || !el.textContent) return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return;
+      const x = (r.left - base.left) * scale;
+      const y = (r.top - base.top) * scale;
+      const w = r.width * scale;
+      const h = r.height * scale;
+      if (x + w < 0 || y + h < 0 || x > ctx.canvas.width || y > ctx.canvas.height) return;
+      const rad = Math.max(2, 4 * scale);
+      ctx.beginPath();
+      ctx.moveTo(x + rad, y);
+      ctx.lineTo(x + w - rad, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+      ctx.lineTo(x + w, y + h - rad);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+      ctx.lineTo(x + rad, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+      ctx.lineTo(x, y + rad);
+      ctx.quadraticCurveTo(x, y, x + rad, y);
+      ctx.closePath();
+      ctx.fillStyle = white ? 'rgba(255, 255, 255, 0.94)' : 'rgba(13, 17, 22, 0.78)';
+      ctx.fill();
+      ctx.lineWidth = Math.max(1, 1 * scale);
+      ctx.strokeStyle = white ? 'rgba(70, 84, 102, 0.55)' : 'rgba(245, 166, 35, 0.38)';
+      ctx.stroke();
+      let fs = 10.5;
+      try { fs = parseFloat(getComputedStyle(el).fontSize) || 10.5; } catch (e) { /* ignore */ }
+      ctx.font = `600 ${Math.max(9 * scale, fs * scale)}px "Pretendard", -apple-system, "Malgun Gothic", system-ui, sans-serif`;
+      ctx.fillStyle = white ? '#1b2430' : '#ffd28a';
+      ctx.fillText(el.textContent, x + w / 2, y + h / 2 + 0.5 * scale);
+      n += 1;
+    });
+    ctx.restore();
+    return n;
+  }
+
+  // ── 컷 목록 ──────────────────────────────────────────────
+  // 목록용 작은 그림(JPEG). 원본 PNG는 그대로 두고 목록에만 작은 사본을 쓴다 —
+  // <img>를 만든 직후 drawImage하면 아직 안 풀렸을 때 검은 칸이 되므로 onload 뒤에 줄인다.
+  makeThumb(url) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const fallback = () => resolve(url);
+      img.onload = () => {
+        try {
+          const w = 168;
+          const h = Math.max(1, Math.round(w * ((img.naturalHeight || img.height) / (img.naturalWidth || img.width || 1))));
+          const c = document.createElement('canvas');
+          c.width = w;
+          c.height = Math.min(h, w * 2);
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          const t = c.toDataURL('image/jpeg', 0.72);
+          resolve(t.length > 64 ? t : url);
+        } catch (e) { fallback(); }
+      };
+      img.onerror = fallback;
+      img.src = url;
+    });
+  }
+
+  addCut() {
+    const MAX = 12;
+    if (this.cuts.length >= MAX) {
+      this.toast(`컷은 ${MAX}장까지 담을 수 있습니다 — 하나 지우고 다시 담아 주세요.`);
+      return null;
+    }
+    const cap = this.captureView();
+    const cut = {
+      id: `cut${++this.cutSeq}`,
+      title: `컷 ${this.cuts.length + 1}`,
+      memo: '',
+      url: cap.url,
+      thumb: cap.url,       // 목록에는 먼저 원본을 쓰고, 작은 사본이 준비되면 바꿔 끼운다
+      w: cap.w,
+      h: cap.h,
+      bg: cap.white ? 'white' : 'dark',
+      at: Date.now(),
+    };
+    this.cuts.push(cut);
+    this.renderCutList();
+    // 방금 담은 컷이 목록 아래에 가려지지 않게 그쪽으로 굴려 준다.
+    const list = $('#ppList');
+    const box = list && list.closest ? list.closest('.pp-body') : null;
+    if (box) box.scrollTop = box.scrollHeight;
+    this.makeThumb(cap.url).then((t) => {
+      cut.thumb = t;
+      // 다시 그리지 않고 그 칸의 그림만 바꾼다(제목을 치는 중이면 초점을 잃지 않게).
+      const el = document.querySelector(`#ppList img[data-id="${cut.id}"]`);
+      if (el && el.src !== t) el.src = t;
+    });
+    this.toast(`📷 ${cut.title} 담았습니다 — 3D를 다음 구역으로 옮겨 또 담으세요.`);
+    return cut;
+  }
+
+  renderCutList() {
+    const host = $('#ppList');
+    const cnt = $('#ppCount');
+    if (cnt) cnt.textContent = `컷 ${this.cuts.length}장`;
+    const b = $('#ppPrint');
+    if (b) b.textContent = this.cuts.length > 1 ? `🖨️ A4 도면 인쇄 / PDF 저장 (${this.cuts.length}컷)` : '🖨️ A4 도면 인쇄 / PDF 저장';
+    if (!host) return;
+    if (!this.cuts.length) {
+      host.innerHTML = '<li class="pp-empty">아직 담은 컷이 없습니다.<br>3D를 원하는 구역으로 옮긴 뒤 <b>📷 현재 화면 컷 담기</b>를 누르면 차례로 쌓입니다.</li>';
+      return;
+    }
+    host.innerHTML = this.cuts.map((c, i) => `
+      <li class="pp-cut" data-id="${c.id}">
+        <img class="pp-thumb" data-id="${c.id}" alt="" src="${c.thumb || c.url}">
+        <div class="pp-cut-body">
+          <input class="pp-title-in" data-id="${c.id}" value="${esc(c.title)}" maxlength="40" placeholder="제목 (예: 펌프 구역)" aria-label="컷 ${i + 1} 제목">
+          <input class="pp-memo-in" data-id="${c.id}" value="${esc(c.memo)}" maxlength="70" placeholder="메모 (선택 · 예: P-101 토출 정면)" aria-label="컷 ${i + 1} 메모">
+          <div class="pp-cut-acts">
+            <button type="button" class="pp-mini" data-act="png" data-id="${c.id}">PNG 저장</button>
+            <button type="button" class="pp-mini del" data-act="del" data-id="${c.id}">삭제</button>
+            <span class="pp-dim">${c.bg === 'dark' ? '⬛ ' : ''}${c.w}×${c.h}</span>
+          </div>
+        </div>
+      </li>`).join('');
+  }
+
+  onCutListInput(e) {
+    const t = e.target;
+    if (!t || !t.dataset || !t.dataset.id) return;
+    const cut = this.cuts.find((c) => c.id === t.dataset.id);
+    if (!cut) return;
+    if (t.classList.contains('pp-title-in')) cut.title = t.value;
+    else if (t.classList.contains('pp-memo-in')) cut.memo = t.value;
+  }
+
+  onCutListClick(e) {
+    const b = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!b) return;
+    const cut = this.cuts.find((c) => c.id === b.dataset.id);
+    if (!cut) return;
+    const i = this.cuts.indexOf(cut);
+    if (b.dataset.act === 'png') {
+      this.downloadDataUrl(this.cutFileName(i), cut.url);
+      this.toast(`📷 ${cut.title} PNG로 저장했습니다`);
+    } else if (b.dataset.act === 'del') {
+      this.cuts.splice(i, 1);
+      this.renderCutList();
+      this.toast(`${cut.title}을(를) 뺐습니다 — 남은 컷 ${this.cuts.length}장`);
+    }
+  }
+
+  clearCuts() {
+    if (!this.cuts.length) { this.toast('지울 컷이 없습니다.'); return; }
+    const n = this.cuts.length;
+    this.cuts = [];
+    this.renderCutList();
+    this.toast(`담은 컷 ${n}장을 모두 지웠습니다`);
+  }
+
+  cutFileName(i) {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    return `smile-piping-cut${i + 1}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}.png`;
+  }
+
+  downloadDataUrl(filename, dataUrl) {
+    try {
+      // data: URL을 그대로 a[download]에 넣으면 iOS Safari가 새 탭으로 열어 버린다 —
+      // Blob URL로 바꿔 내려받게 한다(못 만들면 data: URL 그대로).
+      let href = dataUrl;
+      let blobUrl = null;
+      const m = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(String(dataUrl || ''));
+      if (m && m[2] && window.Blob && window.URL && URL.createObjectURL) {
+        const bin = atob(m[3]);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i);
+        blobUrl = URL.createObjectURL(new Blob([arr], { type: m[1] || 'image/png' }));
+        href = blobUrl;
+      }
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+      return true;
+    } catch (e) {
+      console.warn('PNG 저장 실패', e);
+      this.toast('PNG를 저장하지 못했습니다 — 브라우저 다운로드 설정을 확인해 주세요.', { type: 'err' });
+      return false;
+    }
+  }
+
+  // 지금 화면 한 장만 PNG로 바로 저장
+  saveCutPng() {
+    const cap = this.captureView();
+    if (this.downloadDataUrl(this.cutFileName(0).replace('cut1', 'view'), cap.url)) {
+      this.toast('📷 지금 화면을 PNG로 저장했습니다');
+    }
+    return cap;
+  }
+
+  // ── A4 인쇄 시트 ─────────────────────────────────────────
+  buildPrintSheet(list, opts) {
+    const host = $('#printSheet');
+    if (!host) return Promise.resolve({ pages: 0, cuts: 0 });
+    const src = (list || this.cuts || []).filter((c) => c && c.url);
+    const per = Math.max(1, Math.min(2, Number((opts && opts.perPage) || this.ppPerPage) || 1));
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const scene = this.state.name || '내 배관 도면';
+    const groups = [];
+    for (let i = 0; i < src.length; i += per) groups.push(src.slice(i, i + per));
+    const total = groups.length + 1;   // + 자재 수량표 한 장
+
+    const head = (right) => `
+      <header class="ps-head">
+        <div class="ps-brand"><b>스마일산업 3D 배관 도면</b><span>${esc(scene)}</span></div>
+        <div class="ps-meta">${stamp} · 컷 ${src.length}장 · ${right}</div>
+      </header>`;
+
+    let html = '';
+    groups.forEach((group, gi) => {
+      const figs = group.map((c) => `
+        <figure class="ps-fig">
+          <div class="ps-img"><img data-cut="${esc(c.id)}" alt="${esc(c.title || '도면 컷')}"></div>
+          <figcaption><b>${esc(c.title || '')}</b>${c.memo ? `<span>${esc(c.memo)}</span>` : ''}</figcaption>
+        </figure>`).join('');
+      html += `
+      <section class="ps-page${per > 1 ? ' ps-2up' : ''}">
+        ${head(`${gi + 1}/${total}`)}
+        ${figs}
+        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃 · 단위 m · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
+      </section>`;
+    });
+
+    html += this.bomPageHtml(stamp, src.length, `${total}/${total}`);
+    host.innerHTML = html;
+
+    // 이미지는 innerHTML에 넣지 않고 프로퍼티로 — base64가 길어 마크업이 무거워진다.
+    const byId = {};
+    src.forEach((c) => { byId[c.id] = c; });
+    const imgs = Array.from(host.querySelectorAll('img[data-cut]'));
+    imgs.forEach((img) => {
+      const c = byId[img.dataset.cut];
+      if (c) img.src = c.url;
+    });
+    const done = Promise.all(imgs.map((img) => (img.decode ? img.decode().catch(() => {}) : Promise.resolve())));
+    this.ppPrinted = true;
+    this.printSheetInfo = { pages: total, cuts: imgs.length, per };
+    return done.then(() => this.printSheetInfo);
+  }
+
+  // 자재 · 배관 수량표 — 지금 도면의 배관 길이(관경·재질별)와 부속·장비 개수를 센다.
+  buildBom() {
+    const matLabel = (m) => (MATERIALS[m] && MATERIALS[m].label) || '흑관·카본스틸';
+    const pipeMap = new Map();
+    let totalLen = 0;
+    (this.state.pipes || []).forEach((p) => {
+      const mat = matLabel(p.material);
+      const key = `${p.bore}|${mat}`;
+      const row = pipeMap.get(key) || { bore: p.bore, material: mat, len: 0, segs: 0, count: 0 };
+      const len = pipeLength(p.points || []);
+      row.len += len;
+      row.segs += Math.max(0, (p.points || []).length - 1);
+      row.count += 1;
+      totalLen += len;
+      pipeMap.set(key, row);
+    });
+    const catLabel = { equip: '장비', valve: '밸브', fitting: '부속', instr: '계기' };
+    const partMap = new Map();
+    let eqCount = 0;
+    (this.state.equipment || []).forEach((e) => {
+      const t = EQUIP_TYPES[e.type];
+      if (!t) return;
+      let spec = e.bore || t.bore || '';
+      if (e.type === 'tee') spec = `${e.bore1 || t.bore1 || ''} × ${e.bore2 || t.bore2 || e.bore1 || t.bore1 || ''}`;
+      else if (e.type === 'reducer') spec = `${e.bore1 || t.bore1 || ''} → ${e.bore2 || t.bore2 || ''}`;
+      const key = `${t.cat}|${t.label}|${spec}`;
+      const row = partMap.get(key) || { type: catLabel[t.cat] || '부속', name: t.label, spec, qty: 0 };
+      row.qty += 1;
+      partMap.set(key, row);
+      if (t.cat === 'equip') eqCount += 1;
+    });
+    const order = { 장비: 0, 밸브: 1, 부속: 2, 계기: 3 };
+    const parts = Array.from(partMap.values()).sort((a, b) => (order[a.type] - order[b.type]) || a.name.localeCompare(b.name));
+    return {
+      pipes: Array.from(pipeMap.values()).sort((a, b) => b.len - a.len),
+      parts,
+      totalLen,
+      pipeCount: (this.state.pipes || []).length,
+      equipCount: eqCount,
+      partCount: (this.state.equipment || []).length - eqCount,
+    };
+  }
+
+  bomPageHtml(stamp, cutCount, pageLabel) {
+    const b = this.buildBom();
+    const m2 = (v) => Number(v || 0).toFixed(2);
+    const pipeRows = b.pipes.length
+      ? b.pipes.map((r) => `<tr><td>${esc(r.bore)}</td><td>${esc(r.material)}</td><td class="num">${m2(r.len)}</td><td class="num">${r.segs}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="none">배관 없음</td></tr>';
+    const partRows = b.parts.length
+      ? b.parts.map((r) => `<tr><td>${esc(r.type)}</td><td>${esc(r.name)}</td><td>${esc(r.spec || '—')}</td><td class="num">${r.qty}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="none">부속 없음</td></tr>';
+    return `
+      <section class="ps-page ps-bom">
+        <header class="ps-head">
+          <div class="ps-brand"><b>스마일산업 3D 배관 도면</b><span>자재 · 배관 수량표</span></div>
+          <div class="ps-meta">${stamp} · 컷 ${cutCount}장 · ${pageLabel}</div>
+        </header>
+        <p class="ps-sum">장비 <b>${b.equipCount}</b> · 배관 <b>${b.pipeCount}</b>개 <b>${m2(b.totalLen)}</b>m · 부속·계기 <b>${b.partCount}</b></p>
+        <h4 class="ps-sub">배관 (관경 · 재질별)</h4>
+        <table class="ps-table">
+          <thead><tr><th>관경</th><th>재질</th><th class="num">길이 (m)</th><th class="num">구간</th></tr></thead>
+          <tbody>${pipeRows}</tbody>
+          <tfoot><tr><th colspan="2">합계</th><td class="num">${m2(b.totalLen)}</td><td class="num">${b.pipes.reduce((a, r) => a + r.segs, 0)}</td></tr></tfoot>
+        </table>
+        <h4 class="ps-sub">부속 · 장비 수량</h4>
+        <table class="ps-table">
+          <thead><tr><th>구분</th><th>품명</th><th>규격</th><th class="num">수량</th></tr></thead>
+          <tbody>${partRows}</tbody>
+        </table>
+        <p class="ps-note">수량은 3D 도면에 그려진 배관 길이·부속 개수를 그대로 센 값입니다. 현장 실측·여유율은 반영되지 않았습니다.</p>
+        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃</footer>
+      </section>`;
+  }
+
+  // 🖨️ A4 도면 인쇄 / PDF 저장 — 담은 컷 전부(없으면 지금 화면)를 A4 시트로 인쇄한다.
+  printAllCuts() {
+    if (!this.cuts.length) {
+      const cut = this.addCut();
+      if (!cut) return Promise.resolve(null);
+    }
+    return this.buildPrintSheet(this.cuts).then((info) => {
+      this.toast('🖨️ 인쇄 창에서 프린터를 고르거나 “PDF로 저장”을 선택하세요.');
+      setTimeout(() => this.doPrint(), 80);
+      return info;
+    });
+  }
+
+  // 🖨️ 바로 인쇄 — 지금 화면 한 장만 A4로 인쇄(컷 목록은 건드리지 않는다)
+  printOneCut() {
+    const cap = this.captureView();
+    const one = { id: `one${Date.now()}`, title: '지금 화면', memo: '', url: cap.url, bg: cap.white ? 'white' : 'dark' };
+    return this.buildPrintSheet([one], { perPage: 1 }).then((info) => {
+      this.toast('🖨️ 지금 화면 한 장을 인쇄합니다 — “PDF로 저장”도 같은 창에서 고를 수 있습니다.');
+      setTimeout(() => this.doPrint(), 80);
+      return info;
+    });
+  }
+
+  doPrint() {
+    try {
+      window.print();
+    } catch (e) {
+      console.warn('인쇄 창을 열지 못했습니다', e);
+      this.toast('인쇄 창을 열지 못했습니다 — 브라우저의 인쇄를 이용해 주세요.', { type: 'err' });
+    }
+  }
+
   // ── 저장 / 불러오기 / 내보내기 ───────────────────────────
   scheduleSave() {
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => this.flushSave(), 600);
+    // 600ms → 150ms (v81). 폰에서 배관을 옮기자마자 앱을 전환·종료해도 마지막 이동이 남게
+    // 대기 시간을 줄이고, 화면이 가려지거나 탭이 닫힐 때는 아래 flushPendingSave()가 바로 기록한다.
+    this.saveTimer = setTimeout(() => this.flushSave(), 150);
+  }
+
+  // 대기 중인 저장이 있으면 곧바로 기록한다 — pagehide · beforeunload · 화면 숨김에서 부른다.
+  flushPendingSave() {
+    if (!this.saveTimer) return false;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    return this.flushSave();
   }
 
   // 저장 공간이 모자라면 도면 이미지(src)만 빼고 장비·배관은 반드시 남긴다.
@@ -8183,11 +8798,8 @@ class App {
     $('#btnHelp').addEventListener('click', () => this.openHelp());
     // [파일] 탭에서도 설정을 바로 열 수 있게 (모바일에서 상단 ⚙를 못 찾는 경우 대비)
     $('#btnSettings2').addEventListener('click', () => this.openSettings());
-    $('#btnExport').addEventListener('click', () => {
-      $$('#tabs .tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === 'file'));
-      $$('.tabpane').forEach((p) => p.classList.toggle('active', p.dataset.pane === 'file'));
-      this.setDrawerOpen(true);
-    });
+    // 내보내기 = 🖨️ 도면 인쇄 · 컷 담기 (v81). JSON·Fusion·OBJ는 ☰ → 파일 탭에 그대로 있다.
+    $('#btnExport').addEventListener('click', () => this.openPrintPanel());
 
     // AI
     $('#btnAi').addEventListener('click', () => this.startAI());
@@ -8246,7 +8858,9 @@ class App {
     const drawer = $('#drawer');
     const bar = $('#viewbar');
     // 조이스틱은 상시 도구라 뒤로가기로 닫지 않는다.
+    const pp = $('#printPanel');
     return !!((modal && !modal.hidden) || (props && !props.hidden)
+      || (pp && !pp.hidden)
       || (bar && bar.classList.contains('open'))
       || (drawer && drawer.classList.contains('open')));
   }
@@ -8281,6 +8895,7 @@ class App {
     // 서랍이 열려 있어도 뒤로가기가 조이스틱만 꺼 버려 창이 안 닫히던 원인).
     if (!$('#modalRoot').hidden) this.closeModal();
     else if (!$('#props').hidden) this.clearSelection();
+    else if (this.ppOpen) this.closePrintPanel();
     else if (this.viewbarOpen) this.setViewbar(false);
     else if ($('#drawer').classList.contains('open')) this.setDrawerOpen(false);
     // 다른 창이 아직 열려 있으면 항목을 다시 깔아, 다음 뒤로가기도 페이지를 지키게 한다.
@@ -8382,6 +8997,7 @@ class App {
           <li><b>✂️ 중간에 끼워넣기</b> — 배관을 고르면 속성 패널에 <b>✂️ 중간에 끼워넣기</b>가 있습니다. 티·밸브·플랜지·레듀샤·벨로우즈 신축관을 고르면 그 배관이 가운데(또는 지정한 mm 지점)에서 둘로 나뉘고, 부속이 같은 관경·같은 축으로 양쪽 0mm 밀착해 앉습니다. 끼워넣은 부속을 <b>↔️ 위치 이동</b>이나 <b>✋ 드래그 이동</b>으로 배관 축 방향으로 옮기면 한쪽 배관은 길어지고 반대쪽은 짧아져 틈이 생기지 않습니다(양쪽 최소 50mm).</li>
           <li><b>☑️ 여러 개 선택</b> — 속성 패널 맨 위의 <b>☑️ 여러 개 선택</b>을 켜면 3D에서 다른 장비·부속·배관을 톡톡 누를 때마다 선택에 더하고 뻐며, <b>🔗 연결된 것 모두</b>로 이어진 밸브·배관 한 줄을 한 번에 잡습니다. 그러면 <b>↔️ 같이 이동</b> — 방향 버툰·보폭·드래그 어느 쪽이든 고른 것 전부가 같은 거리만큼 함께 움직입니다.</li>
           <li><b>내보내기</b> — [파일] 탭에서 JSON 저장·불러오기, <b>Fusion 360 .py</b>, <b>.obj</b>.</li>
+          <li><b>🖨️ 도면 인쇄 · 컷 담기</b> — 상단 <b>내보내기</b> 또는 ☰ → 파일 → <b>🖨️ 도면 인쇄 · 컷 담기</b>. 3D를 원하는 구역으로 옮겨 <b>📷 현재 화면 컷 담기</b>를 누를 때마다 컷이 쌓입니다(컷마다 제목·메모, PNG 저장, 삭제). 기본은 <b>흰 배경</b>이라 인쇄에 잉크가 덜 들고, 버튼·조이스틱·명령창은 그림에 들어가지 않습니다. <b>🖨️ A4 도면 인쇄 / PDF 저장</b>을 누르면 컷마다 한 장(또는 한 장에 2컷) + <b>자재·배관 수량표</b>가 A4로 인쇄되고, 인쇄 창에서 “PDF로 저장”을 고르면 PDF가 됩니다.</li>
         </ol>
         <p class="hint">작업은 이 브라우저에 자동 저장됩니다. 되돌리기는 오른쪽 위 알림의 “되돌리기” 또는 <code>Ctrl+Z</code>.</p>`,
       actions: [{ label: '확인', cls: 'accent' }],

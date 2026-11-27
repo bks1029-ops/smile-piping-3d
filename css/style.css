@@ -1366,3 +1366,244 @@ canvas.move-drag:active { cursor: grabbing; }
 
 /* 속성 창 안쪽도 가로 스크롤이 생기지 않게 (값이 길어도 줄 안에서 줄바꿈) */
 #props .prop-body { overflow-x: hidden; }
+
+/* ── 🖨️ 도면 인쇄 · 컷 담기 패널 (v81) ─────────────────────
+   3D 위에 뜨는 작은 카드. 흰 배경으로 담으면 인쇄에 잉크가 덜 들고,
+   접으면 📷 컷 담기 한 줄만 남아 3D 화면을 넓게 쓴다. */
+.print-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 336px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+  z-index: 17;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+.print-panel[hidden] { display: none; }
+.pp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 9px 8px 11px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+.pp-title { font-size: 12.5px; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-count {
+  margin-left: auto;
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  background: rgba(245, 166, 35, 0.12);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-radius: 20px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.pp-head .btn.icon.tiny { padding: 3px 6px; font-size: 12px; }
+.pp-capture { padding: 8px 10px; flex: 0 0 auto; }
+.pp-add { padding: 10px 12px; font-size: 13px; }
+.pp-body {
+  padding: 0 10px 10px;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.pp-body::-webkit-scrollbar { width: 8px; }
+.pp-body::-webkit-scrollbar-thumb { background: #2b3541; border-radius: 4px; }
+.print-panel.min .pp-body { display: none; }
+.print-panel.min .pp-foot { display: none; }
+.print-panel.min .pp-head { border-bottom: 0; }
+.pp-seg {
+  display: flex; gap: 4px;
+  background: #0f1419;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  padding: 3px;
+}
+.pp-seg-btn {
+  flex: 1 1 0;
+  appearance: none; border: 0; background: transparent;
+  color: var(--dim); font: inherit; font-size: 11px;
+  padding: 5px 3px; border-radius: 7px; cursor: pointer;
+  white-space: nowrap;
+}
+.pp-seg-btn.active { background: rgba(245, 166, 35, 0.16); color: var(--accent); font-weight: 700; }
+.pp-check { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+.pp-check input { accent-color: var(--accent); width: 15px; height: 15px; }
+.pp-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pp-quick .btn { justify-content: center; padding: 7px 4px; font-size: 11.5px; }
+.pp-list-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 10.5px; color: var(--dim2); margin-top: 2px;
+}
+.pp-clear {
+  appearance: none; border: 0; background: transparent;
+  color: var(--danger); font: inherit; font-size: 10.5px; cursor: pointer; padding: 2px 0;
+}
+.pp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pp-empty { font-size: 11px; color: var(--dim2); line-height: 1.55; padding: 4px 2px; }
+.pp-cut {
+  display: flex; gap: 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.pp-thumb {
+  width: 58px; height: 58px; flex: 0 0 auto;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #0f1419;
+  border: 1px solid var(--line-soft);
+}
+.pp-cut-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pp-title-in, .pp-memo-in {
+  width: 100%;
+  background: #0f1419;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  color: var(--txt);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 6px;
+}
+.pp-memo-in { font-size: 10.5px; color: var(--dim); }
+.pp-cut-acts { display: flex; align-items: center; gap: 4px; }
+.pp-mini {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--txt);
+  font: inherit; font-size: 10px;
+  padding: 2px 6px; border-radius: 6px; cursor: pointer;
+  white-space: nowrap;
+}
+.pp-mini:hover { border-color: var(--accent); color: var(--accent); }
+.pp-mini.del { color: var(--danger); border-color: rgba(229, 83, 75, 0.4); }
+.pp-dim { margin-left: auto; font-size: 9.5px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.pp-foot {
+  border-top: 1px solid var(--line-soft);
+  padding: 8px 10px 10px;
+  display: flex; flex-direction: column; gap: 5px;
+  flex: 0 0 auto;
+}
+.pp-foot-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.pp-per { font-size: 10.5px; color: var(--dim); white-space: nowrap; }
+.pp-per select {
+  background: #0f1419; color: var(--txt);
+  border: 1px solid var(--line-soft); border-radius: 6px;
+  font: inherit; font-size: 11px; padding: 2px 4px;
+}
+.pp-hint { font-size: 9.5px; color: var(--dim2); text-align: right; line-height: 1.25; }
+
+/* 모바일 — 위쪽에 띄워 아래의 조이스틱·보기 바·명령창을 가리지 않는다 */
+@media (max-width: 860px) {
+  .print-panel {
+    position: fixed;
+    top: 60px;
+    left: 8px; right: 8px;
+    width: auto;
+    max-width: none;
+    max-height: 54dvh;
+    z-index: 46;
+    border-radius: 14px;
+  }
+  .print-panel.min { max-height: none; }
+  .pp-body { max-height: 42dvh; }
+  .pp-thumb { width: 50px; height: 50px; }
+  .pp-title-in, .pp-memo-in { font-size: 16px; }
+  .pp-mini { font-size: 11px; padding: 4px 8px; }
+  .pp-seg-btn { font-size: 11.5px; padding: 7px 3px; }
+  .pp-quick .btn { font-size: 12px; padding: 8px 4px; }
+}
+
+/* ── A4 인쇄 시트 (v81) ─────────────────────────────────────
+   화면에서는 숨겨 두고, 인쇄에서만 이 시트가 종이로 나간다. */
+#printSheet { display: none; }
+.ps-page {
+  display: flex;
+  flex-direction: column;
+  gap: 3mm;
+  min-height: 256mm;              /* A4 본문(277mm) 안 — 바닥 글이 종이 아래쪽에 붙는다 */
+  color: #111;
+  background: #fff;
+}
+.ps-head {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 4mm;
+  border-bottom: 1.1pt solid #111;
+  padding-bottom: 1.4mm;
+}
+.ps-brand { display: flex; flex-direction: column; gap: 0.6mm; min-width: 0; }
+.ps-brand b { font-size: 4.2mm; letter-spacing: -0.1mm; }
+.ps-brand span { font-size: 2.8mm; color: #444; }
+.ps-meta { font-size: 2.7mm; color: #333; text-align: right; white-space: nowrap; }
+.ps-fig { margin: 0; display: flex; flex-direction: column; gap: 1.2mm; min-height: 0; }
+.ps-img {
+  flex: 1 1 auto;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 0;
+  border: 0.4pt solid #ccd3db;
+  border-radius: 1.6mm;
+  padding: 1.5mm;
+  background: #fff;
+}
+.ps-img img {
+  max-width: 100%;
+  max-height: 218mm;
+  object-fit: contain;
+  display: block;
+}
+.ps-2up .ps-img img { max-height: 100mm; }
+.ps-fig figcaption { font-size: 3mm; color: #222; display: flex; gap: 3mm; align-items: baseline; }
+.ps-fig figcaption b { font-size: 3.4mm; }
+.ps-fig figcaption span { color: #555; }
+.ps-foot { margin-top: auto; font-size: 2.4mm; color: #777; text-align: right; }
+.ps-bom .ps-sum { font-size: 3.2mm; margin: 1mm 0 0; }
+.ps-sub { font-size: 3.2mm; margin: 3mm 0 1mm; }
+.ps-table { width: 100%; border-collapse: collapse; font-size: 2.9mm; }
+.ps-table th, .ps-table td { border: 0.3pt solid #b9c2cc; padding: 1.1mm 1.6mm; text-align: left; }
+.ps-table thead th { background: #eef2f6; font-weight: 700; }
+.ps-table tfoot th, .ps-table tfoot td { background: #f6f8fa; font-weight: 700; }
+.ps-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-table .none { text-align: center; color: #777; }
+.ps-note { font-size: 2.5mm; color: #666; margin: 2mm 0 0; }
+
+@media print {
+  @page { size: A4 portrait; margin: 10mm 9mm; }
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #111 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* 인쇄에는 이 시트만 — 앱 화면·모달·토스트는 전부 빠진다 */
+  body > *:not(#printSheet) { display: none !important; }
+  #printSheet {
+    display: block !important;
+    background: #fff;
+    color: #111;
+    font-family: "Pretendard", -apple-system, "Malgun Gothic", system-ui, sans-serif;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .ps-page {
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .ps-page:last-child { break-after: auto; page-break-after: auto; }
+  .ps-head, .ps-fig, .ps-img, .ps-table, .ps-sub, .ps-note { break-inside: avoid; page-break-inside: avoid; }
+  .ps-img { border-color: #ccd3db; }
+}

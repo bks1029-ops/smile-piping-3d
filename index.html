@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=80">
+<link rel="stylesheet" href="./css/style.css?v=81">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -166,6 +166,47 @@
                   aria-label="조이스틱 위치 초기화">⟲</button>
         </div>
       </div>
+
+      <!-- 🖨️ 도면 인쇄 · 컷 담기 (v81) — 3D 화면을 UI 없이 깨끗한 그림으로 담아 여러 구역을
+           모아 A4로 인쇄(또는 PDF 저장)하거나 PNG로 저장한다. 기본은 흰 배경(인쇄용).
+           패널은 접으면 📷 컷 담기 한 줄만 남아 3D 화면을 넓게 쓸 수 있다. -->
+      <div id="printPanel" class="print-panel" hidden>
+        <div class="pp-head">
+          <b class="pp-title">🖨️ 도면 인쇄 · 컷 담기</b>
+          <span class="pp-count" id="ppCount">컷 0장</span>
+          <button class="btn icon tiny" id="ppMin" type="button" title="접기 (3D 화면을 넓게)" aria-label="접기">▾</button>
+          <button class="btn icon tiny" id="ppClose" type="button" title="닫기" aria-label="닫기">✕</button>
+        </div>
+        <div class="pp-capture">
+          <button class="btn accent wide pp-add" id="ppAdd" type="button">📷 현재 화면 컷 담기</button>
+        </div>
+        <div class="pp-body">
+          <div class="pp-seg" role="group" aria-label="담기 배경">
+            <button type="button" class="pp-seg-btn active" id="ppBgWhite" data-bg="white">⬜ 흰 배경 (인쇄용)</button>
+            <button type="button" class="pp-seg-btn" id="ppBgDark" data-bg="dark">⬛ 화면 그대로</button>
+          </div>
+          <label class="pp-check"><input type="checkbox" id="ppDims" checked> 치수 라벨 함께 담기</label>
+          <div class="pp-quick">
+            <button class="btn small ghost" id="ppQuickPng" type="button">📷 1장 PNG 저장</button>
+            <button class="btn small ghost" id="ppQuickPrint" type="button">🖨️ 바로 인쇄</button>
+          </div>
+          <div class="pp-list-head"><span>담은 컷</span><button type="button" class="pp-clear" id="ppClear">전체 지우기</button></div>
+          <ul class="pp-list" id="ppList"></ul>
+        </div>
+        <!-- 인쇄 버튼은 목록을 굴려도 늘 보이게 패널 아래에 고정한다 -->
+        <div class="pp-foot">
+          <button class="btn accent wide" id="ppPrint" type="button">🖨️ A4 도면 인쇄 / PDF 저장</button>
+          <div class="pp-foot-row">
+            <label class="pp-per">한 장에
+              <select id="ppPerPage" aria-label="한 장에 담을 컷 수">
+                <option value="1">1컷</option>
+                <option value="2">2컷</option>
+              </select>
+            </label>
+            <span class="pp-hint">인쇄 창에서 ‘PDF로 저장’을 고르면 PDF가 됩니다</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <aside id="drawer" class="panel">
@@ -240,6 +281,11 @@
       <section class="tabpane" data-pane="file">
         <input type="file" id="loadFile" accept=".json,application/json" hidden>
         <div class="stack">
+          <button class="btn wide accent" id="btnPrintSheet">🖨️ 도면 인쇄 · 컷 담기</button>
+        </div>
+        <p class="hint">3D를 구역별로 옮겨 컷으로 담고, A4 도면(자재 수량표 포함)으로 인쇄하거나 PNG·PDF로 저장합니다.</p>
+        <div class="divider"></div>
+        <div class="stack">
           <button class="btn wide" id="btnSave">JSON 저장</button>
           <button class="btn wide" id="btnLoad">JSON 불러오기</button>
         </div>
@@ -273,6 +319,10 @@
   </main>
 </div>
 
+<!-- A4 인쇄 전용 시트 (v81) — 화면에서는 숨김. 인쇄(@media print)에서 이 시트만 종이에 나간다.
+     컷마다 한 장(또는 한 장에 2컷) + 마지막에 자재·배관 수량표. -->
+<div id="printSheet" aria-hidden="true"></div>
+
 <div id="modalRoot" class="modal-root" hidden>
   <div class="modal-backdrop" data-close="1"></div>
   <div class="modal-card">
@@ -292,6 +342,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=80"></script>
+<script type="module" src="./js/main.js?v=81"></script>
 </body>
 </html>
