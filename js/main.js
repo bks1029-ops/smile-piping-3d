@@ -5853,43 +5853,54 @@ class App {
       pts = null;
     };
 
-    // 이미 놓인 배관 끝을 커서(꼭짓점)에서 접합면만큼 뒤로 당긴다 — 배관이 엘보를 뚫지 않게.
-    const trimPrevEnd = (face) => {
-      if (face <= 0) return;
-      if (pts && pts.length >= 2) {
-        const n = pts.length;
-        const a = pts[n - 2];
-        const b = pts[n - 1];
-        const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-        // 표준 엘보값이 구간 길이보다 짧으면 그대로 빼고(500 → 195.2mm), 더 길면 예전처럼
-        // 45%까지만 줄여 배관이 사라지지 않게 한다.
-        const f = len > face + 1e-6 ? face : Math.min(face, len * 0.45);
-        if (f > 1e-4) {
-          pts[n - 1] = put({
-            x: b.x - ((b.x - a.x) / len) * f,
-            y: b.y - ((b.y - a.y) / len) * f,
-            z: b.z - ((b.z - a.z) / len) * f,
-          });
+    // 커서에 닿아 있는 **직전 배관 구간**을 찾는다 — 이 명령에서 그린 배관(아직 커밋 전) →
+    // 이미 놓인 배관 순서로 본다. 끝점뿐 아니라 시작점(양쪽 끝 이어 그리기)도 본다.
+    // 되돌아가는 방향(back)으로 뻗은 구간만 고른다 — 같은 점에 다른 방향 배관이 붙어 있어도 헷갈리지 않게.
+    const prevPipeEnd = (p, back) => {
+      const tol = 0.03;
+      const pick = (points, local, spec) => {
+        const n = points ? points.length : 0;
+        if (n < 2) return null;
+        const cands = [{ at: n - 1, inn: n - 2 }, { at: 0, inn: 1 }];
+        for (let k = 0; k < cands.length; k += 1) {
+          const c = cands[k];
+          const B = points[c.at];
+          const A = points[c.inn];
+          if (Math.hypot(B.x - p.x, B.y - p.y, B.z - p.z) > tol) continue;
+          const len = Math.hypot(B.x - A.x, B.y - A.y, B.z - A.z);
+          if (len < 1e-4) continue;
+          const ux = (B.x - A.x) / len;
+          const uy = (B.y - A.y) / len;
+          const uz = (B.z - A.z) / len;
+          if (ux * back.x + uy * back.y + uz * back.z < 0.9) continue;
+          return { points, at: c.at, inn: c.inn, len, ux, uy, uz, local, spec };
         }
-        return;
+        return null;
+      };
+      if (pts) {
+        const r = pick(pts, true, null);
+        if (r) return r;
       }
-      const local = pipes.length ? pipes[pipes.length - 1] : null;
-      const target = local || this.state.pipes[this.state.pipes.length - 1];
-      if (!target || !target.points || target.points.length < 2) return;
-      const n = target.points.length;
-      const a = target.points[n - 2];
-      const b = target.points[n - 1];
-      if (Math.hypot(b.x - cursor.x, b.y - cursor.y, b.z - cursor.z) > 0.03) return;
-      const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-      const f = len > face + 1e-6 ? face : Math.min(face, len * 0.45);
-      if (f <= 1e-4) return;
-      const np = put({
-        x: b.x - ((b.x - a.x) / len) * f,
-        y: b.y - ((b.y - a.y) / len) * f,
-        z: b.z - ((b.z - a.z) / len) * f,
-      });
-      if (local) local.points[n - 1] = np;
-      else edits.push({ id: target.id, index: n - 1, point: np });
+      for (let i = pipes.length - 1; i >= 0; i -= 1) {
+        const r = pick(pipes[i].points, true, pipes[i]);
+        if (r) return r;
+      }
+      for (let i = this.state.pipes.length - 1; i >= 0; i -= 1) {
+        const r = pick(this.state.pipes[i].points, false, this.state.pipes[i]);
+        if (r) return r;
+      }
+      return null;
+    };
+
+    // 찾은 구간의 끝을 안쪽 점 쪽으로 f만큼 당긴다 — 엘보가 앉을 자리를 비운다.
+    // (시작점이면 pts[0]을, 끝점이면 pts[n-1]을 옮긴다)
+    const trimPipeEnd = (seg, f) => {
+      if (!seg || !(f > 1e-4)) return false;
+      const B = seg.points[seg.at];
+      const np = put({ x: B.x - seg.ux * f, y: B.y - seg.uy * f, z: B.z - seg.uz * f });
+      if (seg.local) seg.points[seg.at] = np;
+      else edits.push({ id: seg.spec.id, index: seg.at, point: np });
+      return true;
     };
 
     const nextEqSeq = (type) => {
@@ -5919,15 +5930,21 @@ class App {
 
     // 꺾이는 자리 근처의 접합면(플랜지 면·노즐 끝·밸브 면) — 이 위에서 꺾이면 배관을 당겨
     // 자르는 대신 엘보를 **면 바깥에** 세워야 플랜지 구멍 안으로 파고들지 않는다.
-    const portAt = (p, tol) => {
-      let best = null;
+    // 커서가 판 속에 살짝 물려 있어도 진행 방향에서 **가장 앞선 접합면**을 기준으로 삼는다
+    // (플랜지 안쪽 면·바깥 면이 둘 다 가까울 때 안쪽 면에 세우면 판을 21mm 뚫고 들어갔다).
+    const portBase = (p, tol, dirV) => {
+      let hit = null;
       this.state.equipment.forEach((e) => {
         equipPorts(e).forEach((n) => {
           const d = Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z);
-          if (d <= (tol || 0.02) && (!best || d < best.d)) best = { d, n, e };
+          if (d > (tol || 0.025)) return;
+          const along = (n.tip.x - p.x) * dirV.x + (n.tip.y - p.y) * dirV.y + (n.tip.z - p.z) * dirV.z;
+          if (!hit || along > hit.along) hit = { along, tip: { x: n.tip.x, y: n.tip.y, z: n.tip.z }, n, e };
         });
       });
-      return best;
+      if (!hit) return null;
+      // 면이 커서보다 앞(진행 방향)에 있으면 그 면 기준 — 뒤에 있으면 관 끝(커서) 기준
+      return hit.along > 1e-4 ? hit.tip : { x: p.x, y: p.y, z: p.z };
     };
 
     // 꺾이는 꼭짓점: 각도에 맞는 엘보를 놓고 배관을 접합면에서 끊는다.
@@ -5939,36 +5956,61 @@ class App {
       wantElbow = null;
       if (!type) return { face: 0, fixed: false };
       const dims = elbowDims(type, bore);
-      // ① 꺾임점이 플랜지·노즐 접합면 위 → 엘보를 그 면 바깥(면 + 진행방향×face)에 세운다.
-      //    입구 면이 접합면에 0mm로 앉고, 새 구간은 엘보 출구 면에서 시작한다.
-      //    (2026-11-26 `31611` — 손 그리기·플랜지 위에서 꺾으면 엘보 몸통이 판을 뚫고 들어갔다)
-      if (portAt(cursor, 0.025)) {
-        flush();
-        cursor = put({
-          x: cursor.x + prev.x * dims.face,
-          y: cursor.y + prev.y * dims.face,
-          z: cursor.z + prev.z * dims.face,
-        });
-        putEquip(type, {
-          bore,
-          inDir: [-prev.x, -prev.y, -prev.z],
-          outDir: [next.x, next.y, next.z],
-          rot: this.rotForDir(next, rot),
-        });
-        notes.push(type === 'elbow45' ? '45° 엘보 (접합면 밖)' : '엘보 (접합면 밖)');
-        return { face: dims.face, fixed: true };   // 접합면 밖 배치는 고정 — 짧은 구간이라도 줄이지 않는다
-      }
-      // ② 배관 끝에서 꺾이면 앞 배관을 엘보 자리만큼 당겨 자르고 그 자리에 엘보를 앉힌다.
-      trimPrevEnd(dims.face);
-      flush();
-      putEquip(type, {
+      // 엘보는 **플랜지·노즐·배관 시작점을 뚫고 뒤로 넘어가면 안 된다** (2026-11-27 `32270`).
+      //  · 접합면 위에서 꺾으면 → 그 면 바깥에 세운다.
+      //  · 앞 배관이 짧거나(len <= face+20mm) 피팅값 자동계산 OFF면 → 배관은 그대로 두고
+      //    엘보 입구를 배관 끝에 0mm로 붙인다 (사용자: "배관 끝에 엘보가 붙어야지").
+      //  · 자동계산 ON + 배관이 충분히 길 때만 → 중심선 기준으로 face만큼 당겨 자르고 꼭짓점에 앉힌다.
+      const elbowAt = () => putEquip(type, {
         bore,
         inDir: [-prev.x, -prev.y, -prev.z],
         outDir: [next.x, next.y, next.z],
         rot: this.rotForDir(next, rot),
       });
-      notes.push(type === 'elbow45' ? '45° 엘보 자동' : '엘보 자동');
-      return { face: dims.face, fixed: false };
+      const note = (suffix) => notes.push(
+        (type === 'elbow45' ? '45° 엘보 ' : '엘보 ') + suffix,
+      );
+      // ① 꺾임점이 플랜지·노즐 접합면 위 → 엘보를 그 면 바깥(면 + 진행방향×face)에 세운다.
+      //    입구 면이 접합면에 0mm로 앉고, 새 구간은 엘보 출구 면에서 시작한다.
+      //    커서가 면에 살짝 물려 있어도 **실제 접합면(tip)**을 기준으로 세워 판을 뚫지 않는다.
+      //    (2026-11-26 `31611` — 손 그리기·플랜지 위에서 꺾으면 엘보 몸통이 판을 뚫고 들어갔다)
+      const atFace = portBase(cursor, 0.025, prev);
+      if (atFace) {
+        flush();
+        cursor = put({
+          x: atFace.x + prev.x * dims.face,
+          y: atFace.y + prev.y * dims.face,
+          z: atFace.z + prev.z * dims.face,
+        });
+        elbowAt();
+        note('(접합면 밖)');
+        return { face: dims.face, fixed: true };   // 접합면 밖 배치는 고정 — 짧은 구간이라도 줄이지 않는다
+      }
+      // ② 배관 끝에서 꺾임 — 앞 배관을 당겨 자를 수 있을 때만 자른다.
+      const seg = prevPipeEnd(cursor, prev);
+      if (seg && this.fitAuto && seg.len > dims.face + 0.02) {
+        trimPipeEnd(seg, dims.face);
+        flush();
+        elbowAt();
+        note('자동');
+        return { face: dims.face, fixed: false };
+      }
+      flush();
+      if (!seg) {
+        // 앞 배관을 찾지 못했다 — 예전처럼 꼭짓점에 앉힌다.
+        elbowAt();
+        note('자동');
+        return { face: dims.face, fixed: false };
+      }
+      // 앞 배관은 그대로 두고, 엘보 입구 면을 배관 끝에 0mm로 맞춰 붙인다.
+      cursor = put({
+        x: cursor.x + prev.x * dims.face,
+        y: cursor.y + prev.y * dims.face,
+        z: cursor.z + prev.z * dims.face,
+      });
+      elbowAt();
+      note('(배관 끝)');
+      return { face: dims.face, fixed: true };
     };
 
     // 한 구간을 그린다. 방향이 바뀌는 꼭짓점이면 엘보를 자동으로 앉힌다.
@@ -5992,7 +6034,11 @@ class App {
       // 피팅값 자동계산(ON) — 입력한 길이는 **중심선 기준**이라 엘보가 차지한 face만큼 빼고
       //   실제 직관을 그린다 (200A 엘보 304.8mm + `500` → 직관 195.2mm).
       // OFF — 엘보 출구 면에서부터 입력한 길이를 그대로 직관으로 그린다 (`500` → 직관 500mm).
-      const run = this.fitAuto ? meters - face : meters;
+      // fixed(엘보를 접합면·배관 끝 바깥에 세운 경우)는 face가 입력 길이보다 클 수 있으므로
+      //   뒤로 넘어가지 않게 최소 20mm만 남긴다.
+      const run = this.fitAuto
+        ? (fixed ? Math.max(0.02, meters - face) : meters - face)
+        : meters;
       const to = put({ x: from.x + v.x * run, y: from.y + v.y * run, z: from.z + v.z * run });
       if (!pts) pts = [from];
       pts.push(to);
