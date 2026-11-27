@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=79';
-import { buildScene } from './builders.js?v=79';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=79';
-import { buildOBJ } from './obj.js?v=79';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=79';
-import { parseCommand, CMD_HELP } from './cmd.js?v=79';
-import { buildDimItems } from './dims.js?v=79';
-import { buildAiImageParts } from './zoom.js?v=79';
+} from './store.js?v=80';
+import { buildScene } from './builders.js?v=80';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=80';
+import { buildOBJ } from './obj.js?v=80';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=80';
+import { parseCommand, CMD_HELP } from './cmd.js?v=80';
+import { buildDimItems } from './dims.js?v=80';
+import { buildAiImageParts } from './zoom.js?v=80';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -298,6 +298,9 @@ class App {
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.raycaster = new THREE.Raycaster();
+    // 픽 판정용 두 번째 광선 — handleCanvasTap 의 ray(this.raycaster)를 건드리지 않고
+    // 노즐·접합면이 실제로 보이는지 따로 확인한다(v80).
+    this.pickRay = new THREE.Raycaster();
   }
 
   setupScene() {
@@ -3915,10 +3918,49 @@ class App {
     this.toast(`🔗 ${t.label}에 연결했습니다 · ${fmt(d)}m · ${bore}`);
   }
 
+  // 광선이 실제로 맞은 것 중 가장 가까운 선택 대상(장비·배관).
+  // 3D 화면 픽(노즐·작은 부속)이 눈앞의 물체를 가로채지 않게 하는 기준점이다(v80).
+  firstPickHit(ray) {
+    if (!this.root) return null;
+    const hits = ray.intersectObjects(this.root.children, true);
+    for (const h of hits) {
+      let o = h.object;
+      while (o && o !== this.root) {
+        if (o.userData && o.userData.pick) {
+          return { kind: o.userData.pick.kind, id: o.userData.pick.id, distance: h.distance };
+        }
+        o = o.parent;
+      }
+    }
+    return null;
+  }
+
+  // 카메라에서 그 점으로 광선을 쏴, 그 점보다 앞(tol 이상)에서 장비·배관이 막고 있으면 가려진 것으로 본다.
+  // 캔버스 루트에는 장비·배관만 들어 있어(치수선·라벨은 scene 쪽) 선이 가림으로 잘못 잡히지 않는다.
+  portHidden(p, dist, tol) {
+    if (!this.root) return false;
+    const rc = this.pickRay || (this.pickRay = new THREE.Raycaster());
+    const dir = new THREE.Vector3(p.x, p.y, p.z).sub(this.camera.position);
+    const len = dir.length();
+    if (len < 1e-4) return false;
+    rc.set(this.camera.position, dir.normalize());
+    rc.far = len + tol;         // 그 점보다 확실히 앞에서 막은 것만 본다
+    rc.near = 0;
+    const hits = rc.intersectObjects(this.root.children, true);
+    return hits.some((h) => h.distance < dist - tol);
+  }
+
   // 손가락으로 장비의 노즐 끝을 직접 눌렀는가 — 32px 안이고, 그 장비 본체 중심보다 그 노즐에
   // 더 가까운 경우에만 노즐 터치로 본다(본체를 눌러 장비를 고른 것과 구분).
   // equipNozzles()를 쓰는 장비 6종(펌프·열교환기·헤더·탱크·대형 원통탱크·사각 탱크)이 모두 같은 길을 쓴다.
-  nozzlePickAt(ev, radiusPx) {
+  //
+  // v80 — 화면 좌표만 보던 예전 판은 앞쪽 엘보·밸브를 누르면 그 뒤(카메라에서 더 먼) 장비의
+  // 접합면·노즐이 32px 안에 투영되기만 하면 탭을 가져갔다. 사용자 제보(2026-11-27):
+  //   "엘보를 선택하려는데 가까이 있는건 선택안되고 보이지도 않는 멀리있는게 선택되"
+  //   이제 ① 손가락이 실제로 맞은 앞쪽 물체(firstHit)보다 뒤에 있으면 제외 ② 카메라에서
+  //   그 끝이 다른 장비·배관에 가려져 있으면 제외 ③ 남은 후보가 여럿이면 화면 거리가 비슷할 때
+  //   카메라에 가까운(앞에 보이는) 노즐을 고른다.
+  nozzlePickAt(ev, radiusPx, firstHit) {
     if (!this.root) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
@@ -3928,6 +3970,11 @@ class App {
       const v = new THREE.Vector3(p.x, p.y, p.z).project(this.camera);
       return { x: (v.x * 0.5 + 0.5) * rect.width, y: (-v.y * 0.5 + 0.5) * rect.height, z: v.z };
     };
+    const cam = this.camera.position;
+    // 가림 판정 여유 — 플랜지 두께·표면 오차만큼(8cm)은 앞으로 봐준다.
+    const TOL = 0.08;
+    // 화면에서 이만큼(px) 차이 나면 '비슷한 자리'로 보고 카메라에 가까운 쪽을 고른다.
+    const PX_TIE = 8;
     let best = null;
     this.state.equipment.forEach((e) => {
       // 노즐이 있는 장비는 노즐 끝, 티는 직진 양끝 + 분기 끝 — 둘 다 같은 방식으로 집는다.
@@ -3937,12 +3984,24 @@ class App {
       const body = screen({ x: e.x, y: (e.y || 0) + Math.min(0.4, (e.h || 0.3) * 0.5), z: e.z });
       if (body.z > 1 || body.z < -1) return;
       const bodyD = Math.hypot(body.x - px, body.y - py);
+      // 이 장비 본체를 직접 눌렀으면 그 장비의 노즐 목을 누른 것으로 본다(노즐에서 이어 그리기).
+      const sameEquip = !!firstHit && firstHit.kind === 'equipment' && firstHit.id === e.id;
       list.forEach((n) => {
         const s = screen(n.tip);
         if (s.z > 1 || s.z < -1) return;
         const d = Math.hypot(s.x - px, s.y - py);
         if (d > radiusPx || d >= bodyD) return;
-        if (!best || d < best.d) best = { kind: 'equipment', id: e.id, nozzle: n, d };
+        const camDist = Math.hypot(n.tip.x - cam.x, n.tip.y - cam.y, n.tip.z - cam.z);
+        // 손가락이 실제로 맞은 앞쪽 물체보다 뒤에 있는 노즐 — 앞의 엘보·배관에 가려졌으므로 제외.
+        if (firstHit && !sameEquip && camDist > firstHit.distance + TOL) return;
+        // 그 노즐 끝 자체가 다른 장비·배관 뒤에 숨어 있으면(탱크 뒤쪽 노즐 등) 제외.
+        if (this.portHidden(n.tip, camDist, TOL)) return;
+        if (!best) { best = { kind: 'equipment', id: e.id, nozzle: n, d, camDist }; return; }
+        // 화면 거리가 비슷하면 카메라에 가까운 쪽(앞에 보이는 쪽)이 이긴다 — 멀리 있는 노즐이
+        // 몇 픽셀 차이로 눈앞의 노즐을 가져가지 않게.
+        if (d < best.d - PX_TIE || (Math.abs(d - best.d) <= PX_TIE && camDist < best.camDist)) {
+          best = { kind: 'equipment', id: e.id, nozzle: n, d, camDist };
+        }
       });
     });
     return best;
@@ -3977,15 +4036,22 @@ class App {
     const px = ev.clientX - rect.left;
     const py = ev.clientY - rect.top;
     const v = new THREE.Vector3();
+    const cam = this.camera.position;
+    // 화면에서 이만큼(px) 차이 나면 '비슷한 자리'로 보고 카메라에 가까운 쪽을 고른다(v80).
+    const PX_TIE = 8;
     let best = null;
-    let bestD = radiusPx;
     const test = (pick, x, y, z) => {
       v.set(x, y, z).project(this.camera);
       if (v.z > 1 || v.z < -1) return;
       const sx = (v.x * 0.5 + 0.5) * rect.width;
       const sy = (-v.y * 0.5 + 0.5) * rect.height;
       const d = Math.hypot(sx - px, sy - py);
-      if (d < bestD) { bestD = d; best = pick; }
+      if (d > radiusPx) return;
+      const camDist = Math.hypot(x - cam.x, y - cam.y, z - cam.z);
+      if (!best || d < best.d - PX_TIE
+        || (Math.abs(d - best.d) <= PX_TIE && camDist < best.camDist)) {
+        best = { pick, d, camDist };
+      }
     };
     this.state.equipment.forEach((e) => {
       test({ kind: 'equipment', id: e.id }, e.x, e.y + Math.min(0.4, (e.h || 0.3) * 0.5), e.z);
@@ -4000,7 +4066,7 @@ class App {
         test(pick, (a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
       }
     });
-    return best;
+    return best ? best.pick : null;
   }
 
   // ── 패널 렌더 ────────────────────────────────────────────
@@ -6961,20 +7027,13 @@ class App {
 
     // 장비 노즐 끝을 직접 눌렀으면 그 노즐에서 이어 그린다 — 본체를 눌러 기본 노즐로
     // 잡히던 자리(노즐 목이 본체 픽에 걸리는 자리)도 노즐 터치가 먼저 가져간다.
-    const noz = this.nozzlePickAt(ev, 32);
+    // v80 — 다만 손가락이 실제로 맞은 앞쪽 물체를 먼저 구해 두고, 그보다 뒤에 있는(가려진)
+    // 노즐은 탭을 가져가지 못하게 한다. 눈앞의 엘보를 눌렀는데 뒤쪽 장비의 접합면이
+    // 선택되던 문제(2026-11-27 제보). 가려진 노즐이면 아래 firstHit 로 넘어간다.
+    const firstHit = this.firstPickHit(ray);
+    const noz = this.nozzlePickAt(ev, 32, firstHit);
     if (noz) { this.selectNozzle(noz.id, noz.nozzle); return; }
-
-    const hits = ray.intersectObjects(this.root.children, true);
-    for (const h of hits) {
-      let o = h.object;
-      while (o && o !== this.root) {
-        if (o.userData && o.userData.pick) {
-          this.select(o.userData.pick.kind, o.userData.pick.id);
-          return;
-        }
-        o = o.parent;
-      }
-    }
+    if (firstHit) { this.select(firstHit.kind, firstHit.id); return; }
     // 작은 밸브·피팅은 정확한 광선이 빗나가기 쉬우므로 화면 32px 안에서 가장 가까운 것을 고른다.
     const near = this.nearestPick(ev, 32);
     if (near) { this.select(near.kind, near.id); return; }
