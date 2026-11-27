@@ -93,7 +93,7 @@ const HAND_STEP_MM = 100;               // 100mm 단위 반올림
 const HAND_SNAP_PX = 40;                // 손끝이 기존 배관(끝·몸통)·커서에 붙는 화면 거리
 const HAND_RING_Z = new THREE.Vector3(0, 0, 1);   // 토러스 기본 축(링 면의 법선)
 // 옮긴 배관 끝 자석 (v74) — 이 거리 안에 접합면이 있으면 미세 틈 없이 0.000m로 붙인다.
-const MOVE_SNAP_DIST = 0.15;            // 150mm
+const MOVE_SNAP_DIST = 0.06;            // 60mm — 정말 가까이 댔을 때만 붙는다(2026-11-27 축소)
 // 탱크 벽면 자동 노즐 맞춤 (v72) — 배관 끝이 이 거리 안에서 벽을 향해 들어오면 노즐이 따라간다.
 const TANK_FIT_DIST = 0.35;             // 외벽에서 0.35m 안
 const TANK_FIT_DOT = 0.7;               // 진행 방향이 벽 바깥 법선의 **반대**와 이만큼 나란해야(벽으로 45° 이내)
@@ -2791,9 +2791,12 @@ class App {
       this.alignBadgeAt = null;
       return;
     }
+    // 새로 띄우는 중이면 예전 자동 숨김 타이머를 끈다 — 드래그하는 동안 꺼지지 않게 (v77).
+    if (this.alignHideTimer) { clearTimeout(this.alignHideTimer); this.alignHideTimer = 0; }
     probe.hits.slice(0, 3).forEach((h, i) => {
       const line = lines[i];
-      if (line) this.setGuideLine(line, from, h.ref.p);
+      // h.from이 있으면 그 점에서 긋는다 — 여러 끝점이 서로 다른 기준에 맞을 때 (v77).
+      if (line) this.setGuideLine(line, h.from || from, h.ref.p);
     });
     if (el) {
       el.textContent = `정렬 · ${this.alignAxesText(probe.hits)}`;
@@ -2853,46 +2856,110 @@ class App {
     return { mm: mm2, probe, p: { x: a.x + u.x * (len), y: a.y + u.y * (len), z: a.z + u.z * (len) } };
   }
 
-  // 배관·부속을 옮긴 뒤 — 옮긴 배관의 양 끝이 다른 배관 끝·엘보 중심·노즐과
-  // 30mm 안에서 X·Y·Z 중 하나가 맞으면 그 축만 정확히 맞춘다(마지막 반올림 틈 제거).
-  // 맞춘 자리에 밝은 점선과 `정렬` 배지를 띄우고 { txt }를 돌려준다.
-  alignSnapMoved(items) {
+  // 버튼 이동(10·50·100·500·1000mm) 뒤 — 누른 보폭 **그대로** 둔 채, 옮긴 끝이 다른 기준점과
+  // 15mm 안으로 맞았는지만 밝은 점선과 `정렬` 배지로 알려 준다.
+  // (v77 — 2026-11-27 사용자 "다른곳에 정렬하더니 배관을 가져가버리네": 예전 alignSnapMoved는
+  //  ±30mm 안이면 X·Y·Z 어느 축이든 좌표를 끌어당겨, +10mm를 눌렀는데 배관이 다른 자리로
+  //  튀었다. 이제 버튼 이동은 절대 좌표를 바꾸지 않는다 — 보여 주기만 한다.)
+  alignShowMoved(items, tolMm) {
     const list = items || [];
     if (!list.length) return null;
+    const tol = (tolMm == null ? 15 : tolMm) / 1000;
     const moving = new Set(list.map((it) => (it.spec || it).id));
     const refs = this.alignRefPoints(moving);
     if (!refs.length) return null;
-    let best = null;
-    list.forEach((it) => {
-      const spec = it.spec || it;
-      if (!spec || !Array.isArray(spec.points) || spec.points.length < 2) return;
-      [0, spec.points.length - 1].forEach((i) => {
-        const q = spec.points[i];
-        if (!q) return;
-        const probe = this.align3DProbe(q, { refs, tol: 0.03 });
-        if (!probe) return;
-        probe.hits.forEach((h) => {
-          if (!best || h.d < best.h.d) best = { h, from: { x: q.x, y: q.y, z: q.z }, probe };
-        });
-      });
-    });
-    if (!best) return null;
-    const ax = best.h.axis;
-    const adj = r3(best.h.ref.p[ax] - best.from[ax]);
-    if (!Math.abs(adj)) return null;
-    // 옮긴 것 전부를 그 축으로 조금만 더 밀어 정확히 맞춘다 — 같은 이동의 일부다(되돌리기 1번).
+    const pts = [];
     list.forEach((it) => {
       const spec = it.spec || it;
       if (!spec) return;
-      if (Array.isArray(spec.points)) {
-        spec.points.forEach((q) => { q[ax] = Math.max(0, r3(q[ax] + adj)); });
-      } else {
-        spec[ax] = Math.max(0, r3((Number(spec[ax]) || 0) + adj));
+      if (Array.isArray(spec.points) && spec.points.length >= 2) {
+        pts.push(spec.points[0], spec.points[spec.points.length - 1]);
+        return;
       }
+      pts.push({ x: Number(spec.x) || 0, y: Number(spec.y) || 0, z: Number(spec.z) || 0 });
+      equipPorts(spec).forEach((n) => { if (n && n.tip) pts.push(n.tip); });
     });
-    const from = { x: best.from.x, y: best.from.y, z: best.from.z };
-    from[ax] = Math.max(0, r3(from[ax] + adj));
-    return { from, probe: best.probe, txt: this.alignAxesText(best.probe.hits), adj };
+    const hits = [];
+    const seen = new Set();
+    pts.forEach((q) => {
+      if (!q) return;
+      const probe = this.align3DProbe(q, { refs, tol });
+      if (!probe) return;
+      probe.hits.forEach((h) => {
+        const key = `${h.axis}:${h.ref.label}:${h.ref.p.x.toFixed(2)}:${h.ref.p.y.toFixed(2)}:${h.ref.p.z.toFixed(2)}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        hits.push({ ...h, from: { x: q.x, y: q.y, z: q.z } });
+      });
+    });
+    if (!hits.length) return null;
+    hits.sort((a, b) => a.d - b.d);
+    const top = hits.slice(0, 3);
+    const best = top[0];
+    return {
+      from: { x: best.from.x, y: best.from.y, z: best.from.z },
+      probe: { p: { x: best.from.x, y: best.from.y, z: best.from.z }, hits: top, dist: best.d },
+      txt: this.alignAxesText(top),
+    };
+  }
+
+  // ── ✨ 드래그 중 3축 정렬 (v77) ────────────────────────────────────────
+  // 사용자(2026-11-27): "드래그 할때 떠야 그 위치를 잡지" / "정렬선만 표시 해주고" —
+  // 배관·여러 개를 손가락으로 끌고 있는 동안, 옮기는 배관의 양 끝(부속·장비는 중심·노즐 끝)이
+  // 다른 배관 끝·엘보 중심·노즐과 X(거리)·Z(길이) 45mm 안으로 오면 밝은 점선과 `정렬` 배지를
+  // 실시간으로 띄운다. 바닥 드래그는 높이가 바뀌지 않으므로 X·Z만 본다.
+  // 좌표는 끌어가지 않는다(snap:false로 부른다) — 움직이는 도중에 배관을 가져가면 안 된다.
+  //  · 돌려주는 값 { dx, dz, from, probe } — dx·dz는 고른 것 전부에 똑같이 더할 보정.
+  //  · snap:false면 좌표는 건드리지 않고 "거의 맞음"만 알려 준다(신축 드래그처럼 축에 묶인 이동).
+  //  · 보정은 축별 허용치(tol, 기본 45mm)를 넘지 않고, 두 축을 합쳐도 80mm를 넘지 않는다 —
+  //    손가락 밑에서 배관이 다른 곳으로 확 튀지 않게 (2026-11-27 "배관을 가져가버리네").
+  alignDragSnap(items, movingIds, opts) {
+    const o = opts || {};
+    const list = items || [];
+    if (!list.length || !this.scene) return null;
+    const tol = o.tol == null ? 0.045 : o.tol;
+    const snap = o.snap !== false;
+    const refs = this.alignRefPoints(movingIds);
+    if (!refs.length) return null;
+    const pts = [];
+    list.forEach((it) => {
+      const spec = it.spec || it;
+      if (!spec) return;
+      if (Array.isArray(spec.points) && spec.points.length >= 2) {
+        pts.push(spec.points[0], spec.points[spec.points.length - 1]);
+        return;
+      }
+      // 장비·부속 — 중심과 접합면(노즐 끝) 둘 다 본다.
+      pts.push({ x: Number(spec.x) || 0, y: Number(spec.y) || 0, z: Number(spec.z) || 0 });
+      equipPorts(spec).forEach((n) => { if (n && n.tip) pts.push(n.tip); });
+    });
+    if (!pts.length) return null;
+    const best = { x: null, z: null };
+    pts.forEach((q) => {
+      const probe = this.align3DProbe(q, { refs, tol });
+      if (!probe) return;
+      probe.hits.forEach((h) => {
+        if (h.axis !== 'x' && h.axis !== 'z') return;   // 높이 Y는 드래그로 바꿀 수 없다
+        if (!best[h.axis] || h.d < best[h.axis].h.d) best[h.axis] = { h, q };
+      });
+    });
+    if (!best.x && !best.z) return null;
+    const hits = [];
+    const dx = snap && best.x ? r3(best.x.h.ref.p.x - best.x.q.x) : 0;
+    const dz = snap && best.z ? r3(best.z.h.ref.p.z - best.z.q.z) : 0;
+    // 두 축 보정을 합쳐도 80mm를 넘지 않는다 — 손가락에서 멀리 튀는 스냅은 하지 않는다.
+    if (Math.hypot(dx, dz) > 0.08) return null;
+    if (best.x) {
+      const q = best.x.q;
+      hits.push({ ...best.x.h, from: { x: snap ? best.x.h.ref.p.x : q.x, y: q.y, z: q.z } });
+    }
+    if (best.z) {
+      const q = best.z.q;
+      hits.push({ ...best.z.h, from: { x: q.x, y: q.y, z: snap ? best.z.h.ref.p.z : q.z } });
+    }
+    const anchor = (best.x || best.z).q;
+    const p = { x: r3(anchor.x + dx), y: anchor.y, z: r3(anchor.z + dz) };
+    return { dx, dz, from: p, probe: { p, hits, dist: Math.max(...hits.map((h) => h.d)) } };
   }
 
   // ── 🧲 옮긴 배관 끝 자석 (v74) ────────────────────────────────────────
@@ -3426,18 +3493,18 @@ class App {
       }
     }
     this.applyMoveDelta(items, dx, dy, dz);
-    // ✨ 3축 정렬 (v76) — 옮긴 배관 끝이 다른 배관 끝·엘보 중심·노즐과 30mm 안에서 X·Y·Z 중 하나가
-    // 맞으면 그 축만 정확히 맞춘다. 손을 땔 때만 점선·`정렬` 배지가 잠깐 뜼다.
-    const al = this.alignSnapMoved(items);
     const spec = items[0].spec;
-    let snapped = false;
-    // 하나만 고른 장비·부속이면 150mm 안의 다른 장비에 그 축을 맞춘다(나란히 놓기).
+    // ✨ 정렬 표시 (v77) — 옮긴 배관 끝·부속 중심이 다른 배관 끝·엘보 중심·노즐과 X·Y·Z 중
+    // 하나가 15mm 안으로 맞으면 밝은 점선과 `정렬` 배지만 띄운다. 누른 보폭 그대로 두고 좌표는
+    // 절대 끌어가지 않는다(2026-11-27 사용자: "다른곳에 정렬하더니 배관을 가져가버리네").
+    const al = this.alignShowMoved(items, 15);
+    let axisHit = false;
+    // 장비는 바닥 십자 안내선만 — 다른 장비와 150mm 안이면 그 축을 보여 준다(좌표는 안 바꿈).
     if (!multi && !Array.isArray(spec.points)) {
       const snap = this.alignSnapFor(spec, spec.x, spec.z);
-      snapped = (axis === 'x' && snap.hitX) || (axis === 'z' && snap.hitZ);
-      if (axis !== 'y' && snapped) { spec.x = snap.x; spec.z = snap.z; }
+      axisHit = (axis === 'x' && snap.hitX) || (axis === 'z' && snap.hitZ);
       if (axis !== 'y') this.showAlignGuides(spec.x, spec.z, snap);
-      this.hideAlignGuides(snapped ? 1400 : 600);
+      this.hideAlignGuides(axisHit ? 1400 : 600);
     } else {
       this.hideAlignGuides(0);
     }
@@ -3468,9 +3535,7 @@ class App {
       this.showAlign3D(al.from, al.probe);
       this.autoHideAlign3D(2000);
     }
-    this.toast(snapped
-      ? `정렬됨 · (${fmt(spec.x)}, ${fmt(spec.y)}, ${fmt(spec.z)})m`
-      : `${multi ? `${items.length}개 같이 이동` : '위치 이동'} · ${dTxt}${where}${al ? ` · 정렬 ${al.txt}` : ''}`);
+    this.toast(`${multi ? `${items.length}개 같이 이동` : '위치 이동'} · ${dTxt}${where}${al ? ` · 정렬선 ${al.txt}` : ''}`);
   }
 
   // 이동 본체 — 고른 것 전부에 같은 Δ를 준다. 배관은 점 전체를, 장비는 중심을 옮긴다.
@@ -3601,6 +3666,13 @@ class App {
           const r = this.stretchApply(sg.parts, sg.spec, sg.a, sg.base, rawDx * sg.a.x + rawDz * sg.a.z);
           sg.used = r;
           this.hideAlignGuides(0);
+          // ✨ 드래그 정렬 (v77) — 신축 중인 부속도 다른 배관 끝·엘보·노즐과 X·Z가 거의 맞으면
+          // 밝은 점선·`정렬` 배지로 알려 준다. 자리는 배관 축에 묶여 있으니 옮기지 않고 알려만 준다.
+          const al = this.alignDragSnap([{ spec: sg.spec }], new Set([sg.spec.id]),
+            { tol: 0.03, snap: false });
+          st.align3d = al;
+          if (al) this.showAlign3D(al.from, al.probe);
+          else this.hideAlign3D();
           // 배관 길이가 눈에 보이게 — 장면만 다시 그린다(속성 창은 그대로).
           this.refreshScene();
           return;
@@ -3616,18 +3688,24 @@ class App {
         spec.x = ps.x;
         spec.y = ps.y;
         spec.z = ps.z;
+        st.align3d = null;
+        this.hideAlign3D();          // 접합면 자석이 우선 — 정렬 배지는 끈다
         if (st.items[0].group) st.items[0].group.position.set(spec.x, spec.y, spec.z);
         this.refreshHighlight();
         this.updateDims();
         return;
       }
       st.portSnap = null;
-      // 다른 장비와 150mm 안이면 X·Z 축에 딱 붙인다 — 나란히 정렬.
+      // 다른 장비와 150mm 안이면 바닥 십자 안내선만 보여 준다 — 좌표는 손가락 그대로 (v77).
       const snap = this.alignSnapFor(spec, nx, nz);
-      nx = snap.x;
-      nz = snap.z;
       spec.x = nx;
       spec.z = nz;
+      // ✨ 드래그 정렬 (v77) — 좌표는 그대로 두고, 다른 배관 끝·엘보 중심·노즐과 X·Z가
+      // 45mm 안이면 밝은 점선과 `정렬` 배지만 띄운다.
+      const al = this.alignDragSnap(st.items, new Set([spec.id]), { snap: false });
+      st.align3d = al;
+      if (al) this.showAlign3D(al.from, al.probe);
+      else this.hideAlign3D();
       this.showAlignGuides(nx, nz, snap);
       // 가볍게 따라오게 — 무리한 전체 재구성 없이 그 그룹만 옮긴다.
       if (st.items[0].group) st.items[0].group.position.set(spec.x, spec.y, spec.z);
@@ -3658,11 +3736,22 @@ class App {
     st.pipeSnap = this.moveMagnetSnap(st.items, st.contact);
     if (st.pipeSnap) {
       const mg = st.pipeSnap.delta;
+      st.align3d = null;
+      this.hideAlign3D();          // 접합면 자석이 우선 — 정렬 배지는 끈다
       st.items.forEach((it) => {
         if (!it.group) return;
         if (it.pts) it.group.position.set(rawDx + mg.x, mg.y, rawDz + mg.z);
         else it.group.position.set(it.spec.x, it.spec.y, it.spec.z);
       });
+    } else {
+      // ✨ 드래그 정렬 (v77) — 옮기는 배관 양 끝이 다른 배관 끝·엘보 중심·노즐과 X·Z가
+      // 45mm 안이면 밝은 점선과 `정렬` 배지만 띄운다. 좌표는 손가락 위치 그대로 둔다
+      // (2026-11-27 사용자: "움직이고 있는데 가져가면 안되지 정렬선만 표시 해주고").
+      const al = this.alignDragSnap(st.items, new Set(st.items.map((it) => it.spec.id)),
+        { snap: false });
+      st.align3d = al;
+      if (al) this.showAlign3D(al.from, al.probe);
+      else this.hideAlign3D();
     }
     this.refreshHighlight();
     this.updateDims();
@@ -3674,6 +3763,9 @@ class App {
     this.moveDragState = null;
     this.controls.enabled = true;
     this.hideAlignGuides(1200);
+    // ✨ 드래그 정렬 (v77) — 손을 뗀 뒤에는 1.2초만 남겨 두고 사라진다(맞은 게 없었으면 바로 끈다).
+    if (st.align3d) this.autoHideAlign3D(1200);
+    else this.hideAlign3D();
     if (!st.moved) return;
     // ✂️ 자동 신축 드래그 — 부속과 양쪽 배관이 함께 움직였다.
     if (st.stretch && st.stretch.used) {
