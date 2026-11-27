@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=76';
+import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=79';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -1391,7 +1391,7 @@ export function buildEquipment(spec) {
   g.position.set(spec.x, spec.y, spec.z);
   // 자세 — 장비·부속 공통. 회전행렬 하나로 정한다:
   //   · 기본 자세(계기 법선 · 엘보 두 다리 · 진행 방향 dir · 수직 axis:'y' · rot)
-  //   · 3축 회전 — 좌·우(yaw, 월드 Y) → 위·아래(pitch, 유로에 수직인 수평축)
+  //   · 3축 회전 — 위·아래(pitch, 유로에 수직인 수평축) → 좌·우(yaw, 월드 Y)
   //   · 축 회전(roll) — 유로 축(로컬 +X) 둘레 (밸브·스트레이너는 손잡이만 돈다)
   // store.js equipBasis()는 fusion.js 내보내기와 **같은 함수**라 웹·퓨전360의 자세가 같다.
   const basis = equipBasis(spec);

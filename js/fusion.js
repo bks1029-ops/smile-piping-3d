@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — Fusion 360 스크립트(.py) 생성기
 // 씬 상태(미터)를 Fusion 360 API(내부 단위 cm)로 변환하는 자립형 스크립트를 만든다.
-import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=76';
+import { elbowBasis, dirBasis, gaugeBasis, equipNozzles, NOZZLE_TYPES, rollBasis, HANDLE_TYPES, FLANGE_MATE_TYPES, handleRotOf, flangeOd, flangeTh, equipBasis } from './store.js?v=79';
 
 // 수직(axis: 'y')으로 세운 부속의 로컬 축 → 월드 축 (행 우선 3×3).
 // rot은 세워진 채로 수직축 둘레로 핸들 방향을 돌린다 (웹앱 buildEquipment와 같은 규칙).
@@ -44,7 +44,7 @@ export function buildFusionScript(state) {
       };
       // 자세 — 웹앱 buildEquipment()와 **같은 함수**(store.js equipBasis)로 회전행렬을 만든다.
       //  · 기본 자세(계기 법선 · 엘보 두 다리 · 진행 방향 dir · 수직 axis:'y' · rot)
-      //  · 3축 회전 좌·우(yaw)·위·아래(pitch)와 축 회전(roll)까지 그대로 들어간다.
+      //  · 3축 회전 — 위·아래(pitch)를 먼저, 좌·우(yaw)를 나중에(월드 Y 둘레). 순서는 extraBasis 하나로 고정.
       //  행 우선 3×3의 각 열 = 로컬 X·Y·Z가 향하는 월드 방향.
       item.rmat = equipBasis(e).map((v) => Math.round(v * 1e6) / 1e6);
       // 엘보·배관 끝 부속은 방향 벡터도 함께 넘긴다(스크립트 안에서 참고·디버깅용).

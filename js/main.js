@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=76';
-import { buildScene } from './builders.js?v=76';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=76';
-import { buildOBJ } from './obj.js?v=76';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=76';
-import { parseCommand, CMD_HELP } from './cmd.js?v=76';
-import { buildDimItems } from './dims.js?v=76';
-import { buildAiImageParts } from './zoom.js?v=76';
+} from './store.js?v=79';
+import { buildScene } from './builders.js?v=79';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=79';
+import { buildOBJ } from './obj.js?v=79';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=79';
+import { parseCommand, CMD_HELP } from './cmd.js?v=79';
+import { buildDimItems } from './dims.js?v=79';
+import { buildAiImageParts } from './zoom.js?v=79';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];

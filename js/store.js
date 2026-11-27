@@ -554,22 +554,25 @@ function pitchAxisOf(h) {
   return Math.hypot(ax[0], ax[2]) < 1e-6 ? [1, 0, 0] : ax;
 }
 
-// 벡터에 yaw·pitch 를 적용 (몸체와 같은 순서: yaw → pitch).
+// 벡터에 yaw·pitch 를 적용 (몸체와 같은 순서: pitch → yaw).
 export function extraRotVec(v, yawDeg, pitchDeg) {
   const yaw = num(yawDeg, 0);
   const pitch = num(pitchDeg, 0);
-  const h = yaw ? matVec(rotYM(yaw), [v[0], v[1], v[2]]) : [v[0], v[1], v[2]];
-  if (!pitch) return h;
-  return matVec(axisRot(pitchAxisOf(h), pitch), h);
+  const p = pitch ? matVec(axisRot(pitchAxisOf([v[0], v[1], v[2]]), pitch), [v[0], v[1], v[2]]) : [v[0], v[1], v[2]];
+  if (!yaw) return p;
+  return matVec(rotYM(yaw), p);
 }
 
-// 회전행렬(행 우선 3×3)에 yaw·pitch 를 덧씌운다 — R = Rpitch · Ryaw · B.
+// 회전행렬(행 우선 3×3)에 yaw·pitch 를 덧씌운다 — R = Ryaw · Rpitch · B.
+//  · pitch 를 먼저: 기본 자세의 유로 축(1열)에 수직인 수평축 둘레로 눕힌다.
+//  · yaw 를 나중(바깥): 그래야 세워 두든 눕혀 두든 항상 월드 Y 둘레 = 제자리 좌·우 회전.
+//    (예전엔 yaw 를 먼저 걸어, pitch 90° 인 티가 좌·우 대신 45° 비스듬히 돌았다 — 2026-11-27 v79)
 export function extraBasis(b, yawDeg, pitchDeg) {
   const yaw = num(yawDeg, 0);
   const pitch = num(pitchDeg, 0);
   if (!yaw && !pitch) return b.slice();
-  let m = yaw ? matMul(rotYM(yaw), b) : b.slice();
-  if (pitch) m = matMul(axisRot(pitchAxisOf([m[0], m[3], m[6]]), pitch), m);
+  let m = pitch ? matMul(axisRot(pitchAxisOf([b[0], b[3], b[6]]), pitch), b) : b.slice();
+  if (yaw) m = matMul(rotYM(yaw), m);
   return m;
 }
 
