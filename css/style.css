@@ -702,35 +702,122 @@ canvas.move-drag:active { cursor: grabbing; }
 /* ── 토스트 ─────────────────────────────────────────────── */
 #toastHost {
   position: absolute;
-  top: 14px;
+  top: 10px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   align-items: center;
   z-index: 60;
   pointer-events: none;
-  width: min(460px, calc(100% - 24px));
+  width: min(460px, calc(100% - 20px));
 }
+/* 알림은 **한 줄에 하나만** — 이동 버튼을 연달아 눌러도 위로 쌓이지 않고
+   마지막 한 줄이 앞의 것을 덮어쓴다(v76). 그래서 3D 시야를 가리지 않는다. */
 .toast {
   pointer-events: auto;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: #1b232c;
   border: 1px solid #33414f;
   color: var(--txt);
-  font-size: 12.5px;
-  padding: 9px 13px;
-  border-radius: 10px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  padding: 4px 10px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
-  animation: toastIn 0.2s ease-out;
+  animation: toastIn 0.16s ease-out;
+  width: auto;
   max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.toast > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .toast.err { border-color: #6a2d29; background: #2a1a19; color: #ffd6d2; }
-.toast .act { color: var(--accent); background: none; border: 0; font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
-@keyframes toastIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.toast .act { color: var(--accent); background: none; border: 0; font: inherit; font-weight: 700; cursor: pointer; padding: 0; flex: 0 0 auto; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* ── 정렬 배지 (v76) ───────────────────────────────────────
+   손그리기·이동·길이조절 끝점이 다른 배관 끝·엘보 중심·노즐 끝과 거리/높이/길이가
+   맞으면 밝은 점선과 함께 뜨는 작은 알약. 3D 시야를 가리지 않게 한 줄로만 둔다. */
+.align-badge {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  z-index: 58;
+  pointer-events: none;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #c8f4ff;
+  background: rgba(12, 32, 42, 0.92);
+  border: 1px solid #2e7f96;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+.align-badge[hidden] { display: none; }
+
+/* ── 키보드가 올라온 동안 명령창 바로 위 1줄 방향 버튼 (v76) ──────────
+   키보드를 내리지 않고 방향만 바꾼 뒤 숫자만 넣고 [실행]을 계속 누를 수 있게 한다.
+   기본은 숨김이고, 모바일에서 키보드가 올라온(body.kb-open) 동안에만 보인다. */
+.kb-dir { display: none; }
+.kb-dir[hidden] { display: none !important; }
+.kb-dir-bore {
+  flex: 0 0 auto;
+  padding: 0 5px 0 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.kb-dir-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--txt);
+  background: #1b232c;
+  border: 1px solid #33414f;
+  border-radius: 7px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.kb-dir-btn:active { background: #2c3542; }
+.kb-dir-btn.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: #c9820a;
+}
+@media (max-width: 860px) {
+  body.kb-open .kb-dir {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    /* 명령창(모바일 bottom 8px · 높이 46px) 바로 위에 4px 여유 */
+    bottom: calc(58px + env(safe-area-inset-bottom));
+    padding: 4px 5px;
+    background: rgba(18, 23, 29, 0.96);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    z-index: 62;
+  }
+}
 
 /* ── 모달 ───────────────────────────────────────────────── */
 .modal-root { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; }

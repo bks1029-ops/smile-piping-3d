@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=75">
+<link rel="stylesheet" href="./css/style.css?v=76">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -94,6 +94,22 @@
       </div>
 
       <div id="toastHost"></div>
+
+      <!-- 정렬 배지 — 손그리기·이동·길이조절 끝점이 다른 배관 끝·엘보 중심·노즐과
+           거리(X)·높이(Y)·길이(Z) 중 하나라도 맞으면 점선과 함께 `정렬`을 띄운다 (v76) -->
+      <div id="alignBadge" class="align-badge" hidden>정렬</div>
+
+      <!-- 키보드가 올라와 있을 때 명령창 바로 위 1줄 방향 버튼 (v76) —
+           방향만 바꿔도 관경은 그대로, 키보드를 내리지 않고 숫자만 넣고 실행한다. -->
+      <div id="kbDirBar" class="kb-dir" role="toolbar" aria-label="방향 버튼">
+        <span class="kb-dir-bore" id="kbDirBore">50A</span>
+        <button type="button" class="kb-dir-btn" data-kbdir="x:-1" title="왼쪽" aria-label="왼쪽">←</button>
+        <button type="button" class="kb-dir-btn" data-kbdir="x:1" title="오른쪽" aria-label="오른쪽">→</button>
+        <button type="button" class="kb-dir-btn" data-kbdir="z:1" title="앞" aria-label="앞">앞</button>
+        <button type="button" class="kb-dir-btn" data-kbdir="z:-1" title="뒤" aria-label="뒤">뒤</button>
+        <button type="button" class="kb-dir-btn" data-kbdir="y:1" title="위" aria-label="위">↑</button>
+        <button type="button" class="kb-dir-btn" data-kbdir="y:-1" title="아래" aria-label="아래">↓</button>
+      </div>
 
       <!-- mm 단위 한 줄 배관 명령 -->
       <form id="cmdForm" class="cmd-bar" autocomplete="off">
@@ -276,6 +292,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=75"></script>
+<script type="module" src="./js/main.js?v=76"></script>
 </body>
 </html>

@@ -735,9 +735,19 @@ export function makeEquipment(type, opts) {
     }
   }
   // 이경 부속(레듀샤·티)은 1차/2차 관경을 기억하고, 실제 관경 크기로 폭을 잡는다.
+  // 관경을 따로 주지 않으면 **넘겨받은 관경(o.bore)** 을 그대로 쓴다 — 팔레트·명령·조이스틱
+  // 어느 길로 넣어도 지금 사이즈의 티가 들어간다(v76). 예전에는 늘 표 기본값 100A였다.
   if (type === 'reducer' || type === 'tee') {
-    spec.bore1 = BORES[o.bore1] ? o.bore1 : (t.bore1 || '100A');
-    const d2 = type === 'tee' ? spec.bore1 : (t.bore2 || '50A');
+    const fallback1 = BORES[o.bore] ? o.bore : (t.bore1 || '100A');
+    spec.bore1 = BORES[o.bore1] ? o.bore1 : fallback1;
+    let d2;
+    if (o.bore2 && BORES[o.bore2]) d2 = o.bore2;
+    else if (type === 'tee') d2 = spec.bore1;
+    else {
+      // 레듀샤 — 따로 고르지 않았으면 들어오는 관경보다 한 단계 작게(입구 관경 상속, v76).
+      const bi = BORE_KEYS.indexOf(spec.bore1);
+      d2 = bi > 0 ? BORE_KEYS[bi - 1] : (t.bore2 || '50A');
+    }
     spec.bore2 = BORES[o.bore2] ? o.bore2 : d2;
     if (o.w == null) spec.w = fittingNaturalWidth(type, spec.bore1, spec.bore2);
     // 티의 분기 방향 — 본관 축 둘레 위·아래·앞·뒤 (기본 위)
