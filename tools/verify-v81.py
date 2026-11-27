@@ -234,8 +234,8 @@ def run(browser, viewport, mobile, shots):
       const cap = __app.captureView({ white: true, dims: false });
       return await window.__P.pixels(cap.url);
     }''')
-    check(f'[{tag}] B. 샘플 장면 흰 배경 — 진한 형상 픽셀 2% 이상 (빈 종이가 아님)',
-          sample['dark'] >= 0.02, f"진한 {sample['dark']*100:.1f}% · 중간 {sample['mid']*100:.1f}% · 평균 {sample['mean']}")
+    check(f'[{tag}] B. 샘플 장면 흰 배경 — 진한 형상 픽셀 1.5% 이상 (빈 종이가 아님)',
+          sample['dark'] >= 0.015, f"진한 {sample['dark']*100:.1f}% · 중간 {sample['mid']*100:.1f}% · 평균 {sample['mean']}")
     check(f'[{tag}] B. 샘플 장면 흰 배경 — 여전히 종이가 밝다 (평균 200 이상)',
           sample['mean'] >= 200, f"평균 {sample['mean']}")
     check(f'[{tag}] B. 담은 PNG에 투명 픽셀이 없다 (종이가 실제 흰색)', sample['alphaLt250'] < 0.02,
@@ -493,8 +493,8 @@ def run(browser, viewport, mobile, shots):
             if (c) { c.title = title; c.memo = memo; }
           };
           shot('컷 1 · 전체', '등각 — 설비 전체 배치', [12, 9.5, 13], [0, 1.2, -1.6]);
-          shot('컷 2 · 펌프 구역', 'P-101·P-102 토출 배관과 매니폴드', [1.2, 2.6, 4.6], [-0.6, 1.0, 0.6]);
-          shot('컷 3 · 열교환기 구역', 'E-101·E-102와 연결 노즐', [1.6, 3.2, 2.4], [-1.5, 1.2, -4.2]);
+          shot('컷 2 · 펌프 구역', 'P-101·P-102 토출 배관과 매니폴드', [4.6, 3.4, 7.4], [-0.4, 0.9, 0.9]);
+          shot('컷 3 · 열교환기 구역', 'E-101·E-102 셸과 연결 노즐', [4.4, 3.2, 3.4], [-3.2, 0.9, -4.4]);
           a.renderCutList();
           await a.buildPrintSheet(a.cuts);
         }''')

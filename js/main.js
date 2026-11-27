@@ -7259,9 +7259,21 @@ class App {
       // 댐핑이 남긴 미세한 카메라 이동을 반영하고, 애니메이션 루프와 같은 한 프레임을 그린다.
       this.controls.update();
       renderer.render(scene, this.camera);
+      // 그린 직후 **곧바로** 캔버스를 읽어 둔다(합성·격자 그리기보다 먼저).
+      // 흰 배경은 배경이 투명하므로, 아무것도 안 남았으면(드로잉 버퍼가 비워진 경우) 한 번 더 그려 읽는다.
+      const shot = document.createElement('canvas');
+      shot.width = gl.width;
+      shot.height = gl.height;
+      const sg = shot.getContext('2d');
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt) { renderer.render(scene, this.camera); }
+        sg.clearRect(0, 0, shot.width, shot.height);
+        sg.drawImage(gl, 0, 0);
+        if (!o.white || this.canvasHasInk(sg, shot)) break;
+      }
       out = document.createElement('canvas');
-      out.width = gl.width;
-      out.height = gl.height;
+      out.width = shot.width;
+      out.height = shot.height;
       const g = out.getContext('2d');
       const k = gl.width / (gl.clientWidth || 1);
       if (o.white) {
@@ -7270,7 +7282,7 @@ class App {
         this.paintFloorGrid(g, k);      // 종이 위 1m 격자(가는 회색 선) — 3D보다 아래에 깔린다
       }
       g.imageSmoothingEnabled = true;
-      g.drawImage(gl, 0, 0);
+      g.drawImage(shot, 0, 0);
       labels = o.dims ? this.paintDimLabels(g, k, !!o.white) : 0;
     } finally {
       scene.background = prev.bg;
@@ -7286,6 +7298,22 @@ class App {
     const url = out.toDataURL('image/png');
     this.lastCapture = { url, w: out.width, h: out.height, white: !!o.white, dims: labels };
     return this.lastCapture;
+  }
+
+  // 담은 화면에 실제로 무언가 그려졌는지 — 투명 배경(흰 종이)에서 빈 캔버스를 걸러 낸다.
+  canvasHasInk(ctx, canvas) {
+    try {
+      const step = Math.max(1, Math.floor(Math.min(canvas.width, canvas.height) / 24));
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let y = 0; y < canvas.height; y += step) {
+        for (let x = 0; x < canvas.width; x += step) {
+          if (d[(y * canvas.width + x) * 4 + 3] > 8) return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      return true;   // 못 재면 그냥 쓴다
+    }
   }
 
   // 흰 종이 위 1m 격자 — 3D 바닥 판(어두운 텍스처) 대신 담은 그림 위에 가는 회색 선으로 긋는다.
