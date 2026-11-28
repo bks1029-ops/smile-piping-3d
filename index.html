@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=81">
+<link rel="stylesheet" href="./css/style.css?v=82">
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -167,8 +167,8 @@
         </div>
       </div>
 
-      <!-- 🖨️ 도면 인쇄 · 컷 담기 (v81) — 3D 화면을 UI 없이 깨끗한 그림으로 담아 여러 구역을
-           모아 A4로 인쇄(또는 PDF 저장)하거나 PNG로 저장한다. 기본은 흰 배경(인쇄용).
+      <!-- 🖨️ 도면 인쇄 · 컷 담기 (v81 · A4 가로 v82) — 3D 화면을 UI 없이 깨끗한 그림으로 담아 여러 구역을
+           모아 A4 가로로 크게 인쇄(또는 PDF 저장)하거나 PNG로 저장한다. 기본은 흰 배경(인쇄용).
            패널은 접으면 📷 컷 담기 한 줄만 남아 3D 화면을 넓게 쓸 수 있다. -->
       <div id="printPanel" class="print-panel" hidden>
         <div class="pp-head">
@@ -186,6 +186,8 @@
             <button type="button" class="pp-seg-btn" id="ppBgDark" data-bg="dark">⬛ 화면 그대로</button>
           </div>
           <label class="pp-check"><input type="checkbox" id="ppDims" checked> 치수 라벨 함께 담기</label>
+          <!-- 자재·배관 수량표는 원할 때만 — 기본 해제(v82) -->
+          <label class="pp-check"><input type="checkbox" id="ppBom"> 자재 수량표 함께 인쇄</label>
           <div class="pp-quick">
             <button class="btn small ghost" id="ppQuickPng" type="button">📷 1장 PNG 저장</button>
             <button class="btn small ghost" id="ppQuickPrint" type="button">🖨️ 바로 인쇄</button>
@@ -199,11 +201,11 @@
           <div class="pp-foot-row">
             <label class="pp-per">한 장에
               <select id="ppPerPage" aria-label="한 장에 담을 컷 수">
-                <option value="1">1컷</option>
-                <option value="2">2컷</option>
+                <option value="1">1컷 (크게)</option>
+                <option value="2">2컷 (나란히)</option>
               </select>
             </label>
-            <span class="pp-hint">인쇄 창에서 ‘PDF로 저장’을 고르면 PDF가 됩니다</span>
+            <span class="pp-hint">A4 가로 · 인쇄 창에서 ‘PDF로 저장’을 고르면 PDF가 됩니다</span>
           </div>
         </div>
       </div>
@@ -319,8 +321,8 @@
   </main>
 </div>
 
-<!-- A4 인쇄 전용 시트 (v81) — 화면에서는 숨김. 인쇄(@media print)에서 이 시트만 종이에 나간다.
-     컷마다 한 장(또는 한 장에 2컷) + 마지막에 자재·배관 수량표. -->
+<!-- A4 인쇄 전용 시트 (v81 · 가로 v82) — 화면에서는 숨김. 인쇄(@media print)에서 이 시트만 종이에 나간다.
+     A4 가로 한 장에 컷 1개(또는 2개)씩, 자재·배관 수량표는 체크했을 때만 마지막 장에 붙는다. -->
 <div id="printSheet" aria-hidden="true"></div>
 
 <div id="modalRoot" class="modal-root" hidden>
@@ -342,6 +344,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=81"></script>
+<script type="module" src="./js/main.js?v=82"></script>
 </body>
 </html>

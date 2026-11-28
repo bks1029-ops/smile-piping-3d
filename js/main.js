@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=81';
-import { buildScene } from './builders.js?v=81';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=81';
-import { buildOBJ } from './obj.js?v=81';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=81';
-import { parseCommand, CMD_HELP } from './cmd.js?v=81';
-import { buildDimItems } from './dims.js?v=81';
-import { buildAiImageParts } from './zoom.js?v=81';
+} from './store.js?v=82';
+import { buildScene } from './builders.js?v=82';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=82';
+import { buildOBJ } from './obj.js?v=82';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=82';
+import { parseCommand, CMD_HELP } from './cmd.js?v=82';
+import { buildDimItems } from './dims.js?v=82';
+import { buildAiImageParts } from './zoom.js?v=82';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -7124,7 +7124,7 @@ class App {
     });
   }
 
-  // ── 🖨️ 도면 인쇄 · 컷 담기 (v81) ─────────────────────────
+  // ── 🖨️ 도면 인쇄 · 컷 담기 (v81 · A4 가로 v82) ──────
   // 3D 화면을 HTML UI(버튼·조이스틱·명령창) 없이 그대로 담는다 — 캔버스만 그리므로 UI는
   // 애초에 섞이지 않는다. 흰 배경(인쇄 기본)은 **투명 배경으로 렌더 → 흰 종이에 합성**이라
   // 배경이 톤매핑에 눌려 회색으로 뜨지 않고 #ffffff 그대로 나온다. 화면의 어두운 테마는
@@ -7137,6 +7137,8 @@ class App {
     try { this.ppBg = localStorage.getItem('smilePiping3D.printBg') === 'dark' ? 'dark' : 'white'; } catch (e) { this.ppBg = 'white'; }
     try { this.ppDims = localStorage.getItem('smilePiping3D.printDims') !== 'off'; } catch (e) { this.ppDims = true; }
     try { this.ppPerPage = localStorage.getItem('smilePiping3D.printPerPage') === '2' ? 2 : 1; } catch (e) { this.ppPerPage = 1; }
+    // 자재·배관 수량표는 기본 해제(v82) — 저장해 두지 않고 매번 꺼진 상태로 시작한다.
+    this.ppBom = false;
 
     const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
     on('#ppClose', 'click', () => this.closePrintPanel());
@@ -7144,6 +7146,11 @@ class App {
     on('#ppBgWhite', 'click', () => this.setPrintBg('white'));
     on('#ppBgDark', 'click', () => this.setPrintBg('dark'));
     on('#ppDims', 'change', (e) => { this.ppDims = !!e.target.checked; this.persistPrintOptions(); });
+    on('#ppBom', 'change', (e) => {
+      this.ppBom = !!e.target.checked;
+      this.toast(this.ppBom ? '🧾 자재·배관 수량표를 마지막 장에 함께 인쇄합니다' : '🧾 수량표 없이 도면만 인쇄합니다');
+      this.refreshPrintSheet();
+    });
     on('#ppAdd', 'click', () => this.addCut());
     on('#ppQuickPng', 'click', () => this.saveCutPng());
     on('#ppQuickPrint', 'click', () => this.printOneCut());
@@ -7152,7 +7159,9 @@ class App {
     on('#ppPerPage', 'change', (e) => {
       this.ppPerPage = Number(e.target.value) === 2 ? 2 : 1;
       this.persistPrintOptions();
-      this.toast(this.ppPerPage === 2 ? '한 장에 2컷씩 인쇄합니다' : '한 장에 1컷씩 인쇄합니다');
+      this.renderCutList();
+      this.refreshPrintSheet();
+      this.toast(this.ppPerPage === 2 ? '한 장에 2컷씩 인쇄합니다' : '한 장에 1컷씩 인쇄합니다 (A4 가로로 크게)');
     });
     on('#btnPrintSheet', 'click', () => { this.setDrawerOpen(false); this.openPrintPanel(); });
     const list = $('#ppList');
@@ -7185,6 +7194,14 @@ class App {
     if (dims) dims.checked = !!this.ppDims;
     const per = $('#ppPerPage');
     if (per) per.value = String(this.ppPerPage);
+    const bom = $('#ppBom');
+    if (bom) bom.checked = !!this.ppBom;      // 기본은 꺼짐
+  }
+
+  // 인쇄 옵션(컷 수량표·모아찍기)이 바뀌면 시트를 다시 맞춰 둔다 — 누르는 순간 바로 인쇄되게.
+  refreshPrintSheet() {
+    if (!this.cuts.length) return Promise.resolve(null);
+    return this.buildPrintSheet(this.cuts);
   }
 
   setPrintBg(bg) {
@@ -7594,13 +7611,15 @@ class App {
     if (!host) return Promise.resolve({ pages: 0, cuts: 0 });
     const src = (list || this.cuts || []).filter((c) => c && c.url);
     const per = Math.max(1, Math.min(2, Number((opts && opts.perPage) || this.ppPerPage) || 1));
+    // 자재·배관 수량표는 기본으로 넣지 않는다 — 인쇄 창에서 체크했을 때만 마지막 장에 붙는다(v82).
+    const withBom = opts && typeof opts.bom === 'boolean' ? opts.bom : !!this.ppBom;
     const d = new Date();
     const p2 = (n) => String(n).padStart(2, '0');
     const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
     const scene = this.state.name || '내 배관 도면';
     const groups = [];
     for (let i = 0; i < src.length; i += per) groups.push(src.slice(i, i + per));
-    const total = groups.length + 1;   // + 자재 수량표 한 장
+    const total = groups.length + (withBom ? 1 : 0);   // 수량표를 켰을 때만 +1장
 
     const head = (right) => `
       <header class="ps-head">
@@ -7610,20 +7629,20 @@ class App {
 
     let html = '';
     groups.forEach((group, gi) => {
-      const figs = group.map((c) => `
+      const figs = `<div class="ps-figs">${group.map((c) => `
         <figure class="ps-fig">
           <div class="ps-img"><img data-cut="${esc(c.id)}" alt="${esc(c.title || '도면 컷')}"></div>
           <figcaption><b>${esc(c.title || '')}</b>${c.memo ? `<span>${esc(c.memo)}</span>` : ''}</figcaption>
-        </figure>`).join('');
+        </figure>`).join('')}</div>`;
       html += `
       <section class="ps-page${per > 1 ? ' ps-2up' : ''}">
         ${head(`${gi + 1}/${total}`)}
         ${figs}
-        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃 · 단위 m · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
+        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃 · 단위 m · A4 가로 · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
       </section>`;
     });
 
-    html += this.bomPageHtml(stamp, src.length, `${total}/${total}`);
+    if (withBom) html += this.bomPageHtml(stamp, src.length, `${total}/${total}`);
     host.innerHTML = html;
 
     // 이미지는 innerHTML에 넣지 않고 프로퍼티로 — base64가 길어 마크업이 무거워진다.
@@ -7636,7 +7655,7 @@ class App {
     });
     const done = Promise.all(imgs.map((img) => (img.decode ? img.decode().catch(() => {}) : Promise.resolve())));
     this.ppPrinted = true;
-    this.printSheetInfo = { pages: total, cuts: imgs.length, per };
+    this.printSheetInfo = { pages: total, cuts: imgs.length, per, bom: withBom, landscape: true };
     return done.then(() => this.printSheetInfo);
   }
 
@@ -9025,7 +9044,7 @@ class App {
           <li><b>✂️ 중간에 끼워넣기</b> — 배관을 고르면 속성 패널에 <b>✂️ 중간에 끼워넣기</b>가 있습니다. 티·밸브·플랜지·레듀샤·벨로우즈 신축관을 고르면 그 배관이 가운데(또는 지정한 mm 지점)에서 둘로 나뉘고, 부속이 같은 관경·같은 축으로 양쪽 0mm 밀착해 앉습니다. 끼워넣은 부속을 <b>↔️ 위치 이동</b>이나 <b>✋ 드래그 이동</b>으로 배관 축 방향으로 옮기면 한쪽 배관은 길어지고 반대쪽은 짧아져 틈이 생기지 않습니다(양쪽 최소 50mm).</li>
           <li><b>☑️ 여러 개 선택</b> — 속성 패널 맨 위의 <b>☑️ 여러 개 선택</b>을 켜면 3D에서 다른 장비·부속·배관을 톡톡 누를 때마다 선택에 더하고 뻐며, <b>🔗 연결된 것 모두</b>로 이어진 밸브·배관 한 줄을 한 번에 잡습니다. 그러면 <b>↔️ 같이 이동</b> — 방향 버툰·보폭·드래그 어느 쪽이든 고른 것 전부가 같은 거리만큼 함께 움직입니다.</li>
           <li><b>내보내기</b> — [파일] 탭에서 JSON 저장·불러오기, <b>Fusion 360 .py</b>, <b>.obj</b>.</li>
-          <li><b>🖨️ 도면 인쇄 · 컷 담기</b> — 상단 <b>내보내기</b> 또는 ☰ → 파일 → <b>🖨️ 도면 인쇄 · 컷 담기</b>. 3D를 원하는 구역으로 옮겨 <b>📷 현재 화면 컷 담기</b>를 누를 때마다 컷이 쌓입니다(컷마다 제목·메모, PNG 저장, 삭제). 기본은 <b>흰 배경</b>이라 인쇄에 잉크가 덜 들고, 버튼·조이스틱·명령창은 그림에 들어가지 않습니다. <b>🖨️ A4 도면 인쇄 / PDF 저장</b>을 누르면 컷마다 한 장(또는 한 장에 2컷) + <b>자재·배관 수량표</b>가 A4로 인쇄되고, 인쇄 창에서 “PDF로 저장”을 고르면 PDF가 됩니다.</li>
+          <li><b>🖨️ 도면 인쇄 · 컷 담기</b> — 상단 <b>내보내기</b> 또는 ☰ → 파일 → <b>🖨️ 도면 인쇄 · 컷 담기</b>. 3D를 원하는 구역으로 옮겨 <b>📷 현재 화면 컷 담기</b>를 누를 때마다 컷이 쌓입니다(컷마다 제목·메모, PNG 저장, 삭제). 기본은 <b>흰 배경</b>이라 인쇄에 잉크가 덜 들고, 버튼·조이스틱·명령창은 그림에 들어가지 않습니다. <b>🖨️ A4 도면 인쇄 / PDF 저장</b>을 누르면 컷마다 <b>A4 가로</b> 한 장을 가득 채워 크게 인쇄되고(또는 한 장에 2컷), <b>자재 수량표</b>는 체크했을 때만 마지막 장에 붙습니다. 인쇄 창에서 “PDF로 저장”을 고르면 PDF가 됩니다.</li>
         </ol>
         <p class="hint">작업은 이 브라우저에 자동 저장됩니다. 되돌리기는 오른쪽 위 알림의 “되돌리기” 또는 <code>Ctrl+Z</code>.</p>`,
       actions: [{ label: '확인', cls: 'accent' }],
