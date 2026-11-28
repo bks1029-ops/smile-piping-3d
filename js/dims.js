@@ -4,7 +4,8 @@
 // 여기서는 라벨을 붙일 월드 좌표와 문구만 만든다.
 
 export function dimText(length, bore) {
-  return `${Math.round(length * 1000)}mm (${bore})`;
+  // ✂ = 실제 직관 절단 길이 — 저장된 점 사이 길이가 곧 직관이므로 이 숫자가 그대로 절단 길이다.
+  return `✂${Math.round(length * 1000)}mm (${bore})`;
 }
 
 export function buildDimItems(state) {

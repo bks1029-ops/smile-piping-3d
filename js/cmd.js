@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — mm 단위 한 줄 배관 명령 파서
 // 외부 API 없이 브라우저에서 바로 해석한다. 길이 단위는 기본 mm, `1.5m`처럼 m를 붙이면 미터.
-import { BORES, MATERIALS } from './store.js?v=83';
+import { BORES, MATERIALS } from './store.js?v=84';
 
 // ── 음성·구어체 보조 정규화 ─────────────────────────────────────────────
 // 현장에서 말로 하면 "50에이", "오십에이", "천", "천오백", "1,000" 처럼 들어온다.
@@ -293,6 +293,10 @@ export function parseCommand(text) {
     const mmBore = /^(15|20|25|32|40|50|65|80|100|125|150|200|250|300|350|400|450|500|550|600)(미리|미리미터|밀리|밀리미터|파이|빠이|mm)$/i.exec(t);
     if (mmBore) return { raw, t, kind: 'bore', bore: mmBore[1] + 'A' };
     if (DELETE_WORDS.has(t)) return { raw, t, kind: 'delete' };
+    // "오프셋 500" · "45오프셋 500" · "45도 오프셋 500" — 45° 오프셋 계산 그리기 (v84)
+    if (/^(45도|45|사십오도)?오프셋$/.test(t) || t === 'offset' || t === '45offset') {
+      return { raw, t, kind: 'offset' };
+    }
     if (CONNECT_WORDS.has(t) || CONNECT_WORDS.has(String(raw).toLowerCase())) {
       return { raw, t, kind: 'connect' };
     }
@@ -415,6 +419,7 @@ export function parseCommand(text) {
   const ops = [];
   let pendingDirs = []; // 각도 앞뒤로 온 방향들 (수평 방향 + 위/아래)
   let pendingAngle = 0;
+  let pendingOffset = false;   // "오프셋 500" — 다음 길이를 오프셋(mm)으로 본다
   const usedDir = new Set(); // 길이 뒤에서 미리 끌어다 쓴 방향
   let lastKind = '';
   let lastEquip = '';
@@ -426,6 +431,7 @@ export function parseCommand(text) {
     if (it.kind === 'equip' && lastKind === 'equip' && lastEquip === it.type) continue;
     if (it.kind !== 'cmd') { lastKind = it.kind; lastEquip = it.kind === 'equip' ? it.type : ''; }
     if (it.kind === 'bore') { ops.push({ op: 'bore', bore: it.bore }); continue; }
+    if (it.kind === 'offset') { pendingOffset = true; continue; }
     if (it.kind === 'angle') { pendingAngle = it.angle; continue; }
     if (it.kind === 'dir') {
       if (usedDir.has(i)) continue;
@@ -466,6 +472,34 @@ export function parseCommand(text) {
       }
       const horiz = pendingDirs.find((d) => d.axis !== 'y');
       const vert = pendingDirs.find((d) => d.axis === 'y');
+      if (pendingOffset) {
+        // 45° 오프셋 — 숫자는 **수직 이동 거리(오프셋) mm**. 빗변은 실행할 때 H×√2로 잡는다.
+        // 방향은 숫자 앞("오른쪽 오프셋 500")뒤("오프셋 500 오른쪽") 어느 쪽으로 와도 읽는다.
+        let oax = horiz ? horiz.axis : null;
+        let osg = horiz ? horiz.sign : 1;
+        if (!oax) {
+          for (let j = i + 1; j < items.length && j <= i + 3; j += 1) {
+            if (items[j].kind === 'cmd') continue;
+            if (items[j].kind === 'dir') {
+              oax = items[j].axis;
+              osg = items[j].sign;
+              usedDir.add(j);
+            }
+            break;
+          }
+        }
+        ops.push({
+          op: 'offset45',
+          axis: oax,
+          sign: osg,
+          offset: it.meters,
+          meters: Math.round(it.meters * Math.SQRT2 * 1000) / 1000,
+        });
+        pendingOffset = false;
+        pendingDirs = [];
+        pendingAngle = 0;
+        continue;
+      }
       if (pendingAngle && pendingAngle < 90) {
         // 45° 경사: 수평 방향 + 위/아래. 수평 방향이 없으면 직전 방향을 쓴다.
         ops.push({
@@ -502,6 +536,7 @@ export const CMD_HELP = `
     <li><code>100a sus 앞으로 800</code> — 100A 스테인리스, 앞으로 0.8m</li>
     <li><code>80a 왼쪽 600 아래로 300 뒤로 400</code> — 쉼표·공백 모두 구분자로 씁니다</li>
     <li><code>오른쪽 45도 위 1000</code> · <code>45도 위 1000</code> — 45° 경사 상승 1m (수직 0.71m · 수평 0.71m)</li>
+    <li><code>오프셋 500</code> · <code>45도 오프셋 500</code> — 45° 오프셋: 오프셋(수직) 500mm → 빗변 707.1mm로 그리고, 직관 절단 580.1mm(100A)를 계산해 알려 줍니다. 이어서 직관을 그리면 두 번째 45° 엘보가 자동으로 붙습니다</li>
     <li><code>100a에서 50a 레듀샤</code> · <code>100x50 레듀샤</code> — 이경 레듀샤(1차 100A·2차 50A), 다음 배관은 50A로 이어집니다</li>
     <li><code>단조모드 20a 오른쪽으로 1000 단조 볼밸브 단조 엘보 위로 1000</code> — 이후 부속·배관을 <b>단조형(소켓웰드·나사식)</b>으로: 플랜지 원판 없이 소켓 보스만</li>
     <li><code>플랜지모드</code> · <code>플렌지모드</code> · <code>플랜지타입</code> · <code>플랜지형</code> — 다시 플랜지 접합으로</li>
@@ -518,6 +553,7 @@ export const CMD_HELP = `
   <b>🎤 말로</b> — 명령창의 🎤을 누르고 말하면 받아쓰기해 바로 실행합니다. <code>오십에이 오른쪽 천</code>, <code>육백에이 앞으로 이천</code>, <code>천오백</code>처럼 구어체 숫자도 <code>50a</code>·<code>600a</code>·<code>1000</code>·<code>1500</code>으로 알아듣습니다.<br>
   <b>🧭 조이스틱</b> — 방향을 고르고 길이만 치고 실행하면 그 방향으로 그려집니다. 같은 방향을 한 번 더 누르면 바로 그립니다.<br>
   <b>자동 엘보</b> — 방향이 꺾이면 90°·45° 엘보가 꼭짓점에 자동으로 들어가고, 배관은 접합면에서 끝나 배관을 뚫지 않습니다.<br>
+  <b>✂ 절단 길이</b> — 배관을 누르면 속성 패널에 구간별 <b>직관 절단 길이</b>가 나옵니다(치수 라벨의 ✂ 숫자도 같은 값). 티·레듀샤 접합면에서 이어 그리면 그 부속값(C·M·H/2)을 빼고 직관을 그립니다.<br>
   방향: <code>[내 시점 기준]</code>은 화면에서 보는 좌·우·앞·뒤, <code>[도면 축 기준]</code>은 고정 X·Z 축. 위/아래는 항상 높이(Y)입니다.
   </p>
 `;

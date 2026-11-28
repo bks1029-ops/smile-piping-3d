@@ -1,6 +1,6 @@
 // 스마일산업 3D 배관 — 3D 오브젝트 빌더
 import * as THREE from 'three';
-import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=83';
+import { BORES, MATERIALS, boreOd, boreScale, SIZE_REF_BORE, elbowDims, teeDims, reducerDims, elbowBasis, dirBasis, gaugeBasis, headerBody, hxBody, hxHeadRound, equipNozzles, equipConnectFaces, teeBranch, teePorts, HANDLE_TYPES, flangeOd, flangeTh, equipBasis, equipFlowAxis, FLANGE_MATE_TYPES, extraBasis, rollBasis, rollOf } from './store.js?v=84';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -932,10 +932,10 @@ function buildTee(spec) {
   const b2 = spec.bore2 || b1;
   const r1 = boreOd(b1) / 2;
   const r2 = boreOd(b2) / 2;
-  // KS B 1522 / ASME B16.9 — 중심~끝 C에서 본관 전체 길이 2C, 분기 길이 C.
-  const dims = teeDims(b1);
+  // KS B 1522 / ASME B16.9 — 중심~끝 C에서 본관 전체 길이 2C, 분기 길이는 M(이경 티).
+  const dims = teeDims(b1, b2);
   const L = dims.L;             // 주배관 길이 = 2C
-  const branchH = dims.H;       // 분기 길이 = C
+  const branchH = dims.M;       // 분기 길이 = M (동경 티는 C)
   // s는 면간폭 w를 본관 길이 L로 나눈 값 — 직진 양 끝면이 정확히 ±w/2에 앉는다.
   const s = Math.max(0.05, spec.w) / L;
 

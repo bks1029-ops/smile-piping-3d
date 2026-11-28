@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   BORES, BORE_KEYS, MATERIALS, EQUIP_TYPES, EQUIP_CATEGORIES, typesByCategory, makeEquipment, makePipe,
   sampleScene, normalizeState, pipeLength, fittingNaturalWidth, elbowDims, dirBasis,
+  teeDims, reducerDims,
   CONN_MODES, CONN_TYPES, connOf, isBoreSized, applyBoreSize, SIZE_REF_BORE,
   aiResultToScene, aiTypeOf, isVerticalCapable, AXIS_LABELS, attachGaugeToPipe,
   equipNozzles, nozzlesOf, nozzleBore, setNozzle, nozzleDirsOf, NOZZLE_LABELS, NOZZLE_SIZES, NOZZLE_NONE,
@@ -16,14 +17,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=83';
-import { buildScene } from './builders.js?v=83';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=83';
-import { buildOBJ } from './obj.js?v=83';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=83';
-import { parseCommand, CMD_HELP } from './cmd.js?v=83';
-import { buildDimItems } from './dims.js?v=83';
-import { buildAiImageParts } from './zoom.js?v=83';
+} from './store.js?v=84';
+import { buildScene } from './builders.js?v=84';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=84';
+import { buildOBJ } from './obj.js?v=84';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=84';
+import { parseCommand, CMD_HELP } from './cmd.js?v=84';
+import { buildDimItems } from './dims.js?v=84';
+import { buildAiImageParts } from './zoom.js?v=84';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -46,6 +47,8 @@ const fmtSize = (n) => String(Math.round(Number(n) * 1000) / 1000);
 const sizeStep = (spec) => (isBoreSized(spec && spec.type) ? 0.005 : 0.1);
 const sizeMin = (spec) => (isBoreSized(spec && spec.type) ? 0.01 : 0.1);
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
+// 이어 그릴 때 입력한 길이에서 값을 빼는 부속 — 티·레듀샤(중심선 기준).
+const FIT_DEDUCT_TYPES = new Set(['tee', 'reducer']);
 // 접합면 좌표 키 (mm 단위) — 같은 면을 한 번 붙은 뒤 다시 끌려가지 않게 구분한다 (v74).
 const magnetKey = (p) => `${Math.round(Number(p.x) * 1000)}|${Math.round(Number(p.y) * 1000)}|${Math.round(Number(p.z) * 1000)}`;
 // 두 점 사이 단위벡터 (a → b)
@@ -243,6 +246,7 @@ class App {
     this.setupHand();
     this.setupHandDim();
     this.setupPrint();
+    this.setupOffset45();
     this.setupZoomGuard();
     this.setupKeyboardView();
     this.setupKbDirBar();
@@ -4224,6 +4228,7 @@ class App {
         </div>
         ${this.connField(spec)}
         <div class="pipe-summary">길이 ${fmt(pipeLength(spec.points))} m · 점 ${spec.points.length}개</div>
+        ${this.cutListHtml(spec)}
         ${this.movePanelHtml()}
         <div class="prop-section">포인트 (X / 높이 Y / Z)</div>
         <div class="pt-head"><span>#</span><span>X</span><span>Y</span><span>Z</span><span></span></div>
@@ -5159,6 +5164,136 @@ class App {
     return best;
   }
 
+  // ── ✂️ 직관 절단 길이 (v84) ──────────────────────────────────────────
+  // 배관의 점 두 개 사이(pts[i-1]~pts[i])가 곧 **실제 직관**이다. 양 끝에 부속이 물려 있으면
+  // 중심선은 그 부속의 중심~면 값만큼 더 길어진다. 절단 길이는 저장된 직관 길이 그대로다.
+  //
+  // fittingAt(p, dir, tol) — 그 점에 0mm로 물린 부속의 중심~접합면 값(m)과 이름.
+  //  · 티 : 직진 C · 분기 M (store.js TEE_C / TEE_M — 이경 티는 분기가 짧다)
+  //  · 레듀샤 : 전체 길이 H의 절반 · 엘보 : face(B) · 플랜지·밸브 : 면간의 절반
+  //  (spec.w가 표와 달라도 메시·포트와 정확히 맞도록 중심→접합면 거리를 그대로 쓴다)
+  fittingAt(p, dirV, opts) {
+    if (!p) return null;
+    const o = opts || {};
+    const lim = o.tol == null ? 0.012 : o.tol;
+    const extra = o.extra;
+    const types = o.types || null;   // null = 모든 부속
+    const list = extra && extra.length ? this.state.equipment.concat(extra) : this.state.equipment;
+    let best = null;
+    list.forEach((e) => {
+      if (!e || !e.type || !EQUIP_TYPES[e.type]) return;
+      if (types && !types.has(e.type)) return;
+      // 장비(펌프·탱크·헤더·열교환기)는 배관을 이어 그리는 상대지 직관을 먹는 부속이 아니다.
+      if (EQUIP_TYPES[e.type].cat === 'equip') return;
+      equipConnectFaces(e).forEach((n) => {
+        if (!n || !n.tip) return;
+        const d = Math.hypot(n.tip.x - p.x, n.tip.y - p.y, n.tip.z - p.z);
+        if (d > lim) return;
+        // 배관 방향과 면의 바깥 방향이 나란해야 그 면에 물린 배관이다.
+        if (dirV && n.axis) {
+          const dot = n.axis.x * dirV.x + n.axis.y * dirV.y + n.axis.z * dirV.z;
+          if (Math.abs(dot) < 0.9) return;
+        }
+        const value = Math.hypot(n.tip.x - e.x, n.tip.y - e.y, n.tip.z - e.z);
+        if (!(value > 0.001)) return;
+        if (best && d >= best.d) return;
+        // 표시용 표준값 — 좌표가 mm로 반올림돼도 63.5mm처럼 표 값을 그대로 보여 준다.
+        let std = value;
+        if (e.type === 'tee') {
+          const td = teeDims(e.bore1, e.bore2);
+          std = n.nid === 'branch' ? td.M : td.C;
+        } else if (e.type === 'reducer') {
+          std = reducerDims(e.bore1, e.bore2).H / 2;
+        } else if (e.type === 'elbow' || e.type === 'elbow45') {
+          std = elbowDims(e.type, e.bore || '100A').face;
+        }
+        best = {
+          d, value, std, spec: e, port: n, type: e.type,
+          label: e.type === 'tee'
+            ? (n.nid === 'branch' ? '티 분기' : '티 직진')
+            : (EQUIP_TYPES[e.type].label || '부속'),
+        };
+      });
+    });
+    return best;
+  }
+
+  // 이어 그릴 때 **입력한 길이에서 빼는** 부속값 — 티·레듀샤만.
+  //  (플랜지·밸브·90° 엘보는 접합면 기준으로 그려 왔다 — v78 사용자 확정:
+  //   플랜지 끝에서 100mm라고 하면 직관 100mm다)
+  fitAllowanceAt(p, dirV, extra, tol) {
+    return this.fittingAt(p, dirV, { extra, tol, types: FIT_DEDUCT_TYPES });
+  }
+
+  // 한 구간의 절단 길이·중심선 길이와 양 끝에 물린 부속 값.
+  segCutInfo(pipe, i) {
+    const pts = (pipe && pipe.points) || [];
+    const a = pts[i - 1];
+    const b = pts[i];
+    if (!a || !b) return null;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dz = b.z - a.z;
+    const cut = Math.hypot(dx, dy, dz);
+    const dir = cut > 1e-6 ? { x: dx / cut, y: dy / cut, z: dz / cut } : null;
+    const fa = this.fittingAt(a, dir);
+    const fb = this.fittingAt(b, dir);
+    const center = cut + (fa ? fa.std : 0) + (fb ? fb.std : 0);
+    return { index: i, cut, center, fa, fb, bore: (pipe && pipe.bore) || '100A' };
+  }
+
+  // 배관 한 개의 절단 길이 합계 — 직관 합계와 중심선 합계.
+  pipeCutTotals(pipe) {
+    const pts = (pipe && pipe.points) || [];
+    let cut = 0;
+    let center = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      const s = this.segCutInfo(pipe, i);
+      if (!s) continue;
+      cut += s.cut;
+      center += s.center;
+    }
+    return { cut, center };
+  }
+
+  // 속성 패널 — 구간별 `✂ 절단 길이` 목록 (양 끝 부속값 포함 중심선 길이도 함께)
+  cutListHtml(pipe) {
+    const pts = (pipe && pipe.points) || [];
+    if (pts.length < 2) return '';
+    const mm = (v) => Math.round(v * 1000);
+    // 0.1mm까지 — 45° 엘보 63.5mm처럼 표 값이 정수가 아니면 소수 한 자리를 보여 준다.
+    const mmx = (v) => {
+      const n = Math.round(v * 1000 * 10) / 10;
+      return Number.isInteger(n)
+        ? n.toLocaleString()
+        : n.toLocaleString(undefined, { minimumFractionDigits: 1 });
+    };
+    const rows = [];
+    let cutSum = 0;
+    let ctrSum = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      const s = this.segCutInfo(pipe, i);
+      if (!s || s.cut < 0.001) continue;
+      cutSum += s.cut;
+      ctrSum += s.center;
+      // 양 끝이 같은 부속이면 한 번만 "45° 엘보 63.5×2"로 적는다 — 좁은 칸에서 잘리지 않게.
+      const fits = (s.fa && s.fb && s.fa.label === s.fb.label && Math.abs(s.fa.std - s.fb.std) < 0.0005)
+        ? `${s.fa.label} ${mmx(s.fa.std)}×2`
+        : [s.fa, s.fb].filter(Boolean).map((f) => `${f.label} ${mmx(f.std)}`).join(' + ');
+      rows.push(`        <div class="cut-row">
+          <span class="cut-idx">${i}</span>
+          <b class="cut-val">✂ ${mm(s.cut).toLocaleString()}mm</b>
+          <span class="cut-sub">중심선 ${mm(s.center).toLocaleString()}mm${fits ? ` · ${fits}` : ''}</span>
+        </div>`);
+    }
+    if (!rows.length) return '';
+    return `
+        <div class="prop-section">✂️ 직관 절단 길이 (Cut)</div>
+        <div class="cut-list">${rows.join('')}</div>
+        <div class="cut-sum">직관 합계 <b>${mm(cutSum).toLocaleString()}mm</b>
+          ${Math.abs(ctrSum - cutSum) > 0.0005 ? `· 중심선 합계 ${mm(ctrSum).toLocaleString()}mm` : ''}</div>`;
+  }
+
   addFittingAtCursor(type) {
     const t = EQUIP_TYPES[type];
     const cur = { ...this.cmdCursor };
@@ -5212,9 +5347,10 @@ class App {
       spec.y = Math.max(0, r3(cur.y + d.y * face));
       spec.z = r3(cur.z + d.z * face);
     } else {
-      // 티는 본관 절반 길이가 곧 접합면 — 중심을 그만큼 앞에 둬야 들어오는 면이 커서에 딱 닿는다.
+      // 티는 본관 절반 길이(중심~직진 끝 C)가 곧 접합면 — 중심을 그만큼 앞에 둬야 들어오는 면이 커서에 딱 닿는다.
+      // (v84 — 예전에는 2.6×외경/2라는 어림값이라 100A 티가 44mm 더 앞에 섰다)
       face = type === 'tee'
-        ? Math.max(0.22, 2.6 * ((BORES[spec.bore1] || BORES['100A']).od)) / 2
+        ? teeDims(spec.bore1, spec.bore2).C
         : Math.max(0, (spec.w || 0) / 2);
       spec.x = r3(cur.x + d.x * face);
       spec.y = Math.max(0, r3(cur.y + d.y * face));
@@ -6108,12 +6244,25 @@ class App {
         : { ...cursor };
       // 피팅값 자동계산(ON) — 입력한 길이는 **중심선 기준**이라 엘보가 차지한 face만큼 빼고
       //   실제 직관을 그린다 (200A 엘보 304.8mm + `500` → 직관 195.2mm).
+      //   꺾임 없이 티·레듀샤의 접합면에서 바로 이어 그리는 경우에도 그 부속의
+      //   중심~면 값(C·M·H/2)을 뺀다 — 입력한 길이가 부속 중심에서 잰 값이 된다 (v84).
       // OFF — 엘보 출구 면에서부터 입력한 길이를 그대로 직관으로 그린다 (`500` → 직관 500mm).
       // fixed(엘보를 접합면·배관 끝 바깥에 세운 경우)는 face가 입력 길이보다 클 수 있으므로
       //   뒤로 넘어가지 않게 최소 20mm만 남긴다.
+      let fitOff = 0;
+      let fitHit = null;
+      if (this.fitAuto && !(face > 0)) {
+        const hit = this.fitAllowanceAt(from, v, equip);
+        // 입력한 길이가 부속 값보다 짧으면(직관 50mm도 남지 않으면) 그대로 그린다.
+        if (hit && meters > hit.value + 0.05) {
+          fitOff = hit.value;
+          fitHit = hit;
+        }
+      }
       const run = this.fitAuto
-        ? (fixed ? Math.max(0.02, meters - face) : meters - face)
+        ? (fixed ? Math.max(0.02, meters - face) : meters - face - fitOff)
         : meters;
+      if (fitHit) notes.push(`${fitHit.label} ${Math.round(fitHit.value * 1000)}mm 빼고 직관 ${Math.round(run * 1000)}mm`);
       const to = put({ x: from.x + v.x * run, y: from.y + v.y * run, z: from.z + v.z * run });
       if (!pts) pts = [from];
       pts.push(to);
@@ -6150,6 +6299,30 @@ class App {
           v = { x: axis === 'x' ? sign : 0, y: axis === 'y' ? sign : 0, z: axis === 'z' ? sign : 0 };
         }
         drawSegment(v, op.meters);
+        continue;
+      }
+      if (op.op === 'offset45') {
+        // 45° 오프셋 — 수평 방향 h로 나가면서 위로 45° 오르는 대각선. 길이는 빗변(중심선).
+        // 양 끝 꺾임에 45° 엘보가 자동으로 앉고, 두 번째 엘보는 이어지는 직관이 생길 때 앉는다.
+        const ang = THREE.MathUtils.degToRad(op.angle || 45);
+        const h = op.axis
+          ? { axis: op.axis, sign: op.sign < 0 ? -1 : 1 }
+          : this.heading();
+        const c = Math.cos(ang);
+        const v = {
+          x: (h.axis === 'x' ? (h.sign < 0 ? -1 : 1) : 0) * c,
+          y: Math.sin(ang),
+          z: (h.axis === 'z' ? (h.sign < 0 ? -1 : 1) : 0) * c,
+        };
+        axis = h.axis;
+        sign = h.sign < 0 ? -1 : 1;
+        rot = this.cmdRotFor(axis, sign);
+        drawSegment(v, op.meters);
+        // 계산 근거를 남긴다 — 빗변·엘보값·직관 절단 길이
+        const info = this.offset45Info((op.offset || op.meters * Math.SQRT1_2) * 1000);
+        notes.push(`45° 오프셋 ${Math.round(info.H * 1000)}mm · 빗변 ${Math.round(info.hyp * 1000)}mm`
+          + ` · 직관 절단 ${Math.round(info.cut * 1000)}mm`);
+        this.lastOffset45 = info;
         continue;
       }
       if (op.op === 'diag') {
@@ -6529,6 +6702,67 @@ class App {
     }
     const sw = $('#fitAutoSwitch');
     if (sw && sw.checked !== on) sw.checked = on;
+  }
+
+  // ── 📐 45° 오프셋 계산 (v84) ─────────────────────────────────
+  // 배관을 수직으로 H만큼 올리거나 내릴 때, 두 45° 엘보 사이의 대각선 길이와 직관 절단 길이.
+  //  · 빗변(중심선) = H × √2  — 꼭짓점과 꼭짓점 사이
+  //  · 직관 절단 = 빗변 − 2 × 45° 엘보값(B)  — 양 끝 엘보가 먹는 몫
+  //  · 100A·오프셋 500mm → 빗변 707.1mm · 엘보 63.5×2 = 127mm → 절단 580.1mm
+  offset45Info(offsetMm) {
+    const bore = BORES[this.cmdBore] ? this.cmdBore : '100A';
+    const H = Math.max(1, Number(offsetMm) || 0) / 1000;
+    const hyp = H * Math.SQRT2;
+    const B = elbowDims('elbow45', bore).face;
+    return { bore, H, hyp, B, cut: hyp - 2 * B };
+  }
+
+  // 계산 결과 문구 — 패널(또는 토스트)에 그대로 쓴다
+  offset45Text(offsetMm) {
+    const i = this.offset45Info(offsetMm);
+    const mm = (v) => (Math.round(v * 1000 * 10) / 10).toLocaleString();
+    return `빗변(중심선) ${mm(i.hyp)}mm · 45° 엘보 ${mm(i.B)}×2 = ${mm(i.B * 2)}mm`
+      + ` → 직관 절단 ${mm(i.cut)}mm (${i.bore})`;
+  }
+
+  // 45° 오프셋을 그린다 — 대각선은 빗변 길이(중심선)로 그리고, 이어지는 직관 L이 있으면
+  // 두 번째 45° 엘보까지 함께 세운다(두 번째 엘보가 대각선 끝을 B만큼 당겨 자른다).
+  drawOffset45(offsetMm, runMm) {
+    const i = this.offset45Info(offsetMm);
+    const h = this.heading();
+    const ops = [{ op: 'offset45', axis: h.axis, sign: h.sign, meters: i.hyp, offset: i.H }];
+    const run = Number(runMm) || 0;
+    if (run > 0) ops.push({ op: 'seg', axis: h.axis, sign: h.sign, meters: run / 1000 });
+    const res = this.execOps(ops, { source: 'cmd' });
+    this.toast(`📐 45° 오프셋 ${Math.round(i.H * 1000)}mm — ${this.offset45Text(offsetMm)}`
+      + (run > 0 ? '' : ' · 이어서 직관을 그리면 두 번째 45° 엘보가 붙습니다'));
+    return res;
+  }
+
+  // 45° 오프셋 계산기 — 배관 탭에서 오프셋(mm)을 넣으면 빗변·절단 길이를 바로 보여 준다.
+  setupOffset45() {
+    const H = $('#off45H');
+    const L = $('#off45L');
+    const out = $('#off45Out');
+    const btn = $('#off45Draw');
+    if (!btn) return;
+    const refresh = () => {
+      const mm = Number(H && H.value) || 0;
+      if (out) out.textContent = mm > 0 ? this.offset45Text(mm) : '오프셋(mm)을 넣으면 빗변·절단 길이를 계산합니다';
+    };
+    if (H) H.addEventListener('input', refresh);
+    btn.addEventListener('click', () => {
+      const mm = Number(H && H.value) || 0;
+      if (!(mm > 0)) { this.toast('오프셋(mm)을 먼저 넣어 주세요.', { type: 'err' }); return; }
+      const i = this.offset45Info(mm);
+      if (i.cut < 0.005) {
+        this.toast(`오프셋 ${mm}mm는 ${i.bore} 45° 엘보 2개(${Math.round(i.B * 2000)}mm)보다 짧아 그릴 수 없습니다.`, { type: 'err' });
+        return;
+      }
+      const run = Number(L && L.value) || 0;
+      this.drawOffset45(mm, run);
+    });
+    refresh();
   }
 
   // [내 시점 기준] ↔ [도면 축 기준]
@@ -7142,6 +7376,11 @@ class App {
     this.ppPerPage = [1, 2, 4].includes(this.ppPerPage) ? this.ppPerPage : 1;
     // 자재·배관 수량표는 기본 해제(v82) — 저장해 두지 않고 매번 꺼진 상태로 시작한다.
     this.ppBom = false;
+    // 인쇄 업체명(v84) — localStorage에 저장, 기본값 '스마일산업'. 비우면 업체명 없이 인쇄.
+    try {
+      const co = localStorage.getItem('smilePiping3D.printCompany');
+      this.ppCompany = co == null ? '스마일산업' : String(co);
+    } catch (e) { this.ppCompany = '스마일산업'; }
 
     const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
     on('#ppClose', 'click', () => this.closePrintPanel());
@@ -7149,6 +7388,13 @@ class App {
     on('#ppBgWhite', 'click', () => this.setPrintBg('white'));
     on('#ppBgDark', 'click', () => this.setPrintBg('dark'));
     on('#ppDims', 'change', (e) => { this.ppDims = !!e.target.checked; this.persistPrintOptions(); });
+    on('#ppCompany', 'input', (e) => {
+      this.ppCompany = String(e.target.value || '');
+      try { localStorage.setItem('smilePiping3D.printCompany', this.ppCompany); } catch (err) { /* ignore */ }
+      // 입력하는 대로 시트를 다시 맞춘다 — 인쇄 버튼을 누르는 순간 이미 반영돼 있게.
+      if (this.ppCompanyTimer) clearTimeout(this.ppCompanyTimer);
+      this.ppCompanyTimer = setTimeout(() => { this.refreshPrintSheet(); }, 200);
+    });
     on('#ppBom', 'change', (e) => {
       this.ppBom = !!e.target.checked;
       this.toast(this.ppBom ? '🧾 자재·배관 수량표를 마지막 장에 함께 인쇄합니다' : '🧾 수량표 없이 도면만 인쇄합니다');
@@ -7235,6 +7481,8 @@ class App {
     if (orient) orient.value = this.ppOrient === 'portrait' ? 'portrait' : 'landscape';
     const bom = $('#ppBom');
     if (bom) bom.checked = !!this.ppBom;      // 기본은 꺼짐
+    const co = $('#ppCompany');
+    if (co && document.activeElement !== co) co.value = this.ppCompany == null ? '' : this.ppCompany;
   }
 
   // 인쇄 옵션(컷 수량표·모아찍기)이 바뀌면 시트를 다시 맞춰 둔다 — 누르는 순간 바로 인쇄되게.
@@ -7661,11 +7909,15 @@ class App {
     const scene = this.state.name || '내 배관 도면';
     const groups = [];
     for (let i = 0; i < src.length; i += per) groups.push(src.slice(i, i + per));
-    const total = groups.length + (withBom ? 1 : 0);   // 수량표를 켰을 때만 +1장
+    // 수량표를 켰을 때만 수량표 1장 + 직관 절단표(24줄마다 1장)
+    const bom = withBom ? this.buildBom() : null;
+    const cutPages = bom && bom.cuts.length ? Math.ceil(bom.cuts.length / 24) : 0;
+    const total = groups.length + (withBom ? 1 + cutPages : 0);
+    const brand = this.printBrand();
 
     const head = (right) => `
       <header class="ps-head">
-        <div class="ps-brand"><b>스마일산업 3D 배관 도면</b><span>${esc(scene)}</span></div>
+        <div class="ps-brand"><b>${brand.title}</b><span>${esc(scene)}</span></div>
         <div class="ps-meta">${stamp} · 컷 ${src.length}장 · ${right}</div>
       </header>`;
 
@@ -7680,11 +7932,12 @@ class App {
       <section class="ps-page ps-per-${per}">
         ${head(`${gi + 1}/${total}`)}
         ${figs}
-        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃 · 단위 m · A4 ${portrait ? '세로' : '가로'} · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
+        <footer class="ps-foot">${brand.foot} · 단위 m · A4 ${portrait ? '세로' : '가로'} · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
       </section>`;
     });
 
-    if (withBom) html += this.bomPageHtml(stamp, src.length, `${total}/${total}`);
+    if (withBom) html += this.bomPageHtml(stamp, src.length, `${groups.length + 1}/${total}`);
+    if (withBom) html += this.cutListPagesHtml(stamp, src.length, groups.length + 2, total);
     host.innerHTML = html;
 
     // 이미지는 innerHTML에 넣지 않고 프로퍼티로 — base64가 길어 마크업이 무거워진다.
@@ -7697,26 +7950,41 @@ class App {
     });
     const done = Promise.all(imgs.map((img) => (img.decode ? img.decode().catch(() => {}) : Promise.resolve())));
     this.ppPrinted = true;
-    this.printSheetInfo = { pages: total, cuts: imgs.length, per, bom: withBom, landscape: !portrait, orientation: portrait ? 'portrait' : 'landscape' };
+    this.printSheetInfo = { pages: total, cuts: imgs.length, per, bom: withBom, cutPages, landscape: !portrait, orientation: portrait ? 'portrait' : 'landscape' };
     return done.then(() => this.printSheetInfo);
   }
 
   // 자재 · 배관 수량표 — 지금 도면의 배관 길이(관경·재질별)와 부속·장비 개수를 센다.
+  // v84 — 길이는 **직관 절단 길이**로 센다. 양 끝에 티·레듀샤가 물린 구간은 중심선 길이도 함께 센다.
   buildBom() {
     const matLabel = (m) => (MATERIALS[m] && MATERIALS[m].label) || '흑관·카본스틸';
     const pipeMap = new Map();
+    const cuts = [];
     let totalLen = 0;
+    let totalCenter = 0;
     (this.state.pipes || []).forEach((p) => {
       const mat = matLabel(p.material);
       const key = `${p.bore}|${mat}`;
-      const row = pipeMap.get(key) || { bore: p.bore, material: mat, len: 0, segs: 0, count: 0 };
-      const len = pipeLength(p.points || []);
-      row.len += len;
-      row.segs += Math.max(0, (p.points || []).length - 1);
+      const row = pipeMap.get(key) || { bore: p.bore, material: mat, len: 0, center: 0, segs: 0, count: 0 };
+      const pts = p.points || [];
+      for (let i = 1; i < pts.length; i += 1) {
+        const s = this.segCutInfo(p, i);
+        if (!s || s.cut < 0.001) continue;
+        row.len += s.cut;
+        row.center += s.center;
+        row.segs += 1;
+        totalLen += s.cut;
+        totalCenter += s.center;
+        cuts.push({
+          pipe: p.name, index: i, bore: p.bore, cut: s.cut, center: s.center,
+          fits: [s.fa, s.fb].filter(Boolean)
+            .map((f) => `${f.label} ${Math.round(f.std * 1000 * 10) / 10}`).join(' + '),
+        });
+      }
       row.count += 1;
-      totalLen += len;
       pipeMap.set(key, row);
     });
+    cuts.sort((a, b) => (b.cut - a.cut) || String(a.pipe).localeCompare(String(b.pipe)) || (a.index - b.index));
     const catLabel = { equip: '장비', valve: '밸브', fitting: '부속', instr: '계기' };
     const partMap = new Map();
     let eqCount = 0;
@@ -7737,43 +8005,88 @@ class App {
     return {
       pipes: Array.from(pipeMap.values()).sort((a, b) => b.len - a.len),
       parts,
+      cuts,
       totalLen,
+      totalCenter,
       pipeCount: (this.state.pipes || []).length,
       equipCount: eqCount,
       partCount: (this.state.equipment || []).length - eqCount,
     };
   }
 
+  // 인쇄 시트 머리글·바닥글의 업체명 — 비우면 업체명 없이 깔끔하게 (v84).
+  printBrand() {
+    const co = String(this.ppCompany == null ? '' : this.ppCompany).trim();
+    return {
+      title: co ? `${esc(co)} 3D 배관 도면` : '3D 배관 도면',
+      foot: co ? `${esc(co)} · 3D 배관 레이아웃` : '3D 배관 레이아웃',
+    };
+  }
+
   bomPageHtml(stamp, cutCount, pageLabel) {
     const b = this.buildBom();
     const m2 = (v) => Number(v || 0).toFixed(2);
+    const mm = (v) => Math.round(v * 1000).toLocaleString();
+    // 배관 표 — 길이는 **직관 절단 길이(mm)** 합계, 중심선은 티·레듀샤 값까지 더한 길이
     const pipeRows = b.pipes.length
-      ? b.pipes.map((r) => `<tr><td>${esc(r.bore)}</td><td>${esc(r.material)}</td><td class="num">${m2(r.len)}</td><td class="num">${r.segs}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="none">배관 없음</td></tr>';
+      ? b.pipes.map((r) => `<tr><td>${esc(r.bore)}</td><td>${esc(r.material)}</td><td class="num">${r.segs}</td><td class="num">${mm(r.len)}</td><td class="num">${mm(r.center)}</td></tr>`).join('')
+      : '<tr><td colspan="5" class="none">배관 없음</td></tr>';
     const partRows = b.parts.length
       ? b.parts.map((r) => `<tr><td>${esc(r.type)}</td><td>${esc(r.name)}</td><td>${esc(r.spec || '—')}</td><td class="num">${r.qty}</td></tr>`).join('')
       : '<tr><td colspan="4" class="none">부속 없음</td></tr>';
+    const brand = this.printBrand();
     return `
       <section class="ps-page ps-bom">
         <header class="ps-head">
-          <div class="ps-brand"><b>스마일산업 3D 배관 도면</b><span>자재 · 배관 수량표</span></div>
+          <div class="ps-brand"><b>${brand.title}</b><span>자재 · 배관 수량표</span></div>
           <div class="ps-meta">${stamp} · 컷 ${cutCount}장 · ${pageLabel}</div>
         </header>
-        <p class="ps-sum">장비 <b>${b.equipCount}</b> · 배관 <b>${b.pipeCount}</b>개 <b>${m2(b.totalLen)}</b>m · 부속·계기 <b>${b.partCount}</b></p>
+        <p class="ps-sum">장비 <b>${b.equipCount}</b> · 배관 <b>${b.pipeCount}</b>개 직관 <b>${m2(b.totalLen)}</b>m · 부속·계기 <b>${b.partCount}</b></p>
         <h4 class="ps-sub">배관 (관경 · 재질별)</h4>
-        <table class="ps-table">
-          <thead><tr><th>관경</th><th>재질</th><th class="num">길이 (m)</th><th class="num">구간</th></tr></thead>
+        <table class="ps-table ps-pipe">
+          <thead><tr><th>관경</th><th>재질</th><th class="num">구간</th><th class="num">직관 절단 (mm)</th><th class="num">중심선 (mm)</th></tr></thead>
           <tbody>${pipeRows}</tbody>
-          <tfoot><tr><th colspan="2">합계</th><td class="num">${m2(b.totalLen)}</td><td class="num">${b.pipes.reduce((a, r) => a + r.segs, 0)}</td></tr></tfoot>
+          <tfoot><tr><th colspan="2">합계</th><td class="num">${b.pipes.reduce((a, r) => a + r.segs, 0)}</td><td class="num">${mm(b.totalLen)}</td><td class="num">${mm(b.totalCenter)}</td></tr></tfoot>
         </table>
         <h4 class="ps-sub">부속 · 장비 수량</h4>
-        <table class="ps-table">
+        <table class="ps-table ps-parts">
           <thead><tr><th>구분</th><th>품명</th><th>규격</th><th class="num">수량</th></tr></thead>
           <tbody>${partRows}</tbody>
         </table>
-        <p class="ps-note">수량은 3D 도면에 그려진 배관 길이·부속 개수를 그대로 센 값입니다. 현장 실측·여유율은 반영되지 않았습니다.</p>
-        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃</footer>
+        <p class="ps-note">직관 절단은 도면에 그린 배관 점 사이 길이 그대로입니다(양 끝 부속값 제외). 중심선은 티·레듀샤의 중심~접합면 값까지 더한 길이입니다. 현장 실측·여유율은 반영되지 않았습니다.</p>
+        <footer class="ps-foot">${brand.foot}</footer>
       </section>`;
+  }
+
+  // ✂️ 직관 절단표 — 자재 수량표를 켜면 한 장 더 붙는다. 긴 직관부터 관경·배관별로 늘어놓아
+  // 현장에서 그대로 자를 수 있게 한다(길이 내림차순). 한 장에 24줄까지, 넘으면 다음 장.
+  cutListPagesHtml(stamp, cutCount, startPage, totalPages) {
+    const b = this.buildBom();
+    if (!b.cuts.length) return '';
+    const per = 24;
+    const mm = (v) => Math.round(v * 1000).toLocaleString();
+    const brand = this.printBrand();
+    let html = '';
+    for (let p = 0; p * per < b.cuts.length; p += 1) {
+      const rows = b.cuts.slice(p * per, (p + 1) * per);
+      html += `
+      <section class="ps-page ps-cut">
+        <header class="ps-head">
+          <div class="ps-brand"><b>${brand.title}</b><span>직관 절단표</span></div>
+          <div class="ps-meta">${stamp} · 컷 ${cutCount}장 · ${startPage + p}/${totalPages}</div>
+        </header>
+        <table class="ps-table ps-cut-table">
+          <thead><tr><th class="num">#</th><th>배관</th><th class="num">구간</th><th>관경</th>
+            <th class="num">절단 (mm)</th><th class="num">중심선 (mm)</th><th>양 끝 부속</th></tr></thead>
+          <tbody>${rows.map((c, i) => `<tr><td class="num">${p * per + i + 1}</td><td>${esc(c.pipe)}</td>
+            <td class="num">${c.index}</td><td>${esc(c.bore)}</td><td class="num"><b>${mm(c.cut)}</b></td>
+            <td class="num">${mm(c.center)}</td><td>${esc(c.fits || '—')}</td></tr>`).join('')}</tbody>
+        </table>
+        <p class="ps-note">긴 직관부터 차례대로 적었습니다. 절단 길이는 배관 점 사이 그대로이고, 중심선은 양 끝 티·레듀샤 값까지 더한 길이입니다. 절단 여유(톱날·면취)는 넣지 않았습니다.</p>
+        <footer class="ps-foot">${brand.foot} · 직관 ${b.cuts.length}구간</footer>
+      </section>`;
+    }
+    return html;
   }
 
   // 🖨️ A4 도면 인쇄 / PDF 저장 — 담은 컷 전부(없으면 지금 화면)를 A4 시트로 인쇄한다.
