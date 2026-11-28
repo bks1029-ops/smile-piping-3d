@@ -373,6 +373,10 @@ def run(browser, viewport, mobile, shots):
           json.dumps(pr, ensure_ascii=False))
 
     # ── I. A4 시트 — 컷 + 자재표 ────────────────────────────────────
+    # v82부터 자재 수량표는 기본 해제다 — 이 검사는 「체크했을 때」의 시트를 본다.
+    page.evaluate('''() => { const b = document.querySelector('#ppBom');
+      if (b && !b.checked) b.click(); }''')
+    page.wait_for_timeout(400)
     page.evaluate('() => { window.__printed = 0; }')
     page.click('#ppPrint')
     try:
