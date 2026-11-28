@@ -1496,14 +1496,14 @@ canvas.move-drag:active { cursor: grabbing; }
   display: flex; flex-direction: column; gap: 5px;
   flex: 0 0 auto;
 }
-.pp-foot-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.pp-per { font-size: 10.5px; color: var(--dim); white-space: nowrap; }
+.pp-foot-row { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; }
+.pp-per { font-size: 10.5px; color: var(--dim); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 .pp-per select {
   background: #0f1419; color: var(--txt);
   border: 1px solid var(--line-soft); border-radius: 6px;
   font: inherit; font-size: 11px; padding: 2px 4px;
 }
-.pp-hint { font-size: 9.5px; color: var(--dim2); text-align: right; line-height: 1.25; }
+.pp-hint { font-size: 9.5px; color: var(--dim2); text-align: left; line-height: 1.25; }
 
 /* 모바일 — 위쪽에 띄워 아래의 조이스틱·보기 바·명령창을 가리지 않는다 */
 @media (max-width: 860px) {
@@ -1526,22 +1526,30 @@ canvas.move-drag:active { cursor: grabbing; }
   .pp-quick .btn { font-size: 12px; padding: 8px 4px; }
 }
 
-/* ── A4 가로 인쇄 시트 (v81 · 가로 v82) ─────────────────────
+/* ── A4 인쇄 시트 (v81 · 가로/세로 v83) ─────────────────────
    화면에서는 숨겨 두고, 인쇄에서만 이 시트가 종이로 나간다.
-   종이는 A4 가로(297×210mm), 여백 7mm 8mm → 본문 281×196mm.
-   한 장(.ps-page)의 높이를 본문 높이(196mm) 안으로 못박고 넘치는 부분을 잘라,
-   머리글·그림·설명·바닥글을 넣어도 다음 페이지로 흘러가 빈 장이 생기지 않게 한다. */
+   실제 프린터는 용지 테두리에 인쇄 불가 영역이 있어(기종에 따라 5~10mm) 여백을 **사방 12mm**로 넉넉히 준다.
+   @page { margin: 12mm 13mm } → 본문은 가로 271×186mm · 세로 184×273mm.
+   한 장(.ps-page)의 높이를 본문보다 2mm 작게 못박고 넘치는 부분을 잘라, 머리글·그림·설명·바닥글을
+   넣어도 다음 장으로 흘러가 빈 장이 생기지 않고 테두리 글자가 잘리지도 않는다.
+   용지 방향은 인쇄 시점에 <style id="printPageStyle">의 @page size로 바꾸고, 이 시트에는 .ps-port만 붙인다. */
 #printSheet { display: none; }
 .ps-page {
   display: flex;
   flex-direction: column;
-  gap: 2.4mm;
-  height: 195mm;                  /* A4 가로 본문 196mm 안 — 1mm는 인쇄 여유 */
+  gap: 2.2mm;
+  height: 184mm;                  /* A4 가로 본문 186mm 안 — 2mm 인쇄 여유 */
+  width: 100%;
   overflow: hidden;
   color: #111;
   background: #fff;
 }
-/* 그림 묶음 — 1컷이면 세로 한 칸, 2컷(.ps-2up)이면 가로 2열 */
+/* A4 세로 — 여백을 뺀 184×273mm 안에서 270mm */
+#printSheet.ps-port .ps-page { height: 270mm; }
+/* 수량표 장은 줄이 많으면 이어서 찍어야 하므로 높이를 풀어 둔다 */
+#printSheet .ps-page.ps-bom,
+#printSheet.ps-port .ps-page.ps-bom { height: auto; min-height: 0; overflow: visible; }
+/* 그림 묶음 — 1컷이면 한 칸, 2·4컷이면 격자 */
 .ps-figs {
   flex: 1 1 auto;
   display: flex;
@@ -1549,6 +1557,27 @@ canvas.move-drag:active { cursor: grabbing; }
   gap: 3mm;
   min-height: 0;
 }
+.ps-page.ps-per-2 .ps-figs,
+.ps-page.ps-per-4 .ps-figs,
+.ps-2up .ps-figs {
+  display: grid;
+  gap: 4mm;
+  align-items: stretch;
+  min-height: 0;
+}
+.ps-page.ps-per-2 .ps-figs,
+.ps-2up .ps-figs { grid-template-columns: 1fr 1fr; }               /* 가로 — 좌우 2열 */
+#printSheet.ps-port .ps-page.ps-per-2 .ps-figs {                     /* 세로 — 위아래 2행 */
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.ps-page.ps-per-4 .ps-figs { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }  /* 2×2 */
+.ps-page.ps-per-2 .ps-fig,
+.ps-page.ps-per-4 .ps-fig,
+.ps-2up .ps-fig { min-height: 0; }
+.ps-page.ps-per-2 .ps-img,
+.ps-page.ps-per-4 .ps-img,
+.ps-2up .ps-img { padding: 1.2mm; }
 .ps-head {
   display: flex; align-items: flex-end; justify-content: space-between; gap: 4mm;
   border-bottom: 1.1pt solid #111;
@@ -1572,23 +1601,19 @@ canvas.move-drag:active { cursor: grabbing; }
   width: 100%;
   height: 100%;
   max-width: 100%;
-  max-height: 165mm;              /* A4 가로 1컷 1페이지 — 머리글·설명·바닥글을 뺀 나머지를 다 쓴다 */
+  max-height: 100%;               /* 상자(.ps-img) 안에서만 — 페이지 넘침 없음 */
   object-fit: contain;
   display: block;
 }
-/* 한 장에 2컷 — 가로 용지에 맞춰 두 컷을 나란히 놓는다 */
-.ps-2up .ps-figs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4mm;
-  align-items: stretch;
-}
-.ps-2up .ps-img img { max-height: 100%; }
+/* 1컷일 때만 그림에 높이 상한을 준다 — 남는 자리를 다 쓰되 본문 높이를 넘지 않게 */
+.ps-page.ps-per-1 .ps-img img { max-height: 155mm; }                  /* 가로 본문 184mm - 머리글·설명·바닥글 */
+#printSheet.ps-port .ps-page.ps-per-1 .ps-img img { max-height: 245mm; }  /* 세로 본문 270mm - 머리글·설명·바닥글 */
 .ps-fig figcaption { font-size: 3mm; color: #222; display: flex; gap: 3mm; align-items: baseline; }
 .ps-fig figcaption b { font-size: 3.4mm; }
 .ps-fig figcaption span { color: #555; }
+.ps-page.ps-per-4 .ps-fig figcaption { font-size: 2.6mm; }
+.ps-page.ps-per-4 .ps-fig figcaption b { font-size: 3mm; }
 .ps-foot { margin-top: auto; font-size: 2.4mm; color: #777; text-align: right; }
-.ps-bom { height: auto; min-height: 0; overflow: visible; }  /* 수량표는 줄이 많으면 이어서 */
 .ps-bom .ps-sum { font-size: 3.2mm; margin: 1mm 0 0; }
 .ps-sub { font-size: 3.2mm; margin: 3mm 0 1mm; }
 .ps-table { width: 100%; border-collapse: collapse; font-size: 2.9mm; }
@@ -1600,7 +1625,7 @@ canvas.move-drag:active { cursor: grabbing; }
 .ps-note { font-size: 2.5mm; color: #666; margin: 2mm 0 0; }
 
 @media print {
-  @page { size: A4 landscape; margin: 7mm 8mm; }   /* v82 — 도면을 가로로 크게 */
+  /* @page는 index.html의 <style id="printPageStyle">가 정한다(v83 · 가로/세로) — 여백 사방 12mm/13mm */
   html, body {
     height: auto !important;
     overflow: visible !important;
@@ -1629,13 +1654,13 @@ canvas.move-drag:active { cursor: grabbing; }
   .ps-head, .ps-figs, .ps-fig, .ps-img, .ps-table, .ps-sub, .ps-note { break-inside: avoid; page-break-inside: avoid; }
   /* 수량표는 부속이 많으면 다음 장으로 이어서 찍는다(잘라 버리지 않는다) */
   .ps-bom { break-inside: auto; page-break-inside: auto; }
-  /* 가로 용지의 낮은 높이에 맞춰 수량표를 조밀하게 — 한 장에 다 들어가게 */
-  .ps-bom .ps-table { width: 200mm; font-size: 2.5mm; table-layout: fixed; }
+  /* 수량표는 본문 폭(가로 271mm · 세로 184mm)에 맞춰 늘리고 줄인다 — 어느 방향에서도 넘치지 않게 */
+  .ps-bom .ps-table { width: 100%; font-size: 2.5mm; table-layout: fixed; }
   .ps-bom .ps-table th, .ps-bom .ps-table td { padding: 0.45mm 1.3mm; }
-  .ps-bom .ps-table th:nth-child(1), .ps-bom .ps-table td:nth-child(1) { width: 32mm; }
-  .ps-bom .ps-table th:nth-child(2), .ps-bom .ps-table td:nth-child(2) { width: 78mm; }
-  .ps-bom .ps-table th:nth-child(3), .ps-bom .ps-table td:nth-child(3) { width: 45mm; }
-  .ps-bom .ps-table th:nth-child(4), .ps-bom .ps-table td:nth-child(4) { width: 45mm; }
+  .ps-bom .ps-table th:nth-child(1), .ps-bom .ps-table td:nth-child(1) { width: 17%; }
+  .ps-bom .ps-table th:nth-child(2), .ps-bom .ps-table td:nth-child(2) { width: 39%; }
+  .ps-bom .ps-table th:nth-child(3), .ps-bom .ps-table td:nth-child(3) { width: 22%; }
+  .ps-bom .ps-table th:nth-child(4), .ps-bom .ps-table td:nth-child(4) { width: 22%; }
   .ps-bom .ps-sub { margin: 1.6mm 0 0.6mm; font-size: 2.9mm; }
   .ps-bom .ps-sum { font-size: 2.9mm; margin: 0.6mm 0 0; }
   .ps-bom .ps-note { font-size: 2.3mm; margin: 1.2mm 0 0; }

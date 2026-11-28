@@ -8,7 +8,9 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=82">
+<link rel="stylesheet" href="./css/style.css?v=83">
+<!-- 인쇄 용지 방향은 인쇄 시점에 이 한 줄을 바꿔 정한다(v83) — @page는 클래스로 못 바꾼다. -->
+<style id="printPageStyle">@media print { @page { size: A4 landscape; margin: 12mm 13mm; } }</style>
 <script type="importmap">
 {"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}
 </script></head>
@@ -202,11 +204,18 @@
             <label class="pp-per">한 장에
               <select id="ppPerPage" aria-label="한 장에 담을 컷 수">
                 <option value="1">1컷 (크게)</option>
-                <option value="2">2컷 (나란히)</option>
+                <option value="2">2컷</option>
+                <option value="4">4컷 (2×2)</option>
               </select>
             </label>
-            <span class="pp-hint">A4 가로 · 인쇄 창에서 ‘PDF로 저장’을 고르면 PDF가 됩니다</span>
+            <label class="pp-per">용지 방향
+              <select id="ppOrient" aria-label="A4 용지 방향">
+                <option value="landscape">가로 (기본)</option>
+                <option value="portrait">세로</option>
+              </select>
+            </label>
           </div>
+          <span class="pp-hint" id="ppHint">A4 가로 · 사방 여백 12mm · 인쇄 창에서 ‘PDF로 저장’을 고르면 PDF가 됩니다</span>
         </div>
       </div>
     </div>
@@ -344,6 +353,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=82"></script>
+<script type="module" src="./js/main.js?v=83"></script>
 </body>
 </html>

@@ -16,14 +16,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=82';
-import { buildScene } from './builders.js?v=82';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=82';
-import { buildOBJ } from './obj.js?v=82';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=82';
-import { parseCommand, CMD_HELP } from './cmd.js?v=82';
-import { buildDimItems } from './dims.js?v=82';
-import { buildAiImageParts } from './zoom.js?v=82';
+} from './store.js?v=83';
+import { buildScene } from './builders.js?v=83';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=83';
+import { buildOBJ } from './obj.js?v=83';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=83';
+import { parseCommand, CMD_HELP } from './cmd.js?v=83';
+import { buildDimItems } from './dims.js?v=83';
+import { buildAiImageParts } from './zoom.js?v=83';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -7136,7 +7136,10 @@ class App {
     this.ppMin = false;
     try { this.ppBg = localStorage.getItem('smilePiping3D.printBg') === 'dark' ? 'dark' : 'white'; } catch (e) { this.ppBg = 'white'; }
     try { this.ppDims = localStorage.getItem('smilePiping3D.printDims') !== 'off'; } catch (e) { this.ppDims = true; }
-    try { this.ppPerPage = localStorage.getItem('smilePiping3D.printPerPage') === '2' ? 2 : 1; } catch (e) { this.ppPerPage = 1; }
+    // 한 장에 1·2·4컷(v83) · 용지 방향 가로/세로(v83)
+    try { this.ppPerPage = [1, 2, 4].includes(Number(localStorage.getItem('smilePiping3D.printPerPage'))) ? Number(localStorage.getItem('smilePiping3D.printPerPage')) : 1; } catch (e) { this.ppPerPage = 1; }
+    try { this.ppOrient = localStorage.getItem('smilePiping3D.printOrient') === 'portrait' ? 'portrait' : 'landscape'; } catch (e) { this.ppOrient = 'landscape'; }
+    this.ppPerPage = [1, 2, 4].includes(this.ppPerPage) ? this.ppPerPage : 1;
     // 자재·배관 수량표는 기본 해제(v82) — 저장해 두지 않고 매번 꺼진 상태로 시작한다.
     this.ppBom = false;
 
@@ -7157,11 +7160,22 @@ class App {
     on('#ppPrint', 'click', () => this.printAllCuts());
     on('#ppClear', 'click', () => this.clearCuts());
     on('#ppPerPage', 'change', (e) => {
-      this.ppPerPage = Number(e.target.value) === 2 ? 2 : 1;
+      const n = Number(e.target.value);
+      this.ppPerPage = [1, 2, 4].includes(n) ? n : 1;
       this.persistPrintOptions();
       this.renderCutList();
       this.refreshPrintSheet();
-      this.toast(this.ppPerPage === 2 ? '한 장에 2컷씩 인쇄합니다' : '한 장에 1컷씩 인쇄합니다 (A4 가로로 크게)');
+      const paper = this.ppOrient === 'portrait' ? 'A4 세로' : 'A4 가로';
+      const how = this.ppPerPage === 1 ? '1컷씩 크게' : `${this.ppPerPage}컷씩`;
+      this.toast(`한 장에 ${how} 인쇄합니다 (${paper})`);
+    });
+    on('#ppOrient', 'change', (e) => {
+      this.ppOrient = e.target.value === 'portrait' ? 'portrait' : 'landscape';
+      this.applyPrintPageStyle();
+      this.persistPrintOptions();
+      this.syncPrintOptions();
+      this.refreshPrintSheet();
+      this.toast(this.ppOrient === 'portrait' ? '📄 A4 세로로 인쇄합니다' : '📄 A4 가로로 인쇄합니다 (기본)');
     });
     on('#btnPrintSheet', 'click', () => { this.setDrawerOpen(false); this.openPrintPanel(); });
     const list = $('#ppList');
@@ -7174,7 +7188,29 @@ class App {
       if (this.ppPrinted) { this.ppPrinted = false; this.buildPrintSheet(this.cuts); }
     });
     this.syncPrintOptions();
+    this.applyPrintPageStyle();
     this.renderCutList();
+  }
+
+  // 인쇄 용지 방향(v83) — @page는 클래스로 못 바꾸므로 인쇄 직전에 규칙 한 줄을 갈아 끼운다.
+  // 여백은 실제 프린터의 인쇄 불가 영역(기종에 따라 5~10mm)보다 넉넉한 사방 12mm/13mm.
+  // 프린터가 알려 주는 자체 여백에 맡기지 않고 종이-본문 사이를 이만큼 띄워야 테두리 글자가 잘리지 않는다.
+  printPageRule(orient) {
+    const size = orient === 'portrait' ? 'A4 portrait' : 'A4 landscape';
+    return `@media print { @page { size: ${size}; margin: 12mm 13mm; } }`;
+  }
+
+  applyPrintPageStyle() {
+    const st = $('#printPageStyle');
+    if (st) st.textContent = this.printPageRule(this.ppOrient);
+    const sheet = $('#printSheet');
+    if (sheet) sheet.classList.toggle('ps-port', this.ppOrient === 'portrait');
+    const hint = $('#ppHint');
+    if (hint) {
+      const paper = this.ppOrient === 'portrait' ? 'A4 세로' : 'A4 가로';
+      hint.textContent = `${paper} · 사방 여백 12mm · 인쇄 창에서 ‘PDF로 저장’을 고르면 PDF가 됩니다`;
+    }
+    return this.printPageRule(this.ppOrient);
   }
 
   persistPrintOptions() {
@@ -7182,6 +7218,7 @@ class App {
       localStorage.setItem('smilePiping3D.printBg', this.ppBg);
       localStorage.setItem('smilePiping3D.printDims', this.ppDims ? 'on' : 'off');
       localStorage.setItem('smilePiping3D.printPerPage', String(this.ppPerPage));
+      localStorage.setItem('smilePiping3D.printOrient', this.ppOrient);
     } catch (e) { /* ignore */ }
   }
 
@@ -7194,6 +7231,8 @@ class App {
     if (dims) dims.checked = !!this.ppDims;
     const per = $('#ppPerPage');
     if (per) per.value = String(this.ppPerPage);
+    const orient = $('#ppOrient');
+    if (orient) orient.value = this.ppOrient === 'portrait' ? 'portrait' : 'landscape';
     const bom = $('#ppBom');
     if (bom) bom.checked = !!this.ppBom;      // 기본은 꺼짐
   }
@@ -7610,7 +7649,10 @@ class App {
     const host = $('#printSheet');
     if (!host) return Promise.resolve({ pages: 0, cuts: 0 });
     const src = (list || this.cuts || []).filter((c) => c && c.url);
-    const per = Math.max(1, Math.min(2, Number((opts && opts.perPage) || this.ppPerPage) || 1));
+    const wantPer = Number((opts && opts.perPage) || this.ppPerPage) || 1;
+    const per = [1, 2, 4].includes(wantPer) ? wantPer : (wantPer >= 4 ? 4 : wantPer >= 2 ? 2 : 1);
+    const portrait = this.ppOrient === 'portrait';
+    this.applyPrintPageStyle();       // @page 규칙과 시트 클래스를 지금 방향으로 맞춘다
     // 자재·배관 수량표는 기본으로 넣지 않는다 — 인쇄 창에서 체크했을 때만 마지막 장에 붙는다(v82).
     const withBom = opts && typeof opts.bom === 'boolean' ? opts.bom : !!this.ppBom;
     const d = new Date();
@@ -7635,10 +7677,10 @@ class App {
           <figcaption><b>${esc(c.title || '')}</b>${c.memo ? `<span>${esc(c.memo)}</span>` : ''}</figcaption>
         </figure>`).join('')}</div>`;
       html += `
-      <section class="ps-page${per > 1 ? ' ps-2up' : ''}">
+      <section class="ps-page ps-per-${per}">
         ${head(`${gi + 1}/${total}`)}
         ${figs}
-        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃 · 단위 m · A4 가로 · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
+        <footer class="ps-foot">스마일산업 · 3D 배관 레이아웃 · 단위 m · A4 ${portrait ? '세로' : '가로'} · 컷 ${gi * per + 1}~${gi * per + group.length}</footer>
       </section>`;
     });
 
@@ -7655,7 +7697,7 @@ class App {
     });
     const done = Promise.all(imgs.map((img) => (img.decode ? img.decode().catch(() => {}) : Promise.resolve())));
     this.ppPrinted = true;
-    this.printSheetInfo = { pages: total, cuts: imgs.length, per, bom: withBom, landscape: true };
+    this.printSheetInfo = { pages: total, cuts: imgs.length, per, bom: withBom, landscape: !portrait, orientation: portrait ? 'portrait' : 'landscape' };
     return done.then(() => this.printSheetInfo);
   }
 
