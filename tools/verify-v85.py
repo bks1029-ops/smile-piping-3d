@@ -303,6 +303,25 @@ PAD_UI = '''() => {
   };
 }'''
 
+KB_BAR = '''() => {
+  const a = window.__app;
+  const chip = document.querySelector('#kbDiag45');
+  const read = () => ({ t: chip.textContent.trim(), on: chip.classList.contains('active') });
+  const out = [];
+  a.setDiag45(false, true); a.updateKbDirBar(); out.push(read());
+  a.setDiagMode('up'); a.updateKbDirBar(); out.push(read());
+  a.setDiagMode('down'); a.updateKbDirBar(); out.push(read());
+  a.setDiagMode('xz'); a.updateKbDirBar(); out.push(read());
+  a.setDiag45(false, true); a.updateKbDirBar(); out.push(read());
+  document.body.classList.add('kb-open');
+  const r = chip.getBoundingClientRect();
+  const bar = document.querySelector('#kbDirBar').getBoundingClientRect();
+  return { out,
+    box: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+    bar: { l: Math.round(bar.left), r: Math.round(bar.right), t: Math.round(bar.top),
+           b: Math.round(bar.bottom), w: Math.round(bar.width) } };
+}'''
+
 REGRESSION = '''async () => {
   const S = await import('./js/store.js?v=85');
   const a = window.__app;
@@ -391,6 +410,35 @@ def run_pad_ui(page):
           back['labels'] == ['←', '↑', '→', '앞', '↓', '뒤'] and back['hidden'] is True,
           json.dumps(back['labels'], ensure_ascii=False))
     return on
+
+
+def run_kb_bar(page):
+    """C2. 키보드 1줄 바의 45° 칩 — 조이스틱이 숨어도 상태가 보이고 바꿀 수 있다"""
+    g = page.evaluate(KB_BAR)
+    seq = [x['t'] for x in g['out']]
+    on = [x['on'] for x in g['out']]
+    check('C. 키보드 1줄 바 45° 칩 — 90° → 45°↑ → 45°↓ → 45°⤢ → 90° 로 상태를 그대로 보여 준다',
+          seq == ['90°', '45°↑', '45°↓', '45°⤢', '90°'] and on == [False, True, True, True, False],
+          json.dumps(g['out'], ensure_ascii=False))
+    check('C. 키보드 1줄 바 45° 칩 — 줄 안에 들어가고 잘리지 않는다',
+          g['box']['w'] >= 34 and g['box']['x'] >= g['bar']['l'] and g['box']['x'] + g['box']['w'] <= g['bar']['r'] + 0.5,
+          json.dumps({'box': g['box'], 'bar': g['bar']}, ensure_ascii=False))
+    # 실제 클릭 — 90° → 위 45° → 아래 45° 로 돌아간다
+    page.click('#kbDiag45')
+    page.wait_for_timeout(150)
+    a1 = page.evaluate("() => ({ on: __app.diag45, m: __app.diagMode, t: document.querySelector('#kbDiag45').textContent.trim() })")
+    page.click('#kbDiag45')
+    page.wait_for_timeout(150)
+    a2 = page.evaluate("() => ({ on: __app.diag45, m: __app.diagMode, t: document.querySelector('#kbDiag45').textContent.trim() })")
+    page.click('#kbDiag45')
+    page.wait_for_timeout(150)
+    a3 = page.evaluate("() => ({ on: __app.diag45, m: __app.diagMode, t: document.querySelector('#kbDiag45').textContent.trim() })")
+    check('C. 칩을 누르면 위 45° → 아래 45° → 수평 45° 로 돌아가며 바뀐다',
+          a1['on'] and a1['m'] == 'up' and a1['t'] == '45°↑'
+          and a2['on'] and a2['m'] == 'down' and a2['t'] == '45°↓'
+          and a3['on'] and a3['m'] == 'xz' and a3['t'] == '45°⤢',
+          json.dumps([a1, a2, a3], ensure_ascii=False))
+    page.evaluate("() => { document.body.classList.remove('kb-open'); __app.setDiag45(false, true); }")
 
 
 def run_off(page):
@@ -637,6 +685,8 @@ def run_mobile(browser):
     check('H. 모바일 390 — 수평 45° 글자(↙ ↗ ↖ ↘)도 잘리지 않는다',
           m2['labels'] == ['↙', '↑', '↗', '↖', '↓', '↘'] and m2['overflow'] <= 0.5,
           json.dumps({'labels': m2['labels'], 'overflow': m2['overflow']}, ensure_ascii=False))
+    # C2. 키보드 1줄 바의 45° 칩 — 줄이 실제로 보이는 모바일 폭에서 확인
+    run_kb_bar(page)
     # 미리보기 ① — 모바일 45° 조이스틱 (45° ON · 수평 45° 선택 · → 대각선 글자)
     page.evaluate('''() => {
       const a = window.__app;

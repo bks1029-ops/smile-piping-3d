@@ -105,6 +105,9 @@
            방향만 바꿔도 관경은 그대로, 키보드를 내리지 않고 숫자만 넣고 실행한다. -->
       <div id="kbDirBar" class="kb-dir" role="toolbar" aria-label="방향 버튼">
         <span class="kb-dir-bore" id="kbDirBore">50A</span>
+        <!-- 45° 상태 — 90° → 위 45° → 아래 45° → 수평 45° 로 돌려 가며 고른다 (v85) -->
+        <button type="button" class="kb-dir-btn kb-dir-45" id="kbDiag45" aria-pressed="false"
+                title="45° 경사 모드 — 누를 때마다 90° → 위 45° → 아래 45° → 수평 45°">90°</button>
         <button type="button" class="kb-dir-btn" data-kbdir="x:-1" title="왼쪽" aria-label="왼쪽">←</button>
         <button type="button" class="kb-dir-btn" data-kbdir="x:1" title="오른쪽" aria-label="오른쪽">→</button>
         <button type="button" class="kb-dir-btn" data-kbdir="z:1" title="앞" aria-label="앞">앞</button>

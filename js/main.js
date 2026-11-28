@@ -670,15 +670,40 @@ class App {
         this.updateKbDirBar();
       });
     });
+    // 45° 상태 칩 — 누를 때마다 90° → 위 45° → 아래 45° → 수평 45° 로 돈다 (v85).
+    //  (키보드가 올라오면 조이스틱은 숨는다 — 그때도 45° 상태를 보고 바꿀 수 있어야 한다)
+    const chip45 = $('#kbDiag45');
+    if (chip45) {
+      chip45.addEventListener('pointerdown', (e) => {
+        if (document.activeElement === $('#cmdInput')) e.preventDefault();
+      });
+      chip45.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (!this.diag45) this.setDiagMode('up');
+        else if (this.diagMode === 'up') this.setDiagMode('down');
+        else if (this.diagMode === 'down') this.setDiagMode('xz');
+        else this.setDiag45(false);
+        this.focusCmdInput();
+        this.updateKbDirBar();
+      });
+    }
     this.updateKbDirBar();
   }
 
-  // 1줄 방향 바의 관경·선택 방향 표시를 지금 상태에 맞춘다.
+  // 1줄 방향 바의 관경·45° 상태·선택 방향 표시를 지금 상태에 맞춘다.
   updateKbDirBar() {
     const bar = $('#kbDirBar');
     if (!bar) return;
     const bore = $('#kbDirBore');
     if (bore) bore.textContent = this.cmdBore || '50A';
+    const chip = $('#kbDiag45');
+    if (chip) {
+      const label = !this.diag45 ? '90°'
+        : (this.diagMode === 'down' ? '45°↓' : (this.diagMode === 'xz' ? '45°⤢' : '45°↑'));
+      chip.textContent = label;
+      chip.classList.toggle('active', !!this.diag45);
+      chip.setAttribute('aria-pressed', this.diag45 ? 'true' : 'false');
+    }
     const sel = this.pending;
     $$('[data-kbdir]', bar).forEach((b) => {
       const [axis, s] = b.dataset.kbdir.split(':');
