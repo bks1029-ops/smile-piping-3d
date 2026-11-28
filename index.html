@@ -8,7 +8,7 @@
 <meta name="description" content="현장 사진·도면을 바탕으로 장비 위치와 배관 루트를 3D로 잡고 Fusion 360으로 넘기는 스마일산업 배관 레이아웃 프로토타입">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-<link rel="stylesheet" href="./css/style.css?v=84">
+<link rel="stylesheet" href="./css/style.css?v=85">
 <!-- 인쇄 용지 방향은 인쇄 시점에 이 한 줄을 바꿔 정한다(v83) — @page는 클래스로 못 바꾼다. -->
 <style id="printPageStyle">@media print { @page { size: A4 landscape; margin: 12mm 13mm; } }</style>
 <script type="importmap">
@@ -160,6 +160,16 @@
           <button type="button" class="pad-btn" data-dir="y:-1" title="아래" aria-label="아래">↓</button>
           <button type="button" class="pad-btn" data-dir="z:-1" title="뒤" aria-label="뒤">뒤</button>
           <button type="button" class="pad-btn pad-ico" id="padUndo" title="실행취소" aria-label="실행취소">↩</button>
+        </div>
+        <!-- 45° 경사 종류 (v85) — 45°를 켰을 때만 보인다. 고른 경사로 방향 버튼이 그려진다.
+             위 45° / 아래 45° / 수평 45°(바닥면 대각선) -->
+        <div id="padDiagRow" class="pad-diag-row" role="group" aria-label="45° 경사" hidden>
+          <button type="button" class="pad-diag-btn" data-diag="up" aria-pressed="true"
+                  title="위 45° — 고른 수평 방향으로 오르며 45°">↗ 위45°</button>
+          <button type="button" class="pad-diag-btn" data-diag="down" aria-pressed="false"
+                  title="아래 45° — 고른 수평 방향으로 내려가며 45°">↘ 아래45°</button>
+          <button type="button" class="pad-diag-btn" data-diag="xz" aria-pressed="false"
+                  title="수평 45° — 높이 그대로 바닥면 대각선(좌우·앞뒤 겹쳐 45°)">⤢ 수평45°</button>
         </div>
         <div class="pad-info" id="padInfoRow" title="끌어서 조이스틱 위치 옮기기 · ⟲ 기본 위치">
           <span class="pad-grip" aria-hidden="true">⠿</span>
@@ -365,6 +375,6 @@
 
 <!-- AI 사진 첨부 입력은 AI 분석 창 안에서 만든다(#aiPhotos, multiple) -->
 
-<script type="module" src="./js/main.js?v=84"></script>
+<script type="module" src="./js/main.js?v=85"></script>
 </body>
 </html>

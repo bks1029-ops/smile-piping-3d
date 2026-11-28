@@ -17,14 +17,14 @@ import {
   applyTankPreset, tankWallFit, tankHeightSpan, tankLatScale, tankDepthScale,
   equipPorts, teePorts, flangedPorts, TEE_BRANCHES, TEE_BRANCH_LABELS, TEE_PORT_LABELS,
   HANDLE_TYPES, handleRotOf, norm180, equipConnectFaces, equipBasis, equipFlowAxis,
-} from './store.js?v=84';
-import { buildScene } from './builders.js?v=84';
-import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=84';
-import { buildOBJ } from './obj.js?v=84';
-import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=84';
-import { parseCommand, CMD_HELP } from './cmd.js?v=84';
-import { buildDimItems } from './dims.js?v=84';
-import { buildAiImageParts } from './zoom.js?v=84';
+} from './store.js?v=85';
+import { buildScene } from './builders.js?v=85';
+import { buildFusionScript, downloadText, timestampName } from './fusion.js?v=85';
+import { buildOBJ } from './obj.js?v=85';
+import { analyzeImages, planCommand, DEFAULT_MODEL, MODEL_OPTIONS, LEGACY_MODELS } from './ai.js?v=85';
+import { parseCommand, CMD_HELP } from './cmd.js?v=85';
+import { buildDimItems } from './dims.js?v=85';
+import { buildAiImageParts } from './zoom.js?v=85';
 
 // 콘솔 오류 감시 (검증용)
 window.__errors = window.__errors || [];
@@ -202,6 +202,8 @@ class App {
     this.lastDirV = null;   // 직전에 그린 구간의 진행 방향(단위 벡터) — 명령을 건너 이어서 꺾임을 본다
     this.pending = null;    // 콤팩트 조이스틱에서 고른 방향(길이만 치면 그 방향으로 그린다)
     this.diag45 = false;    // 조이스틱 45° 경사 모드
+    // 45° 경사를 어느 평면으로 그릴지 (v85) — 'up' 위 45° · 'down' 아래 45° · 'xz' 수평 45°
+    this.diagMode = 'up';
     this.padLen = 1000;     // 조이스틱에서 마지막으로 쓴 길이(mm)
     this.listening = false;
     this.recognition = null;
@@ -680,7 +682,9 @@ class App {
     const sel = this.pending;
     $$('[data-kbdir]', bar).forEach((b) => {
       const [axis, s] = b.dataset.kbdir.split(':');
-      const on = !!sel && sel.op === 'seg' && sel.axis === axis && (sel.sign < 0 ? -1 : 1) === Number(s);
+      const on = !!sel && (sel.op === 'diag' && sel.axis == null
+        ? axis === 'y' && Number(s) === (sel.vert < 0 ? -1 : 1)
+        : sel.axis === axis && (sel.sign < 0 ? -1 : 1) === Number(s));
       b.classList.toggle('active', on);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
@@ -2399,6 +2403,301 @@ class App {
     return out;
   }
 
+  // ── 45° 자동 잇기 경로 (v85) ──────────────────────────────
+  // 두 점을 **정확한 45°**로 잇는다 — 45° 모드에서 🔗 잇기·`연결` 명령이 쓴다.
+  //  · 높이차(dy)와 수평차(dh)가 있으면 m = min(|dy|, dh)만큼 45° 대각선을 넣고, 남는 수평은
+  //    앞 직관, 남는 높이는 뒤 직관으로 이어 **양쪽 꺾임이 정확히 45°**가 된다
+  //    (|dy| ≈ dh면 45° 대각선 한 구간으로 바로 잇는다).
+  //  · 같은 높이에서 수평 2축(dx·dz)이 다르면 긴 축으로 먼저 간 뒤 바닥면 45°로 잇는다.
+  //  · 플랜지·노즐(seat === 'flange')이면 포트 축으로 짧게 나온 스텁을 먼저 만들고 45°로 꺾어 들어간다
+  //    — 그래야 배관이 접합면을 비스듬히 뚫지 않는다.
+  // 반환: { points 꼭짓점들, runs 엘보 자리를 비운 직관 구간, elbows 세울 엘보 }
+  diag45Path(a, b, opts) {
+    const o = opts || {};
+    const bore = BORES[o.bore] ? o.bore : this.cmdBore;
+    const A = { x: r3(a.x), y: Math.max(0, r3(a.y)), z: r3(a.z) };
+    const T = { x: r3(b.x), y: Math.max(0, r3(b.y)), z: r3(b.z) };
+    const dist = Math.hypot(T.x - A.x, T.y - A.y, T.z - A.z);
+    // ① 포트 축(플랜지·노즐)은 축으로 짧게 나온 스텁 + 엘보로 따로 잇는다
+    if (o.portAxis && dist > 0.08) {
+      const port = this.diag45PortPath(A, T, o.portAxis, bore);
+      if (port) return port;
+    }
+    // ② A → T 중간 꼭짓점 (정확한 45° 구간)
+    const pts = [A].concat(this.diag45Mid(A, T));
+    // 겹친 점 정리
+    const P = [pts[0]];
+    for (let i = 1; i < pts.length; i += 1) {
+      const q = P[P.length - 1];
+      if (Math.hypot(pts[i].x - q.x, pts[i].y - q.y, pts[i].z - q.z) > 1e-4) P.push(pts[i]);
+    }
+    if (P.length < 2) return { points: P, runs: [], elbows: [] };
+    const pe = this.pathElbows(P, bore);
+    return { points: P, runs: pe.runs, elbows: pe.elbows };
+  }
+
+  // 경로 꼭짓점의 꺾임(45°·90°)에 엘보를 세우고, 직관 구간을 엘보 face만큼 비운다 (v85).
+  //  · 45° 꺾임 → 45° 엘보, 90° 꺾임 → 엘보. 그 밖의 각도는 건너뛰는다.
+  pathElbows(path, bore) {
+    const P = [];
+    (path || []).forEach((q) => {
+      const p0 = P[P.length - 1];
+      if (!p0 || Math.hypot(q.x - p0.x, q.y - p0.y, q.z - p0.z) > 1e-4) {
+        P.push({ x: r3(q.x), y: Math.max(0, r3(q.y)), z: r3(q.z) });
+      }
+    });
+    if (P.length < 2) return { runs: [], elbows: [] };
+    const bends = [];
+    for (let i = 1; i < P.length - 1; i += 1) {
+      const u = unit2(P[i - 1], P[i]);
+      const w = unit2(P[i], P[i + 1]);
+      const dot = u.x * w.x + u.y * w.y + u.z * w.z;
+      const bend = THREE.MathUtils.radToDeg(Math.acos(Math.max(-1, Math.min(1, dot))));
+      const type = (bend > 30 && bend < 60) ? 'elbow45' : ((bend > 80 && bend < 100) ? 'elbow' : null);
+      bends[i] = type ? { type, u, w, face: elbowDims(type, bore).face, bend } : null;
+    }
+    const runs = [];
+    for (let k = 0; k < P.length - 1; k += 1) {
+      const len = Math.hypot(P[k + 1].x - P[k].x, P[k + 1].y - P[k].y, P[k + 1].z - P[k].z);
+      if (len < 1e-4) continue;
+      const u = unit2(P[k], P[k + 1]);
+      let a0 = bends[k] ? bends[k].face : 0;
+      let a1 = bends[k + 1] ? bends[k + 1].face : 0;
+      // 짧은 구간에서 두 엘보값이 길이를 다 먹으면 80%까지만 남기고 비례해 줄인다
+      if (a0 + a1 > len * 0.8) {
+        const t = (len * 0.8) / (a0 + a1 || 1);
+        a0 *= t;
+        a1 *= t;
+      }
+      if (len - a0 - a1 < 0.002) continue;
+      runs.push([
+        { x: r3(P[k].x + u.x * a0), y: Math.max(0, r3(P[k].y + u.y * a0)), z: r3(P[k].z + u.z * a0) },
+        { x: r3(P[k + 1].x - u.x * a1), y: Math.max(0, r3(P[k + 1].y - u.y * a1)), z: r3(P[k + 1].z - u.z * a1) },
+      ]);
+    }
+    const elbows = [];
+    for (let i = 1; i < P.length - 1; i += 1) {
+      const bn = bends[i];
+      if (!bn) continue;
+      elbows.push({
+        at: { x: P[i].x, y: P[i].y, z: P[i].z },
+        type: bn.type, bore, face: bn.face, bend: bn.bend,
+        inDir: [-bn.u.x, -bn.u.y, -bn.u.z],
+        outDir: [bn.w.x, bn.w.y, bn.w.z],
+      });
+    }
+    return { runs, elbows };
+  }
+
+  // 플랜지·노즐(포트)로 45°로 꺾어 들어가는 경로 (v85).
+  //  · 포트 축 바깥으로 엘보 face만큼 나온 모서리까지 45° 경사로 잇고, 그 모서리에 엘보를 세운다.
+  //    엘보의 다른 다리 끝면이 정확히 포트 접합면에 앉아 배관이 플랜지를 뚫지 않는다.
+  //  · 들어오는 각도가 45°면 45° 엘보, 90°면 90° 엘보, 그 밖이면 예전 방식(seatAtFlangePort)으로.
+  diag45PortPath(A, T, portAxis, bore) {
+    const ax = portAxis;
+    const l = Math.hypot(ax.x || 0, ax.y || 0, ax.z || 0) || 1;
+    const u = { x: (ax.x || 0) / l, y: (ax.y || 0) / l, z: (ax.z || 0) / l };
+    const f45 = elbowDims('elbow45', bore).face;
+    const f90 = elbowDims('elbow', bore).face;
+    const C45 = { x: r3(T.x + u.x * f45), y: Math.max(0, r3(T.y + u.y * f45)), z: r3(T.z + u.z * f45) };
+    const runsOf = (path) => {
+      const out = [];
+      for (let i = 1; i < path.length; i += 1) {
+        const p0 = path[i - 1];
+        const p1 = path[i];
+        if (Math.hypot(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z) < 1e-4) continue;
+        out.push([{ ...p0 }, { ...p1 }]);
+      }
+      return out;
+    };
+    const trimEnd = (run, f, d) => {
+      const len = Math.hypot(run[1].x - run[0].x, run[1].y - run[0].y, run[1].z - run[0].z);
+      if (!(len > f + 0.02)) return false;
+      run[1] = {
+        x: r3(run[1].x - d.x * f),
+        y: Math.max(0, r3(run[1].y - d.y * f)),
+        z: r3(run[1].z - d.z * f),
+      };
+      return true;
+    };
+    const c = Math.SQRT1_2;
+    const deg = (dot) => THREE.MathUtils.radToDeg(Math.acos(Math.max(-1, Math.min(1, dot))));
+    const typeFor = (bend) => ((bend > 30 && bend < 60) ? 'elbow45' : ((bend > 80 && bend < 100) ? 'elbow' : null));
+
+    // ① 45°를 두 번 꺾어 들어가기 — 포트 축과 나란한 직관 → 45° → 대각선 → 45° → 포트 축 스텁.
+    //    수직면(위·아래)과 수평면(옆) 네 후보 중 꺾임이 45°(없으면 90°)로 떨어지는 것을 고른다.
+    const cands = [];
+    [-1, 1].forEach((sy) => {
+      const d = { x: -u.x * c, y: sy * c, z: -u.z * c };
+      const s2 = (C45.y - A.y) / d.y;      // Q가 A 높이에 오도록
+      if (s2 > 2 * f45) cands.push({ d, s: s2 });
+    });
+    const hx = A.x - C45.x;
+    const hz = A.z - C45.z;
+    const hl = Math.hypot(hx, hz);
+    if (hl > 0.05) {
+      const ax2 = hx / hl;
+      const az2 = hz / hl;
+      const dotA = ax2 * u.x + az2 * u.z;
+      const pl = Math.hypot(ax2 - u.x * dotA, az2 - u.z * dotA);
+      if (pl > 1e-3) {
+        const px = (ax2 - u.x * dotA) / pl;
+        const pz = (az2 - u.z * dotA) / pl;
+        [-1, 1].forEach((sp) => {
+          const d = { x: -u.x * c + px * c * sp, y: 0, z: -u.z * c + pz * c * sp };
+          const dp = d.x * px + d.z * pz;
+          const s2 = ((C45.x - A.x) * px + (C45.z - A.z) * pz) / (dp || 1);
+          if (s2 > 2 * f45) cands.push({ d, s: s2 });
+        });
+      }
+    }
+    let planBest = null;
+    cands.forEach((cd) => {
+      const qy = C45.y - cd.d.y * cd.s;
+      if (qy < -1e-6) return;                 // 바닥 아래로 내려가는 후보는 쓰지 않는다
+      const Q = {
+        x: r3(C45.x - cd.d.x * cd.s),
+        y: Math.max(0, r3(qy)),
+        z: r3(C45.z - cd.d.z * cd.s),
+      };
+      const dp = this.diag45Path(A, Q, {});
+      if (!dp.runs.length || dp.points.length < 2) return;
+      const P = dp.points;
+      const uIn = unit2(P[P.length - 2], P[P.length - 1]);
+      const bend = deg(uIn.x * cd.d.x + uIn.y * cd.d.y + uIn.z * cd.d.z);
+      const type = typeFor(bend);
+      if (!type) return;
+      const face = elbowDims(type, bore).face;
+      const score = (type === 'elbow45' ? 0 : 100) + cd.s * 0.05;
+      if (planBest && planBest.score <= score) return;
+      planBest = { cd, Q, dp, uIn, type, face, bend, score };
+    });
+    if (planBest) {
+      const runs = planBest.dp.runs.map((r) => [{ ...r[0] }, { ...r[1] }]);
+      const lastRun = runs[runs.length - 1];
+      if (trimEnd(lastRun, planBest.face, planBest.uIn)) {
+        const a0 = {
+          x: r3(planBest.Q.x + planBest.cd.d.x * planBest.face),
+          y: Math.max(0, r3(planBest.Q.y + planBest.cd.d.y * planBest.face)),
+          z: r3(planBest.Q.z + planBest.cd.d.z * planBest.face),
+        };
+        const a1 = {
+          x: r3(C45.x - planBest.cd.d.x * f45),
+          y: Math.max(0, r3(C45.y - planBest.cd.d.y * f45)),
+          z: r3(C45.z - planBest.cd.d.z * f45),
+        };
+        if (Math.hypot(a1.x - a0.x, a1.y - a0.y, a1.z - a0.z) > 0.002) runs.push([a0, a1]);
+        return {
+          points: planBest.dp.points.concat([C45]),
+          runs,
+          elbows: planBest.dp.elbows.concat([
+            {
+              at: planBest.Q, type: planBest.type, bore, face: planBest.face, bend: planBest.bend,
+              inDir: [-planBest.uIn.x, -planBest.uIn.y, -planBest.uIn.z],
+              outDir: [planBest.cd.d.x, planBest.cd.d.y, planBest.cd.d.z],
+            },
+            {
+              at: C45, type: 'elbow45', bore, face: f45, bend: 45,
+              inDir: [-planBest.cd.d.x, -planBest.cd.d.y, -planBest.cd.d.z],
+              outDir: [-u.x, -u.y, -u.z],
+            },
+          ]),
+        };
+      }
+    }
+
+    // ② 포트 축으로 곧게 들어오는 경우 — 들어오는 각도가 45°면 45° 엘보, 90°면 90° 엘보
+    const plan = [[f45, 'elbow45', 30, 60], [f90, 'elbow', 80, 100]];
+    for (let k = 0; k < plan.length; k += 1) {
+      const f = plan[k][0];
+      const type = plan[k][1];
+      const lo = plan[k][2];
+      const hi = plan[k][3];
+      const C = { x: r3(T.x + u.x * f), y: Math.max(0, r3(T.y + u.y * f)), z: r3(T.z + u.z * f) };
+      const dp = this.diag45Path(A, C, {});
+      const P = dp.points;
+      if (P.length < 2 || !dp.runs.length) continue;
+      const d = unit2(P[P.length - 2], P[P.length - 1]);
+      const bend = deg(-(d.x * u.x + d.y * u.y + d.z * u.z));
+      if (!(bend > lo && bend < hi)) continue;
+      const runs = dp.runs.map((r) => [{ ...r[0] }, { ...r[1] }]);
+      const lastRun = runs[runs.length - 1];
+      const len = Math.hypot(lastRun[1].x - lastRun[0].x, lastRun[1].y - lastRun[0].y, lastRun[1].z - lastRun[0].z);
+      if (len > f + 0.02) {
+        trimEnd(lastRun, f, d);
+      } else if (runs.length > 1) {
+        runs.pop();
+      } else {
+        continue;
+      }
+      return {
+        points: P,
+        runs,
+        elbows: dp.elbows.concat([{
+          at: C, type, bore, face: f, bend,
+          inDir: [-d.x, -d.y, -d.z], outDir: [-u.x, -u.y, -u.z],
+        }]),
+      };
+    }
+    // ③ 그 밖의 각도 — 예전 방식(90° 엘보 + 직교 경로)으로 물린다
+    const seated = this.seatAtFlangePort(A, { p: T, portAxis: u, bore });
+    const path = (seated && seated.path) ? seated.path : this.orthoPath(A, T);
+    if (seated && seated.elbow) {
+      return {
+        points: path,
+        runs: runsOf(path),
+        elbows: [{
+          at: seated.elbow.at, type: seated.elbow.type, bore: seated.elbow.bore,
+          inDir: seated.elbow.inDir, outDir: seated.elbow.outDir,
+        }],
+      };
+    }
+    // 직교 경로의 90° 꼮임에도 엘보를 세운다 (엘보 없는 꼭짓점이 남지 않게)
+    const pe = this.pathElbows(path, bore);
+    return { points: path, runs: pe.runs, elbows: pe.elbows };
+  }
+
+  // A → B 중간 꼭짓점 — 45° 구간을 넣어 만든다 (diag45Path 전용)
+  diag45Mid(A, B) {
+    const eps = 0.02;
+    const dx = B.x - A.x;
+    const dy = B.y - A.y;
+    const dz = B.z - A.z;
+    const dh = Math.hypot(dx, dz);
+    const ady = Math.abs(dy);
+    const sy = dy < 0 ? -1 : 1;
+    const out = [];
+    // 수직만 다르면 45°를 넣을 자리가 없다 — 그냥 수직 직관
+    if (dh < eps) {
+      if (ady > eps) out.push({ ...B });
+      return out;
+    }
+    // 같은 높이 — 바닥면 45°: 긴 축으로 먼저 간 뒤 두 축을 같이 먹는 대각선
+    if (ady < eps) {
+      const ax = Math.abs(dx);
+      const az = Math.abs(dz);
+      if (ax < eps || az < eps) { out.push({ ...B }); return out; }
+      const m = Math.min(ax, az);
+      const pre = ax >= az
+        ? { x: A.x + (dx >= 0 ? 1 : -1) * (ax - m), y: A.y, z: A.z }
+        : { x: A.x, y: A.y, z: A.z + (dz >= 0 ? 1 : -1) * (az - m) };
+      out.push(pre);
+      out.push({ ...B });
+      return out;
+    }
+    // 높이차 + 수평차 — m만큼 45° 대각선, 남는 수평·높이는 양쪽 직관으로
+    let m = Math.min(ady, dh);
+    if (sy < 0) m = Math.min(m, Math.max(0, A.y));   // 바닥을 뚫지 않게
+    const remH = dh - m;
+    const remV = ady - m;
+    const ux = dx / dh;
+    const uz = dz / dh;
+    if (remH > eps) out.push({ x: A.x + ux * remH, y: A.y, z: A.z + uz * remH });
+    out.push({ x: A.x + ux * (remH + m), y: A.y + sy * m, z: A.z + uz * (remH + m) });
+    if (remV > eps) out.push({ ...B });
+    return out;
+  }
+
   fromHere(end) {
     const spec = this.getSelectedSpec();
     if (!spec) return;
@@ -3867,18 +4166,20 @@ class App {
     const py = ev.clientY - rect.top;
     const v = new THREE.Vector3();
     let best = null;
-    const take = (p, label, bore) => {
+    const take = (p, label, bore, extra) => {
       v.set(p.x, p.y, p.z).project(this.camera);
       if (v.z > 1 || v.z < -1) return;
       const sx = (v.x * 0.5 + 0.5) * rect.width;
       const sy = (-v.y * 0.5 + 0.5) * rect.height;
       const d = Math.hypot(sx - px, sy - py);
       if (d > radiusPx || (best && d >= best.d)) return;
-      best = { p: { x: p.x, y: p.y, z: p.z }, label, bore, d };
+      best = { p: { x: p.x, y: p.y, z: p.z }, label, bore, d, ...(extra || {}) };
     };
     this.state.equipment.forEach((e) => {
       equipPorts(e).forEach((n) => {
-        take(n.tip, `${e.name} ${n.label || NOZZLE_LABELS[n.dir] || ''}`.trim(), n.bore);
+        // 플랜지·노즐은 면의 바깥 방향도 넘긴다 — 45° 잇기가 그 축으로 꺾어 들어간다 (v85).
+        take(n.tip, `${e.name} ${n.label || NOZZLE_LABELS[n.dir] || ''}`.trim(), n.bore,
+          n.seat ? { seat: n.seat, portAxis: n.axis } : null);
       });
       // 엘보·레듀샤 같은 용접 접합면도 대상 — 그 면의 관경을 물려준다 (v74).
       equipConnectFaces(e).forEach((n) => {
@@ -3903,14 +4204,42 @@ class App {
     const from = { ...this.cmdCursor };
     const d = Math.hypot(t.p.x - from.x, t.p.y - from.y, t.p.z - from.z);
     if (d < 0.05) { this.toast('이미 그 자리에 커서가 있습니다.'); return; }
-    const path = this.orthoPath(from, t.p);
     const bore = BORES[t.bore] ? t.bore : this.cmdBore;
-    this.pushUndo('🔗 잇기');
-    const pipe = makePipe({
-      name: this.nextPipeName(), bore, material: this.cmdMaterial, conn: this.cmdConn, points: path,
-    });
-    this.state.pipes.push(pipe);
-    this.lastAdded = { kind: 'pipe', id: pipe.id };
+    // 45° 모드에서는 정확한 45° 경사로 잇는다 (v85) — 90° 직각 경로는 그대로 둔다.
+    const dp = this.diag45
+      ? this.diag45Path(from, t.p, { bore, portAxis: t.seat === 'flange' ? t.portAxis : null })
+      : null;
+    const path = dp ? (dp.points.length ? dp.points : [from, t.p]) : this.orthoPath(from, t.p);
+    this.pushUndo(this.diag45 ? '🔗 45° 잇기' : '🔗 잇기');
+    let lastPipe = null;
+    if (dp && dp.runs.length) {
+      dp.runs.forEach((r) => {
+        const pipe = makePipe({
+          name: this.nextPipeName(), bore, material: this.cmdMaterial, conn: this.cmdConn,
+          points: [{ ...r[0] }, { ...r[1] }],
+        });
+        this.state.pipes.push(pipe);
+        lastPipe = pipe;
+      });
+      // 꺾임에 엘보를 세운다 — 45° 꺾임은 45° 엘보, 90°는 엘보
+      dp.elbows.forEach((eb) => {
+        const seq = this.state.equipment.filter((q) => q.type === eb.type).length + 1;
+        this.state.equipment.push(makeEquipment(eb.type, {
+          name: `${EQUIP_TYPES[eb.type].short}-${100 + seq} ${EQUIP_TYPES[eb.type].label}`,
+          x: eb.at.x, y: eb.at.y, z: eb.at.z, bore: eb.bore,
+          inDir: eb.inDir, outDir: eb.outDir,
+          rot: this.rotForDir({ x: eb.outDir[0], y: eb.outDir[1], z: eb.outDir[2] }, this.cmdRot),
+        }));
+      });
+      this.lastAdded = { kind: 'pipe', id: lastPipe.id };
+    } else {
+      const pipe = makePipe({
+        name: this.nextPipeName(), bore, material: this.cmdMaterial, conn: this.cmdConn, points: path,
+      });
+      this.state.pipes.push(pipe);
+      lastPipe = pipe;
+      this.lastAdded = { kind: 'pipe', id: pipe.id };
+    }
     this.selection = null;
     // 커서·방향을 대상 접속구로 넘긴다 — 바로 이어서 그린다.
     const prev = path[path.length - 2] || from;
@@ -3928,7 +4257,11 @@ class App {
     this.setCmdCursor({ x: t.p.x, y: Math.max(0, t.p.y), z: t.p.z }, true);
     this.rebuild();
     this.setLinkMode(false);
-    this.toast(`🔗 ${t.label}에 연결했습니다 · ${fmt(d)}m · ${bore}`);
+    const n45 = dp ? dp.elbows.filter((e) => e.type === 'elbow45').length : 0;
+    const nEl = dp ? dp.elbows.length : 0;
+    this.toast(this.diag45
+      ? `🔗 ${t.label}에 45°로 연결했습니다 · ${fmt(d)}m · ${bore}${nEl ? ` · 엘보 ${nEl}개(45° ${n45})` : ''}`
+      : `🔗 ${t.label}에 연결했습니다 · ${fmt(d)}m · ${bore}`);
   }
 
   // 광선이 실제로 맞은 것 중 가장 가까운 선택 대상(장비·배관).
@@ -5101,6 +5434,8 @@ class App {
   // 조이스틱에서 골라 둔 90° 방향 → 월드 단위벡터 (「내 시점 기준」·「도면 축 기준」 반영).
   // 부속을 놓을 때 이 방향을 **출구 방향**으로 쓴다.
   padDirV() {
+    // 엘보·부속을 놓을 때 쓰는 방향 — 직각(seg)을 골랐을 때만 넘긴다.
+    // 45° 경사(diag)는 엘보 방향 계산이 축 하나를 전제하므로 넘기지 않는다 (v85 점검).
     const sel = this.pending;
     if (!sel || sel.op !== 'seg' || !sel.axis) return null;
     const w = this.dirToWorld(sel.axis, sel.sign);
@@ -6372,6 +6707,48 @@ class App {
           this.toast(op.target === 'pipe' ? '연결할 다른 배관을 찾지 못했습니다.' : '연결할 부속·장비를 찾지 못했습니다.', { type: 'err' });
           continue;
         }
+        // 45° 모드 — 90° 직교 대신 정확한 45° 경사 경로로 잇는다 (v85)
+        if (this.diag45) {
+          const dp = this.diag45Path(cursor, hit.p, {
+            bore: hit.bore && BORES[hit.bore] ? hit.bore : bore,
+            portAxis: hit.seat === 'flange' ? hit.portAxis : null,
+          });
+          if (hit.bore && BORES[hit.bore]) {
+            bore = hit.bore;
+            notes.push(`노즐 관경 ${bore}`);
+          }
+          dp.runs.forEach((r) => {
+            pipeSeq += 1;
+            pipes.push(makePipe({
+              name: `PL-${String(pipeSeq).padStart(3, '0')} 연결`,
+              bore, material, conn, points: [{ ...r[0] }, { ...r[1] }],
+            }));
+          });
+          dp.elbows.forEach((eb) => {
+            equip.push(makeEquipment(eb.type, {
+              name: `${EQUIP_TYPES[eb.type].short}-${100 + nextEqSeq(eb.type)} ${EQUIP_TYPES[eb.type].label}`,
+              x: eb.at.x, y: eb.at.y, z: eb.at.z, bore: eb.bore,
+              inDir: eb.inDir, outDir: eb.outDir,
+              rot: this.rotForDir({ x: eb.outDir[0], y: eb.outDir[1], z: eb.outDir[2] }, rot),
+            }));
+          });
+          const P = dp.points;
+          const prev = P[P.length - 2] || cursor;
+          const last = P[P.length - 1] || hit.p;
+          const lx = last.x - prev.x, ly = last.y - prev.y, lz = last.z - prev.z;
+          const ln = Math.hypot(lx, ly, lz) || 1;
+          prevDir = { x: lx / ln, y: ly / ln, z: lz / ln };
+          this.lastDirV = { ...prevDir };
+          axis = Math.abs(lx) >= Math.abs(ly) && Math.abs(lx) >= Math.abs(lz) ? 'x'
+            : (Math.abs(lz) >= Math.abs(ly) ? 'z' : 'y');
+          sign = (axis === 'x' ? lx : axis === 'z' ? lz : ly) < 0 ? -1 : 1;
+          rot = this.cmdRotFor(axis, sign);
+          cursor = { x: hit.p.x, y: Math.max(0, hit.p.y), z: hit.p.z };
+          const n45 = dp.elbows.filter((e) => e.type === 'elbow45').length;
+          notes.push(`${hit.label}에 연결 ${fmt(hit.d)}m`);
+          if (dp.elbows.length) notes.push(`45° 엘보 ${n45} · 엘보 ${dp.elbows.length - n45}`);
+          continue;
+        }
         // 플랜지 접합면이면 축 방향으로 꺾어 앉힌다 — 엘보 + 맞물림 플랜지 (v67).
         const seated = hit.seat === 'flange'
           ? this.seatAtFlangePort(cursor, { p: hit.p, portAxis: hit.portAxis, bore: hit.bore || bore })
@@ -6782,15 +7159,36 @@ class App {
     const on = (axis, sign) => {
       if (!sel) return false;
       const ax = sel.axis;
+      // 45° 경사에서 위/아래만 고른 경우(수평 방향은 지금 그리는 방향)는 ↑·↓ 를 켠다.
       if (sel.op === 'diag' && sel.axis == null) return axis === 'y' && sign === (sel.vert < 0 ? -1 : 1);
       return ax === axis && (sel.sign < 0 ? -1 : 1) === sign;
     };
+    // 수평 45°(바닥면 대각선)에서는 좌·우·앞·뒤 버튼이 각각 대각선 한 방향이 된다 —
+    //  45° 껐을 때는 원래 글자(←·→·앞·뒤)로 되돌린다. (글자와 실제 방향이 어긋나면 안 된다)
+    const xz = !!this.diag45 && this.diagMode === 'xz';
+    const GLYPH = { 'x:-1': ['←', '↙'], 'x:1': ['→', '↗'], 'z:1': ['앞', '↖'], 'z:-1': ['뒤', '↘'] };
     $$('#dirPad [data-dir]').forEach((b) => {
       const [axis, s] = b.dataset.dir.split(':');
+      const g = GLYPH[b.dataset.dir];
+      if (g) {
+        b.textContent = xz ? g[1] : g[0];
+        b.title = xz
+          ? ({ 'x:-1': '왼쪽+뒤 45°', 'x:1': '오른쪽+앞 45°', 'z:1': '앞+왼쪽 45°', 'z:-1': '뒤+오른쪽 45°' })[b.dataset.dir]
+          : ({ 'x:-1': '왼쪽', 'x:1': '오른쪽', 'z:1': '앞', 'z:-1': '뒤' })[b.dataset.dir];
+      }
       b.classList.toggle('active', on(axis, Number(s)));
     });
     const d45 = $('#pad45');
     if (d45) d45.classList.toggle('active', !!this.diag45);
+    const drow = $('#padDiagRow');
+    if (drow) {
+      drow.hidden = !this.diag45;
+      $$('[data-diag]', drow).forEach((b) => {
+        const act = !!this.diag45 && b.dataset.diag === this.diagMode;
+        b.classList.toggle('active', act);
+        b.setAttribute('aria-pressed', act ? 'true' : 'false');
+      });
+    }
     this.updateKbDirBar();
     const fr = $('#btnFrame');
     if (fr) {
@@ -6809,28 +7207,118 @@ class App {
 
   // 방향 버튼 하나 — 처음 누르면 선택(강조), 같은 방향을 한 번 더 누르면 바로 그린다.
   tapDir(axis, sign) {
-    const s = sign < 0 ? -1 : 1;
-    const sel = this.diag45
-      ? (axis === 'y' ? { op: 'diag', axis: null, sign: 1, vert: s, angle: 45 }
-        : { op: 'diag', axis, sign: s, vert: 1, angle: 45 })
-      : { op: 'seg', axis, sign: s };
+    const sel = this.dirPending(axis, sign);
     const same = this.pending && JSON.stringify(this.pending) === JSON.stringify(sel);
     if (same) { this.padDraw(sel, this.padLen / 1000); return; }
     this.pending = sel;
     this.highlightPad();
+    this.toast(this.pendingToast(sel, axis, sign));
+  }
+
+  // 지금 모드(90° / 45° 위·아래·수평)에 맞는 pending을 만든다 (v85).
+  //  · 45° OFF            → 90° 직각 {op:'seg'}
+  //  · 45° ON · 위/아래   → {op:'diag', vert:±1}  (수평 방향으로 오르내리는 경사관)
+  //  · 45° ON · 수평     → {op:'diagxz'}           (높이 그대로 바닥면 45° 대각선)
+  //  · ↑·↓ 는 45° 모드에서 지금 그리는 수평 방향으로 오르내리는 경사가 된다.
+  dirPending(axis, sign) {
+    const s = sign < 0 ? -1 : 1;
+    if (!this.diag45) return { op: 'seg', axis, sign: s };
+    if (axis === 'y') return { op: 'diag', axis: null, sign: 1, vert: s, angle: 45 };
+    if (this.diagMode === 'xz') return { op: 'diagxz', axis, sign: s };
+    return { op: 'diag', axis, sign: s, vert: this.diagMode === 'down' ? -1 : 1, angle: 45 };
+  }
+
+  // pending → 누른 버튼(패드 좌표의 축·부호). 모드를 바꿀 때 방향을 잃지 않게 되돌린다.
+  pendingKey(p) {
+    if (!p) return null;
+    if (p.op === 'diag' && p.axis == null) return { axis: 'y', sign: p.vert < 0 ? -1 : 1 };
+    if (!p.axis) return { axis: 'x', sign: 1 };
+    return { axis: p.axis, sign: p.sign < 0 ? -1 : 1 };
+  }
+
+  pendingToast(sel, axis, sign) {
+    const s = sign < 0 ? -1 : 1;
     const name = { x: s > 0 ? '우' : '좌', y: s > 0 ? '위' : '아래', z: s > 0 ? '앞' : '뒤' }[axis];
-    this.toast(this.diag45
-      ? `45° ${name} 선택 — 길이(mm)만 넣고 실행하면 그 방향으로 오르내립니다.`
-      : `${name} 선택 — 명령창에 1000처럼 길이만 넣고 실행하세요.`);
+    if (sel.op === 'diagxz') {
+      const tag = { 'x:1': '오른쪽+앞', 'x:-1': '왼쪽+뒤', 'z:1': '앞+왼쪽', 'z:-1': '뒤+오른쪽' }[`${axis}:${s}`] || name;
+      return `45° 수평 ${tag} 선택 — 높이 그대로 바닥면 대각선으로 그립니다.`;
+    }
+    if (sel.op === 'diag') {
+      const up = (sel.vert < 0) ? '아래' : '위';
+      return sel.axis == null
+        ? `45° ${up} 선택 — 지금 그리는 수평 방향으로 45° ${up === '위' ? '오르' : '내려'}갑니다.`
+        : `45° ${name} · ${up} 선택 — 길이(mm)는 경사관 길이입니다.`;
+    }
+    return `${name} 선택 — 명령창에 1000처럼 길이만 넣고 실행하세요.`;
+  }
+
+  // 45° 모드 켜기/끄기 — 골라 둔 방향을 **즉시** 새 모드로 바꾼다 (v85).
+  //  예전에는 45°를 끄어도 pending이 'diag'로 남아, 일반 → 버튼이 켜져 보이는데
+  //  실제로는 대각선이 그려졌다 — "45도 껐는데 지 맘대로 그려 버리네"(2026-11-28).
+  setDiag45(on, quiet) {
+    const next = !!on;
+    if (next === this.diag45) { this.highlightPad(); return; }
+    this.diag45 = next;
+    const k = this.pendingKey(this.pending);
+    if (k) this.pending = this.dirPending(k.axis, k.sign);
+    this.highlightPad();
+    this.updateHandBadge();
+    if (quiet) return;
+    this.toast(next
+      ? (this.handMode
+        ? '45° 모드 — 손으로 끌면 45° 대각선으로도 그려집니다.'
+        : '45° 경사 모드 — 위·아래·수평 중 하나를 고르고 방향을 누르세요.')
+      : '90° 직각 모드로 돌아왔습니다 — 이제 대각선으로 그리지 않습니다.');
+  }
+
+  // 45° 경사 종류 — 위 45° / 아래 45° / 수평 45° (v85)
+  setDiagMode(mode) {
+    const m = (mode === 'down' || mode === 'xz') ? mode : 'up';
+    const changed = m !== this.diagMode || !this.diag45;
+    this.diagMode = m;
+    this.diag45 = true;                        // 경사를 고르면 45° 모드도 같이 켜진다
+    const k = this.pendingKey(this.pending);
+    if (k) this.pending = this.dirPending(k.axis, k.sign);
+    this.highlightPad();
+    this.updateHandBadge();
+    if (!changed) return;
+    this.toast(m === 'up' ? '45° 위 — 고른 방향으로 45° 오릅니다.'
+      : m === 'down' ? '45° 아래 — 고른 방향으로 45° 내려갑니다.'
+        : '45° 수평 — 높이 그대로 바닥면 대각선으로 그립니다.');
+  }
+
+  // 수평 45° — 누른 방향에서 '앞'(화면 안쪽)으로 45° 꺾인 바닥면 대각선 (v85).
+  //  → = 오른쪽+앞 · ← = 왼쪽+뒤 · 앞 = 앞+왼쪽 · 뒤 = 뒤+오른쪽 — 네 방향이 서로 겹치지 않는다.
+  horizDiagVec(axis, sign) {
+    const s = sign < 0 ? -1 : 1;
+    const c = Math.SQRT1_2;
+    let R = { x: 1, y: 0, z: 0 };
+    let F = { x: 0, y: 0, z: 1 };
+    if (this.dirFrame === 'me') {
+      const b = this.viewBasis();
+      const vec = (t) => (t.axis === 'x' ? { x: t.sign, y: 0, z: 0 } : { x: 0, y: 0, z: t.sign });
+      R = vec(b.right);
+      F = vec(b.fwd);
+    }
+    const ux = axis === 'x' ? 1 : -1;          // x축은 오른쪽+앞 · z축은 앞+왼쪽
+    const v = { x: (R.x * ux + F.x) * c * s, y: 0, z: (R.z * ux + F.z) * c * s };
+    return { x: r3(v.x), y: 0, z: r3(v.z) };
   }
 
   padDraw(sel, meters) {
     if (!sel) return null;
     const m = Math.max(0.005, Number(meters) || (this.padLen / 1000));
     this.padLen = Math.round(m * 1000);
-    const op = sel.op === 'diag'
-      ? { op: 'diag', axis: sel.axis, sign: sel.sign, vert: sel.vert || 1, angle: sel.angle || 45, meters: m }
-      : { op: 'seg', axis: sel.axis, sign: sel.sign, meters: m };
+    // 45° 껏는데 diag·diagxz가 남아 있으면 90° 직각으로 꺾는다 — 어떤 경우에도 대각선을 그리지 않는다.
+    const kind = (sel.op === 'diag' || sel.op === 'diagxz') && !this.diag45 ? 'seg' : sel.op;
+    let op;
+    if (kind === 'diag') {
+      op = { op: 'diag', axis: sel.axis, sign: sel.sign, vert: sel.vert || 1, angle: sel.angle || 45, meters: m };
+    } else if (kind === 'diagxz') {
+      op = { op: 'seg', world: true, dir: this.horizDiagVec(sel.axis, sel.sign), meters: m };
+    } else {
+      op = { op: 'seg', axis: sel.axis, sign: sel.sign, meters: m };
+    }
     const res = this.execOps([op], { source: 'pad' });
     this.updatePadInfo();
     return res;
@@ -7004,16 +7492,9 @@ class App {
     });
     const fitBtn = $('#btnFitAuto');
     if (fitBtn) fitBtn.addEventListener('click', () => this.setFitAuto(!this.fitAuto));
-    $('#pad45').addEventListener('click', () => {
-      this.diag45 = !this.diag45;
-      this.highlightPad();
-      this.updateHandBadge();
-      const msg = this.diag45
-        ? (this.handMode
-          ? '45° 모드 — 손으로 끌면 45° 대각선으로도 그려집니다.'
-          : '45° 경사 모드 — 방향을 고르면 45°로 오르내립니다.')
-        : '90° 방향 모드로 돌아왔습니다.';
-      this.toast(msg);
+    $('#pad45').addEventListener('click', () => this.setDiag45(!this.diag45));
+    $$('#padDiagRow [data-diag]').forEach((b) => {
+      b.addEventListener('click', () => this.setDiagMode(b.dataset.diag));
     });
     $('#padUndo').addEventListener('click', () => this.undo());
     $$('#dirPad [data-dir]').forEach((b) => {
