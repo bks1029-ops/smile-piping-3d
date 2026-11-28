@@ -1630,11 +1630,12 @@ canvas.move-drag:active { cursor: grabbing; }
   /* 수량표는 부속이 많으면 다음 장으로 이어서 찍는다(잘라 버리지 않는다) */
   .ps-bom { break-inside: auto; page-break-inside: auto; }
   /* 가로 용지의 낮은 높이에 맞춰 수량표를 조밀하게 — 한 장에 다 들어가게 */
-  .ps-bom .ps-table { font-size: 2.5mm; table-layout: fixed; }
+  .ps-bom .ps-table { width: 200mm; font-size: 2.5mm; table-layout: fixed; }
   .ps-bom .ps-table th, .ps-bom .ps-table td { padding: 0.45mm 1.3mm; }
   .ps-bom .ps-table th:nth-child(1), .ps-bom .ps-table td:nth-child(1) { width: 32mm; }
-  .ps-bom .ps-table th:nth-child(2), .ps-bom .ps-table td:nth-child(2) { width: 88mm; }
-  .ps-bom .ps-table th:nth-child(3), .ps-bom .ps-table td:nth-child(3) { width: 62mm; }
+  .ps-bom .ps-table th:nth-child(2), .ps-bom .ps-table td:nth-child(2) { width: 78mm; }
+  .ps-bom .ps-table th:nth-child(3), .ps-bom .ps-table td:nth-child(3) { width: 45mm; }
+  .ps-bom .ps-table th:nth-child(4), .ps-bom .ps-table td:nth-child(4) { width: 45mm; }
   .ps-bom .ps-sub { margin: 1.6mm 0 0.6mm; font-size: 2.9mm; }
   .ps-bom .ps-sum { font-size: 2.9mm; margin: 0.6mm 0 0; }
   .ps-bom .ps-note { font-size: 2.3mm; margin: 1.2mm 0 0; }
