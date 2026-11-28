@@ -1496,8 +1496,9 @@ canvas.move-drag:active { cursor: grabbing; }
   display: flex; flex-direction: column; gap: 5px;
   flex: 0 0 auto;
 }
-.pp-foot-row { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; }
-.pp-per { font-size: 10.5px; color: var(--dim); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.pp-foot-row { display: flex; flex-direction: column; gap: 5px; }
+.pp-per { font-size: 10.5px; color: var(--dim); white-space: nowrap; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pp-per select { flex: 0 0 auto; min-width: 108px; }
 .pp-per select {
   background: #0f1419; color: var(--txt);
   border: 1px solid var(--line-soft); border-radius: 6px;

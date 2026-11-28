@@ -1,3 +1,11 @@
+## 완료 — v83 (2026-11-28)
+- **🖨️ 인쇄 여백 사방 12mm · A4 가로/세로 · 1·2·4컷**: 사용자 요청 *"실제 프린터로 뽑으니까 왼쪽 위 스마일산업 '스'자가 잘려"* · *"가로로도 세로로도 고를 수 있게"* · *"한 장에 2컷 4컷도"*.
+  - `@page` 여백 `7mm 8mm` → **`12mm 13mm`**(실제 프린터 인쇄 불가 영역 5~10mm를 넘기게). 본문 가로 **271×186mm** · 세로 **184×273mm**, `.ps-page` 높이 **184mm / 270mm**(`#printSheet.ps-port`), 그림 상한도 `max-height`로 **넘침 0px**.
+  - **용지 방향 선택**(`#ppOrient` 가로 기본/세로): `@page`는 클래스로 못 바꾸므로 **`<style id="printPageStyle">`** 한 줄을 인쇄 시점에 갈아 끼우는 `applyPrintPageStyle()` — `@media print { @page { size: A4 landscape|portrait; margin: 12mm 13mm } }`. 선택은 localStorage(`printOrient`)에 저장.
+  - **한 장에 1·2·4컷**(`#ppPerPage`): `.ps-per-1/2/4` — 가로 2컷 좌우 2열 · 4컷 2×2, 세로 2컷 위아래 2행 · 4컷 2×2. 수량표는 기본 해제 유지, 표 폭을 %(17/39/22/22)로 바꿔 세로에서도 넘치지 않는다.
+- **검증**: 실브라우저 1920×993에서 실제 인쇄 PDF 6종 — 가로 1/2/4컷 4/2/1장 **297.0×209.9mm**, 세로 1/2/4컷 4/2/1장 **209.9×297.0mm**. 잉크 가로 **12.9~283.5×13.2~195.2mm** · 세로 **13.0~196.8×13.2~281.0mm** → 사방 12mm 안, `스` 잘림 없음. DOM 넘침 0px · 콘솔 오류 0. 미리보기 `preview-v83-4up.png` · `preview-v83-portrait.png` · `preview-v83-portrait-2up.png` · `preview-v83-bom-portrait.png` · `preview-v83-panel.png`. 캐시 버스터 `?v=83`.
+- **남은 것**: `tools/verify-v83.py`는 이 샌드박스에 Chromium 시스템 라이브러리(libnspr4·libnss3)가 없어 로컬 실행 못 함 — Playwright가 있는 환경에서 한 번 돌려 두면 좋다.
+
 ## 완료 — v82 (2026-11-28)
 - **🖨️ A4 가로 크게 인쇄 · 수량표 선택 인쇄**: 사용자 요청 *"도면 출력 a4용지에 세로로 나오는데 가로로 크게 뽑고 싶어"* · *"배관 수량 표는 기본으로 선택 안되있고 출력하고 싶을 때 선택해서 출력하게 해줘"*.
   - `@page { size: A4 landscape; margin: 7mm 8mm }` — 본문 281×196mm. `.ps-page` 높이를 **195mm로 고정 + overflow: hidden**이라 머리글·그림·설명·바닥글이 다음 장으로 넘치지 않는다(실제 인쇄 PDF 3컷 → 3장, 넘침 0).
