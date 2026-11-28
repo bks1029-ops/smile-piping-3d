@@ -7336,6 +7336,12 @@ class App {
     this.padLen = Math.round(m * 1000);
     // 45° 껏는데 diag·diagxz가 남아 있으면 90° 직각으로 꺾는다 — 어떤 경우에도 대각선을 그리지 않는다.
     const kind = (sel.op === 'diag' || sel.op === 'diagxz') && !this.diag45 ? 'seg' : sel.op;
+    // 바닥(0m)보다 아래로 내려가는 '45° 아래'는 그리지 않고 알려 준다 — 그리면 바닥에 눌려 각도가 깨진다.
+    if (kind === 'diag' && (sel.vert || 1) < 0
+      && this.cmdCursor.y - Math.SQRT1_2 * m < -1e-6) {
+      this.toast('바닥(0m)보다 아래로는 내려갈 수 없습니다 — 커서를 위로 띄우거나 45° 위·수평을 쓰세요.', { type: 'err' });
+      return null;
+    }
     let op;
     if (kind === 'diag') {
       op = { op: 'diag', axis: sel.axis, sign: sel.sign, vert: sel.vert || 1, angle: sel.angle || 45, meters: m };

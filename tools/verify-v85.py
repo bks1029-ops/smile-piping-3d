@@ -480,6 +480,39 @@ def run_off(page):
           dy2 < 1e-6 and st2['diag45'] is False, json.dumps(p2, ensure_ascii=False))
 
 
+def run_down_floor(page):
+    """B2. 바닥 아래로 내려가는 45° 아래는 그리지 않고 알려 준다"""
+    page.evaluate(RESET, {'fit': False})
+    page.evaluate("""() => {
+      const a = window.__app;
+      a.setCmdCursor({x:0,y:0,z:0}, true);
+      a.setDiagMode('down');
+      a.pending = null;
+    }""")
+    page.wait_for_timeout(120)
+    page.click('#dirPad [data-dir="x:1"]')
+    page.wait_for_timeout(120)
+    page.fill('#cmdInput', '1000')
+    page.click('#cmdRun')
+    page.wait_for_timeout(300)
+    st = page.evaluate(STATE)
+    toast = page.evaluate("() => { const t = document.querySelector('#toastHost .toast'); return t ? t.textContent : ''; }")
+    check('B. 바닥(y=0)에서 45° 아래는 그리지 않고 「바닥보다 아래로는 내려갈 수 없습니다」로 알려 준다',
+          len(st['pipes']) == 0 and '아래로는' in toast,
+          json.dumps({'pipes': len(st['pipes']), 'toast': toast[:50]}, ensure_ascii=False))
+    page.evaluate("""() => { window.__app.setCmdCursor({x:0,y:1,z:0}, true); }""")
+    page.wait_for_timeout(100)
+    page.fill('#cmdInput', '1000')
+    page.click('#cmdRun')
+    page.wait_for_timeout(300)
+    st2 = page.evaluate(STATE)
+    pts = st2['pipes'][-1]['points'] if st2['pipes'] else []
+    d = {k: round(pts[-1][k] - pts[0][k], 3) for k in 'xyz'} if pts else {}
+    check('B. 커서를 1m 위로 올리면 같은 45° 아래가 정상으로 그려진다 (dx 707 · dy −707)',
+          abs(d.get('x', 0) - 0.707) < 0.006 and abs(d.get('y', 0) + 0.707) < 0.006,
+          json.dumps(d, ensure_ascii=False))
+
+
 def run_dirs(page):
     """B. 위·아래·수평 45° 방향"""
     cases = [
@@ -715,6 +748,7 @@ def main():
             page = new_page(b, {'width': 1440, 'height': 900}, False, errs)
             on = run_pad_ui(page)
             run_off(page)
+            run_down_floor(page)
             run_dirs(page)
             run_link(page)
             run_port(page)
